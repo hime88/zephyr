@@ -133,6 +133,8 @@ jobs:
           fi
 
           cd Engine/EngineAsBuilt
+          rm -rf ~/Library/Caches/org.swift.swiftpm
+          rm -rf ~/.swiftpm
           swift build -c "$CONFIG"
 
       # ------------------------------------------------------------------
