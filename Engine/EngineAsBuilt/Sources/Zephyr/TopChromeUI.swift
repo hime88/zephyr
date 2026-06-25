@@ -181,17 +181,17 @@ struct TopChromeUI {
             let btnFullW = btnSize.x + btnPad * 2
             let totalWidth = inBlockEditor ? (titleSize.x + 10 + btnFullW) : titleSize.x
             
-            let startX = (dw - totalWidth) * 0.5
+            let titleStartX = (dw - totalWidth) * 0.5
             let textY = (topChromeH - titleSize.y) * 0.5
             
-            ImGuiSetCursorScreenPos(ImVec2(x: startX, y: textY))
+            ImGuiSetCursorScreenPos(ImVec2(x: titleStartX, y: textY))
             ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textDim)
             ImGuiTextV(title)
             ImGuiPopStyleColor(1)
 
             if inBlockEditor {
                 // Place the "Save & Close" button right after the title text.
-                let btnX = startX + titleSize.x + 10
+                let btnX = titleStartX + titleSize.x + 10
                 let btnY = (topChromeH - btnSize.y) * 0.5 - 3
                 ImGuiPushStyleVar(Int32(ImGuiStyleVar_FramePadding.rawValue), ImVec2(x: btnPad, y: 2))
                 ImGuiSetCursorScreenPos(ImVec2(x: btnX, y: btnY))
