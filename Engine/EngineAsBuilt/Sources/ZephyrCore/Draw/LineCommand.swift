@@ -8,15 +8,24 @@ import SwiftSDL_image
 // MARK: - LineCommand
 // =========================================================================
 
-/// Interactive multi-segment line drawing command.
-/// Each click adds a connected segment from the previous endpoint.
-/// Press Enter or Escape to finish and create a polyline entity.
+/// Interactive multi-segment line drawing command with AutoCAD-style
+/// direct distance entry and dynamic input.
+///
+/// Workflows:
+///   - Click to place points (standard).
+///   - Type a distance and press Enter — places the next point at that exact
+///     distance from the last point in the current mouse direction.
+///   - Tab to switch to angle mode, type an angle, Enter to lock it — then
+///     type a distance to place the point at that angle.
+///   - Press Enter with an empty buffer to finalize; Esc with empty buffer
+///     finalizes existing segments or cancels if fewer than 2 points.
 @MainActor
 public final class LineCommand: FeatureCommand {
 
     private var points: [Vector3] = []
     private var currentMouseWorldX: Double = 0
     private var currentMouseWorldY: Double = 0
+    private var input = DynamicNumericInput()
 
     public init() {}
 
@@ -24,22 +33,27 @@ public final class LineCommand: FeatureCommand {
         points.removeAll()
         currentMouseWorldX = 0
         currentMouseWorldY = 0
+        input.reset()
         processor.commandPrompt = "Specify first point (Esc/Enter to complete when done)."
     }
 
     public func cancel(engine: PhrostEngine, processor: CADCommandProcessor) {
         points.removeAll()
+        input.reset()
     }
 
     public func getDrawingSnapPoints() -> [Vector3] { points }
+
+    // MARK: - Mouse
 
     public func handleMouseClick(
         worldX: Double, worldY: Double,
         engine: PhrostEngine, processor: CADCommandProcessor
     ) -> CommandResult {
         points.append(Vector3(x: worldX, y: worldY, z: 0))
+        input.reset()
         if points.count == 1 {
-            processor.commandPrompt = "Specify next point (Esc/Enter to finish)."
+            processor.commandPrompt = "Specify next point or enter distance (Esc/Enter to finish)."
         } else {
             processor.commandPrompt = "\(points.count) points. Specify next or Esc/Enter to finish."
         }
@@ -54,34 +68,138 @@ public final class LineCommand: FeatureCommand {
         currentMouseWorldY = worldY
     }
 
+    // MARK: - Keyboard
+
     public func handleKeyDown(
         scancode: SDL_Scancode, engine: PhrostEngine, processor: CADCommandProcessor
     ) -> CommandResult {
+        let dynResult = input.handleKey(scancode)
+        switch dynResult {
+        case .ignored:
+            break // fall through to legacy handling below
+
+        case .consumed:
+            return .handled
+
+        case .commitValue(let distance):
+            return placePoint(atDistance: distance, engine: engine, processor: processor)
+
+        case .commitAngle(let angleDeg):
+            processor.commandPrompt = "Angle locked at \(String(format: "%.1f", angleDeg))°. Enter distance."
+            return .handled
+
+        case .cancel:
+            // All buffers empty, Esc pressed — finalize if we have segments, otherwise cancel.
+            return finishOrCancel(engine: engine, processor: processor)
+        }
+
+        // Legacy key paths (feature command returned .ignored or key not consumed above).
         switch scancode {
-        case SDL_SCANCODE_RETURN, SDL_SCANCODE_KP_ENTER, SDL_SCANCODE_ESCAPE:
-            return finalize(engine: engine, processor: processor)
+        case SDL_SCANCODE_RETURN, SDL_SCANCODE_KP_ENTER:
+            // Enter with empty buffer → finalize if we have enough points.
+            return finishOrCancel(engine: engine, processor: processor)
+        case SDL_SCANCODE_ESCAPE:
+            return finishOrCancel(engine: engine, processor: processor)
         default:
             return .continue
         }
     }
 
-    private func finalize(engine: PhrostEngine, processor: CADCommandProcessor) -> CommandResult {
-        guard points.count >= 2 else {
-            processor.commandPrompt = "Need at least 2 points for a line."
+    // MARK: - Command-line text
+
+    public func handleCommandText(
+        _ text: String, engine: PhrostEngine, processor: CADCommandProcessor
+    ) -> CommandResult {
+        let dynResult = input.handleText(text)
+        switch dynResult {
+        case .ignored:
             return .continue
+        case .consumed:
+            return .handled
+        case .commitValue(let distance):
+            return placePoint(atDistance: distance, engine: engine, processor: processor)
+        case .commitAngle(let angleDeg):
+            processor.commandPrompt = "Angle locked at \(String(format: "%.1f", angleDeg))°. Enter distance."
+            return .handled
+        case .cancel:
+            return finishOrCancel(engine: engine, processor: processor)
         }
-        // Create one CADEntity per segment — each line is independently selectable.
+    }
+
+    // MARK: - Point placement
+
+    /// Place the next point at the given distance from the last placed point,
+    /// using either the locked explicit angle or the current mouse direction.
+    private func placePoint(
+        atDistance distance: Double,
+        engine: PhrostEngine,
+        processor: CADCommandProcessor
+    ) -> CommandResult {
+        guard let last = points.last else {
+            processor.commandPrompt = "Click a start point first."
+            return .handled
+        }
+
+        // Reject zero-length
+        guard abs(distance) > 1e-9 else {
+            processor.commandPrompt = "Distance must not be zero."
+            return .handled
+        }
+
+        let direction: Vector3
+        if let lockedAngle = input.lockedAngleRadians {
+            direction = Vector3(x: cos(lockedAngle), y: sin(lockedAngle), z: 0)
+        } else {
+            let dx = currentMouseWorldX - last.x
+            let dy = currentMouseWorldY - last.y
+            let len = hypot(dx, dy)
+            if len < 1e-9 {
+                direction = Vector3(x: 1, y: 0, z: 0)
+            } else {
+                direction = Vector3(x: dx / len, y: dy / len, z: 0)
+            }
+        }
+
+        let newPoint = Vector3(
+            x: last.x + direction.x * distance,
+            y: last.y + direction.y * distance,
+            z: 0
+        )
+        points.append(newPoint)
+        input.reset()
+
+        processor.commandPrompt = "\(points.count) points. Specify next or Esc/Enter to finish."
+        return .handled
+    }
+
+    // MARK: - Finalize / Cancel
+
+    /// If we have ≥ 2 points, commit them as entities and finish.
+    /// Otherwise cancel the command (return `.finished` to discard).
+    private func finishOrCancel(
+        engine: PhrostEngine,
+        processor: CADCommandProcessor
+    ) -> CommandResult {
+        guard points.count >= 2 else {
+            processor.commandPrompt = "Command cancelled."
+            return .finished
+        }
+        var entities: [CADEntity] = []
+        let layerID = engine.document.activeLayerID ?? UUID()
         for i in 0..<(points.count - 1) {
             let entity = CADEntity(
-                layerID: engine.document.activeLayerID ?? UUID(),
+                layerID: layerID,
                 localGeometry: [.line(start: points[i], end: points[i + 1])])
-            engine.document.addEntity(entity)
+            entities.append(entity)
         }
+        engine.document.addEntities(entities)
         engine.tabManager.markActiveDirty()
         let segmentCount = points.count - 1
         processor.commandPrompt = "Line created with \(segmentCount) segment\(segmentCount == 1 ? "" : "s")."
         return .finished
     }
+
+    // MARK: - Overlay
 
     public func renderOverlay(cam: CameraTransform, engine: PhrostEngine) {
         let drawList = igGetForegroundDrawList_ViewportPtr(nil)
@@ -102,6 +220,27 @@ public final class LineCommand: FeatureCommand {
             let p2 = EngineCameraManager.worldToScreen(worldX: currentMouseWorldX, worldY: currentMouseWorldY, cam: cam)
             ImDrawListAddLine(drawList, ImVec2(x: p1.x, y: p1.y), ImVec2(x: p2.x, y: p2.y),
                               makeCol32(0, 255, 128, 100), 1.0)
+
+            // Show rubber-band distance label
+            let dx = currentMouseWorldX - last.x
+            let dy = currentMouseWorldY - last.y
+            let dist = hypot(dx, dy)
+            let angleDeg = atan2(dy, dx) * 180.0 / .pi
+            let midX = (last.x + currentMouseWorldX) / 2.0
+            let midY = (last.y + currentMouseWorldY) / 2.0
+            let midScreen = EngineCameraManager.worldToScreen(worldX: midX, worldY: midY, cam: cam)
+            let labelText = String(format: "%.2f  <%.1f°", dist, angleDeg)
+            let textSize = ImGuiCalcTextSize(labelText, nil, false, -1.0)
+            let textW = textSize.x
+            let pad: Float = 4.0
+            let fontSize = ImGuiGetFontSize()
+            let bgMin = ImVec2(x: midScreen.x - textW / 2.0 - pad, y: midScreen.y - fontSize - pad * 2)
+            let bgMax = ImVec2(x: midScreen.x + textW / 2.0 + pad, y: midScreen.y + pad)
+            ImDrawListAddRectFilled(drawList, bgMin, bgMax,
+                                    makeCol32(20, 20, 20, 180), 3.0, 0)
+            ImDrawListAddText(drawList,
+                              ImVec2(x: midScreen.x - textW / 2.0, y: midScreen.y - fontSize - pad),
+                              makeCol32(200, 200, 200, 255), labelText, nil)
         }
 
         // Draw vertex dots
@@ -109,6 +248,11 @@ public final class LineCommand: FeatureCommand {
         for pt in points {
             let sp = EngineCameraManager.worldToScreen(worldX: pt.x, worldY: pt.y, cam: cam)
             ImDrawListAddCircleFilled(drawList, ImVec2(x: sp.x, y: sp.y), 3.0, dotCol, 0)
+        }
+
+        // Draw dynamic input pill near cursor when there are points
+        if !points.isEmpty {
+            input.renderOverlay(cam: cam, worldX: currentMouseWorldX, worldY: currentMouseWorldY)
         }
     }
 }

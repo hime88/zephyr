@@ -266,17 +266,31 @@ internal final class EngineInputHandler {
                 }
             } else {
                 // ── Bare key handling (no Ctrl/Cmd held) ──
+                // When a feature command is active, route ALL keys to it first.
+                // If it returns .handled or .finished, stop — don't run global behavior.
+                if let featureCmd = engine.commandProcessor.activeFeatureCommand {
+                    let result = featureCmd.handleKeyDown(
+                        scancode: e.key.scancode, engine: engine,
+                        processor: engine.commandProcessor)
+                    switch result {
+                    case .finished:
+                        engine.commandProcessor.finishFeatureCommand(engine: engine)
+                        return
+                    case .handled:
+                        return
+                    case .continue:
+                        break  // fall through to global hotkey behavior
+                    }
+                }
+
                 switch e.key.scancode {
                 case SDL_SCANCODE_ESCAPE:
                     engine.snap.lockedSnap = nil
                     engine.snap.snapTrackingEngine.clear()
                     engine.snap.lastPolarResult = nil
-                    if let featureCmd = engine.commandProcessor.activeFeatureCommand {
-                        _ = featureCmd.handleKeyDown(
-                            scancode: SDL_SCANCODE_ESCAPE, engine: engine,
-                            processor: engine.commandProcessor)
-                        engine.commandProcessor.finishFeatureCommand(engine: engine)
-                    } else if engine.commandProcessor.activeCommand != nil {
+                    // Feature command already got Esc above; only reach here if
+                    // it returned .continue (didn't handle it) or no command active.
+                    if engine.commandProcessor.activeCommand != nil {
                         engine.commandProcessor.clearCommand()
                     } else if engine.interaction.rectSelectActive {
                         engine.interaction.rectSelectActive = false
@@ -314,19 +328,10 @@ internal final class EngineInputHandler {
                     engine.camera.zoom = 1.0
                     engine.camera.offset = (0, 0)
                 default:
-                    // Route to active feature command
-                    if let featureCmd = engine.commandProcessor.activeFeatureCommand {
-                        let result = featureCmd.handleKeyDown(
-                            scancode: e.key.scancode, engine: engine,
-                            processor: engine.commandProcessor)
-                        if result == .finished {
-                            engine.commandProcessor.finishFeatureCommand(engine: engine)
-                        }
-                    } else if !engine.commandProcessor.commandLineActive
+                    // No feature command active — typing a letter opens the command line.
+                    if !engine.commandProcessor.commandLineActive
                                 && engine.commandProcessor.activeCommand == nil
                                 && engine.commandProcessor.activeFeatureCommand == nil {
-                        // Typing a letter key opens the command line with that character
-                        // injected as the first buffer entry (AutoCAD-style dynamic input).
                         let char = keycodeToChar(e.key.key)
                         if !char.isEmpty {
                             engine.commandProcessor.commandLineActive = true
@@ -340,7 +345,8 @@ internal final class EngineInputHandler {
             }
         }
 
-        // Enter key: confirm layer-move popup, or route to active feature command
+        // Enter key: confirm layer-move popup.
+        // (Feature command already received Enter via the hoisted routing above.)
         if e.key.scancode == SDL_SCANCODE_RETURN || e.key.scancode == SDL_SCANCODE_KP_ENTER {
             if engine.ui.layerMoveActive {
                 if engine.ui.layerMoveSelectionIndex >= 0
@@ -352,13 +358,6 @@ internal final class EngineInputHandler {
                 engine.ui.layerMoveActive = false
                 engine.ui.layerMoveBuffer = ""
                 engine.ui.layerMoveMatches = []
-            } else if let featureCmd = engine.commandProcessor.activeFeatureCommand {
-                let result = featureCmd.handleKeyDown(
-                    scancode: e.key.scancode, engine: engine,
-                    processor: engine.commandProcessor)
-                if result == .finished {
-                    engine.commandProcessor.finishFeatureCommand(engine: engine)
-                }
             }
         }
     }

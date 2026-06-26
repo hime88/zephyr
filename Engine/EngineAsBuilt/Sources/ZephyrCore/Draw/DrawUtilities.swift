@@ -1,9 +1,331 @@
 import Foundation
+import CSDL3
 import ImGui
 import SwiftSDL
 
 // =========================================================================
 // MARK: - DrawUtilities — Shared helpers for drawing command overlays
+// =========================================================================
+
+// =========================================================================
+// MARK: - Dynamic Numeric Input Helper
+// =========================================================================
+
+/// Result returned by `DynamicNumericInput` event handlers.
+/// The owning `FeatureCommand` maps this to `CommandResult`.
+public enum DynamicInputResult {
+    /// Key was not relevant (letters, modifiers, arrows, etc.).
+    case ignored
+    /// Key was consumed (digit, backspace, tab) but no commit occurred.
+    case consumed
+    /// Enter pressed with a valid numeric value in the active buffer.
+    case commitValue(Double)
+    /// Enter pressed in angle field with a valid angle.
+    case commitAngle(Double)
+    /// Esc pressed with all buffers empty — command should cancel.
+    case cancel
+}
+
+/// Named fields that `DynamicNumericInput` can manage.
+/// Tab cycles through the fields in `tabCycle` order.
+public enum DynamicNumericField: String, CaseIterable, Hashable, Sendable {
+    case distance
+    case angle
+    case radius
+    case diameter
+    case width
+    case height
+}
+
+/// Reusable dynamic input state machine for AutoCAD-style direct numeric entry.
+/// Owned by drawing commands (`LineCommand`, `CircleCommand`, `RectangleCommand`, etc.).
+///
+/// Each command configures `tabCycle` to control which fields appear and in what order:
+///
+///     // LineCommand / PolylineCommand:
+///     input.tabCycle = [.distance, .angle]
+///
+///     // CircleCommand (radius only):
+///     input.tabCycle = [.distance]   // interprets .distance as radius
+///
+///     // RectangleCommand:
+///     input.tabCycle = [.width, .height]
+public struct DynamicNumericInput {
+
+    /// Ordered list of fields that Tab cycles through.
+    /// Default: `[.distance, .angle]` (standard Line/Polyline setup).
+    public var tabCycle: [DynamicNumericField] = [.distance, .angle]
+
+    /// Index into `tabCycle` for the currently-active field.
+    public var activeFieldIndex: Int = 0
+
+    /// The field currently receiving keystrokes.
+    public var activeField: DynamicNumericField {
+        tabCycle.isEmpty ? .distance : tabCycle[activeFieldIndex]
+    }
+
+    /// Per-field string buffers.
+    public var buffers: [DynamicNumericField: String] = [:]
+
+    /// When non-nil, the next distance commit uses this angle (in radians) instead
+    /// of the mouse direction. Set by committing an angle or parsing `<angle` syntax.
+    public var lockedAngleRadians: Double? = nil
+
+    public init() {}
+
+    // MARK: - Convenience accessors
+
+    /// Buffer for `.distance` field (most common).
+    public var distanceBuffer: String {
+        get { buffers[.distance, default: ""] }
+        set { buffers[.distance] = newValue }
+    }
+
+    /// Buffer for `.angle` field.
+    public var angleBuffer: String {
+        get { buffers[.angle, default: ""] }
+        set { buffers[.angle] = newValue }
+    }
+
+    /// True when any buffer has content.
+    public var hasInput: Bool {
+        buffers.values.contains { !$0.isEmpty }
+    }
+
+    /// Parses the active field's buffer as Double.
+    public var parsedValue: Double? {
+        Double(buffers[activeField, default: ""])
+    }
+
+    /// Parses the `.angle` buffer in degrees.
+    public var parsedAngleDegrees: Double? {
+        Double(buffers[.angle, default: ""])
+    }
+
+    // MARK: - Key handling
+
+    /// Process a raw SDL scancode. Returns a `DynamicInputResult` that the owning
+    /// command maps to `CommandResult`.
+    public mutating func handleKey(_ scancode: SDL_Scancode) -> DynamicInputResult {
+        let activeBuffer = buffers[activeField, default: ""]
+        let raw = scancode.rawValue
+
+        // --- Digit keys (main keyboard) ---
+        if raw >= SDL_SCANCODE_1.rawValue && raw <= SDL_SCANCODE_9.rawValue {
+            let digit = Character(UnicodeScalar(UInt8(0x31) + UInt8(raw - SDL_SCANCODE_1.rawValue)))
+            appendToActive(String(digit))
+            return .consumed
+        }
+        if scancode == SDL_SCANCODE_0 {
+            appendToActive("0")
+            return .consumed
+        }
+
+        // --- Numpad digits ---
+        if raw >= SDL_SCANCODE_KP_1.rawValue && raw <= SDL_SCANCODE_KP_9.rawValue {
+            let digit = Character(UnicodeScalar(UInt8(0x31) + UInt8(raw - SDL_SCANCODE_KP_1.rawValue)))
+            appendToActive(String(digit))
+            return .consumed
+        }
+        if scancode == SDL_SCANCODE_KP_0 {
+            appendToActive("0")
+            return .consumed
+        }
+
+        // --- Decimal point ---
+        if scancode == SDL_SCANCODE_PERIOD || scancode == SDL_SCANCODE_KP_PERIOD {
+            if !activeBuffer.contains(".") {
+                appendToActive(".")
+            }
+            return .consumed
+        }
+
+        // --- Minus sign (negative numbers) ---
+        if scancode == SDL_SCANCODE_MINUS || scancode == SDL_SCANCODE_KP_MINUS {
+            if activeBuffer.isEmpty {
+                appendToActive("-")
+            }
+            return .consumed
+        }
+
+        // --- Backspace / Delete ---
+        if scancode == SDL_SCANCODE_BACKSPACE || scancode == SDL_SCANCODE_DELETE {
+            popLastFromActive()
+            return .consumed
+        }
+
+        // --- Tab: cycle to next field ---
+        if scancode == SDL_SCANCODE_TAB {
+            guard !tabCycle.isEmpty else { return .consumed }
+            activeFieldIndex = (activeFieldIndex + 1) % tabCycle.count
+            return .consumed
+        }
+
+        // --- Return / Enter ---
+        if scancode == SDL_SCANCODE_RETURN || scancode == SDL_SCANCODE_KP_ENTER {
+            return handleEnter()
+        }
+
+        // --- Escape ---
+        if scancode == SDL_SCANCODE_ESCAPE {
+            if hasInput {
+                reset()
+                return .consumed
+            }
+            return .cancel
+        }
+
+        return .ignored
+    }
+
+    // MARK: - Text handling (command line fallback)
+
+    /// Parse text from the command line. Supports:
+    /// - Plain number: `20` → commitValue
+    /// - Angle-only: `<45` → commitAngle, switches to distance
+    /// - Combined: `20<45` → commitValue + stores angle
+    /// - Relative combined: `@20<45` → same as combined
+    public mutating func handleText(_ text: String) -> DynamicInputResult {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return .ignored }
+
+        // Remove leading @ (relative coordinate marker — same behavior for now)
+        var working = trimmed
+        if working.hasPrefix("@") {
+            working = String(working.dropFirst())
+        }
+
+        // Check for `<angle` suffix
+        if let ltIndex = working.firstIndex(of: "<") {
+            let distPart = String(working[..<ltIndex])
+            let anglePart = String(working[working.index(after: ltIndex)...])
+
+            if let angleDeg = Double(anglePart) {
+                lockedAngleRadians = angleDeg * .pi / 180.0
+                // Switch to distance field
+                if let distIdx = tabCycle.firstIndex(of: .distance) {
+                    activeFieldIndex = distIdx
+                }
+                buffers[.angle] = ""
+            }
+
+            if let dist = Double(distPart), dist != 0 {
+                buffers[.distance] = ""
+                return .commitValue(dist)
+            } else if distPart.isEmpty {
+                // Just angle: `<45`
+                return .consumed
+            }
+            return .consumed
+        }
+
+        // Plain number — commit as value for the active field's purpose
+        if let val = Double(working), val != 0 {
+            return .commitValue(val)
+        }
+
+        return .ignored
+    }
+
+    // MARK: - Render
+
+    /// Draw the dynamic input pill near the given world cursor position.
+    public func renderOverlay(cam: CameraTransform, worldX: Double, worldY: Double) {
+        let drawList = igGetForegroundDrawList_ViewportPtr(nil)
+        guard let drawList = drawList else { return }
+
+        let screen = EngineCameraManager.worldToScreen(worldX: worldX, worldY: worldY, cam: cam)
+        let pillX = screen.x + 16
+        let pillY = screen.y - 32
+
+        if hasInput {
+            let label: String
+            switch activeField {
+            case .angle:
+                label = "<" + (buffers[.angle, default: ""]) + "|"
+            default:
+                let prefix: String
+                switch activeField {
+                case .distance: prefix = ""
+                case .radius:   prefix = "R "
+                case .diameter: prefix = "D "
+                case .width:    prefix = "W "
+                case .height:   prefix = "H "
+                default:        prefix = ""
+                }
+                label = prefix + (buffers[activeField, default: ""]) + "|"
+            }
+
+            if !label.isEmpty {
+                let fontSize = ImGuiGetFontSize()
+                let textSize = ImGuiCalcTextSize(label, nil, false, -1.0)
+                let textW = textSize.x
+                let pad: Float = 6.0
+                let bgMin = ImVec2(x: pillX - pad, y: pillY - pad)
+                let bgMax = ImVec2(x: pillX + textW + pad, y: pillY + fontSize + pad)
+
+                ImDrawListAddRectFilled(
+                    drawList, bgMin, bgMax,
+                    makeCol32(30, 30, 30, 200), 4.0, 0)
+                ImDrawListAddRect(
+                    drawList, bgMin, bgMax,
+                    makeCol32(100, 100, 100, 200), 4.0, 1.5, 0)
+                ImDrawListAddText(
+                    drawList, ImVec2(x: pillX, y: pillY),
+                    makeCol32(255, 255, 255, 255),
+                    label, nil)
+            }
+        }
+    }
+
+    // MARK: - Helpers
+
+    /// Clear all buffers and reset to first field in the tab cycle.
+    public mutating func reset() {
+        buffers.removeAll()
+        lockedAngleRadians = nil
+        activeFieldIndex = 0
+    }
+
+    // MARK: Private
+
+    private mutating func appendToActive(_ char: String) {
+        let field = activeField
+        var buf = buffers[field, default: ""]
+        buf.append(char)
+        buffers[field] = buf
+    }
+
+    @discardableResult
+    private mutating func popLastFromActive() -> Bool {
+        let field = activeField
+        guard var buf = buffers[field], !buf.isEmpty else { return false }
+        buf.removeLast()
+        buffers[field] = buf
+        return true
+    }
+
+    private mutating func handleEnter() -> DynamicInputResult {
+        switch activeField {
+        case .angle:
+            guard let angleDeg = parsedAngleDegrees else { return .consumed }
+            lockedAngleRadians = angleDeg * .pi / 180.0
+            // Switch to distance field
+            if let distIdx = tabCycle.firstIndex(of: .distance) {
+                activeFieldIndex = distIdx
+            }
+            buffers[.angle] = ""
+            return .commitAngle(angleDeg)
+        default:
+            guard let val = parsedValue, val != 0 else { return .consumed }
+            buffers[activeField] = ""
+            return .commitValue(val)
+        }
+    }
+}
+
+// =========================================================================
+// MARK: - Shared helpers
 // =========================================================================
 
 /// Compute an ImGui packed colour (0xAABBGGRR) from 0–255 components.

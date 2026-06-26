@@ -24,7 +24,10 @@ import SwiftSDL
 /// Result returned by `FeatureCommand` event handlers.
 public enum CommandResult {
     /// Command is still active, waiting for more input.
+    /// The event was NOT consumed — the engine should fall through to its default behavior.
     case `continue`
+    /// The event was consumed by the command — the engine should NOT run its default behavior.
+    case handled
     /// Command is finished — the processor will call `cancel()` and release it.
     case finished
 }

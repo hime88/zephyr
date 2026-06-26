@@ -395,6 +395,23 @@ public final class CADDocument {
         invalidateEntityGrid()
     }
 
+    /// Batch-insert multiple entities under a single undo snapshot.
+    /// Use this when creating multi-segment lines, exploded blocks, etc.
+    /// to avoid pushing one snapshot per entity.
+    public func addEntities(_ entities: [CADEntity]) {
+        guard !entities.isEmpty else { return }
+        pushUndo()
+        for var entity in entities {
+            if let bid = entity.blockID, let block = blockTable[bid] {
+                entity.localBoundingBox = block.localBoundingBox
+                entity.updateAnchorCache(from: block.geometry)
+            }
+            entityRegistry[entity.handle] = entity
+        }
+        isDirty = true
+        invalidateEntityGrid()
+    }
+
     public func removeEntity(handle: UUID) {
         pushUndo()
         entityRegistry.removeValue(forKey: handle)

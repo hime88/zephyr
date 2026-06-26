@@ -791,6 +791,8 @@ public final class EngineRenderer {
         let maxSegments = (_foregroundVertexLimit - _foregroundVertexEstimate) / 6
         var segmentsDrawn = 0
 
+        let overGripLimit = engine.cadSelection.selectedHandles.count > engine.gripObjectMax
+
         for handle in engine.cadSelection.selectedHandles {
             guard let entity = engine.document.entity(for: handle),
                   let layer = engine.document.layer(for: entity.layerID), layer.isVisible
@@ -800,14 +802,40 @@ public final class EngineRenderer {
             let isImage = geom?.contains(where: { if case .image = $0 { return true }; return false }) ?? false
             let isBlock = entity.blockID != nil
 
-            guard isImage || isBlock else { continue }
+            if isImage || isBlock {
+                let drawList = igGetBackgroundDrawList(nil)
 
-            let drawList = igGetBackgroundDrawList(nil)
-
-            // For image entities or complex blocks, just draw the bounding box.
-            let primitiveCount = geom?.count ?? 0
-            if isImage || primitiveCount > 50 || segmentsDrawn >= maxSegments {
+                // For image entities or complex blocks, just draw the bounding box.
+                let primitiveCount = geom?.count ?? 0
+                if isImage || primitiveCount > 50 || segmentsDrawn >= maxSegments {
+                    guard let wbb = entity.worldBoundingBox else { continue }
+                    let s0 = engine.camera.transformWorldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: cam)
+                    let s1 = engine.camera.transformWorldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: cam)
+                    let s2 = engine.camera.transformWorldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: cam)
+                    let s3 = engine.camera.transformWorldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: cam)
+                    ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), selColor, lineWidth)
+                    ImDrawListAddLine(drawList, ImVec2(x: s1.x, y: s1.y), ImVec2(x: s2.x, y: s2.y), selColor, lineWidth)
+                    ImDrawListAddLine(drawList, ImVec2(x: s2.x, y: s2.y), ImVec2(x: s3.x, y: s3.y), selColor, lineWidth)
+                    ImDrawListAddLine(drawList, ImVec2(x: s3.x, y: s3.y), ImVec2(x: s0.x, y: s0.y), selColor, lineWidth)
+                    _foregroundVertexEstimate += 8
+                } else {
+                    // For simple block entities, redraw each geometry segment so the
+                    // selection highlight matches the geometry shape (same as hover).
+                    engine.cadBridge.vertexEditor.forEachWorldSegment(handle: handle, in: engine.geometryManager) { x1, y1, x2, y2 in
+                        guard segmentsDrawn < maxSegments else { return }
+                        let s0 = engine.camera.transformWorldToScreen(worldX: x1, worldY: y1, cam: cam)
+                        let s1 = engine.camera.transformWorldToScreen(worldX: x2, worldY: y2, cam: cam)
+                        ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), selColor, lineWidth)
+                        segmentsDrawn += 1
+                    }
+                    _foregroundVertexEstimate += segmentsDrawn * 2
+                }
+            } else if overGripLimit {
+                // When selection exceeds gripObjectMax, grips are suppressed.
+                // Draw gold bounding boxes for non-image, non-block entities
+                // so users can still see what is selected.
                 guard let wbb = entity.worldBoundingBox else { continue }
+                let drawList = igGetBackgroundDrawList(nil)
                 let s0 = engine.camera.transformWorldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: cam)
                 let s1 = engine.camera.transformWorldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: cam)
                 let s2 = engine.camera.transformWorldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: cam)
@@ -817,17 +845,6 @@ public final class EngineRenderer {
                 ImDrawListAddLine(drawList, ImVec2(x: s2.x, y: s2.y), ImVec2(x: s3.x, y: s3.y), selColor, lineWidth)
                 ImDrawListAddLine(drawList, ImVec2(x: s3.x, y: s3.y), ImVec2(x: s0.x, y: s0.y), selColor, lineWidth)
                 _foregroundVertexEstimate += 8
-            } else {
-                // For simple block entities, redraw each geometry segment so the
-                // selection highlight matches the geometry shape (same as hover).
-                engine.cadBridge.vertexEditor.forEachWorldSegment(handle: handle, in: engine.geometryManager) { x1, y1, x2, y2 in
-                    guard segmentsDrawn < maxSegments else { return }
-                    let s0 = engine.camera.transformWorldToScreen(worldX: x1, worldY: y1, cam: cam)
-                    let s1 = engine.camera.transformWorldToScreen(worldX: x2, worldY: y2, cam: cam)
-                    ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), selColor, lineWidth)
-                    segmentsDrawn += 1
-                }
-                _foregroundVertexEstimate += segmentsDrawn * 2
             }
         }
     }

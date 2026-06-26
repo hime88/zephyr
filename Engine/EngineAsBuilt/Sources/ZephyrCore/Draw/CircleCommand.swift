@@ -1,4 +1,5 @@
 import Foundation
+import CSDL3
 import ImGui
 import SwiftSDL
 
@@ -6,7 +7,9 @@ import SwiftSDL
 // MARK: - CircleCommand
 // =========================================================================
 
-/// Interactive circle drawing: center point then radius point.
+/// Interactive circle drawing: center point then radius.
+/// After placing the center, type a radius and press Enter to create
+/// a circle at that exact radius.
 @MainActor
 public final class CircleCommand: FeatureCommand {
 
@@ -18,16 +21,20 @@ public final class CircleCommand: FeatureCommand {
     private var state: State = .waitingForCenter
     private var currentMouseWorldX: Double = 0
     private var currentMouseWorldY: Double = 0
+    private var input = DynamicNumericInput()
 
     public init() {}
 
     public func start(engine: PhrostEngine, processor: CADCommandProcessor) {
         state = .waitingForCenter
-        processor.commandPrompt = "Specify center point (Esc to cancel)."
+        input.reset()
+        input.tabCycle = [.distance]      // "distance" means radius here
+        processor.commandPrompt = "Specify center point or enter radius (Esc to cancel)."
     }
 
     public func cancel(engine: PhrostEngine, processor: CADCommandProcessor) {
         state = .waitingForCenter
+        input.reset()
     }
 
     public func handleMouseClick(
@@ -37,7 +44,8 @@ public final class CircleCommand: FeatureCommand {
         switch state {
         case .waitingForCenter:
             state = .waitingForRadius(centerX: worldX, centerY: worldY)
-            processor.commandPrompt = "Specify radius (Esc to cancel)."
+            input.reset()
+            processor.commandPrompt = "Specify radius or type value + Enter (Esc to cancel)."
             return .continue
 
         case .waitingForRadius(let cx, let cy):
@@ -47,14 +55,7 @@ public final class CircleCommand: FeatureCommand {
                 processor.commandPrompt = "Radius too small. Try again."
                 return .continue
             }
-            let prim: CADPrimitive = .circle(center: center, radius: radius)
-            let entity = CADEntity(
-                layerID: engine.document.activeLayerID ?? UUID(),
-                localGeometry: [prim])
-            engine.document.addEntity(entity)
-            engine.tabManager.markActiveDirty()
-            processor.commandPrompt = "Circle created (r=\(String(format: "%.2f", radius)))."
-            return .finished
+            return commitCircle(center: center, radius: radius, engine: engine, processor: processor)
         }
     }
 
@@ -69,8 +70,70 @@ public final class CircleCommand: FeatureCommand {
     public func handleKeyDown(
         scancode: SDL_Scancode, engine: PhrostEngine, processor: CADCommandProcessor
     ) -> CommandResult {
-        return .continue
+        let dynResult = input.handleKey(scancode)
+        switch dynResult {
+        case .ignored:
+            break
+        case .consumed:
+            return .handled
+        case .commitValue(let radius):
+            guard case .waitingForRadius(let cx, let cy) = state else {
+                processor.commandPrompt = "Click a center point first."
+                return .handled
+            }
+            return commitCircle(center: Vector3(x: cx, y: cy, z: 0), radius: radius,
+                                engine: engine, processor: processor)
+        case .commitAngle:
+            return .handled  // angle not used for circle
+        case .cancel:
+            return .finished
+        }
+
+        // Legacy keys
+        switch scancode {
+        case SDL_SCANCODE_ESCAPE:
+            return .finished
+        default:
+            return .continue
+        }
     }
+
+    public func handleCommandText(
+        _ text: String, engine: PhrostEngine, processor: CADCommandProcessor
+    ) -> CommandResult {
+        let dynResult = input.handleText(text)
+        switch dynResult {
+        case .ignored:  return .continue
+        case .consumed: return .handled
+        case .commitValue(let radius):
+            guard case .waitingForRadius(let cx, let cy) = state else {
+                processor.commandPrompt = "Click a center point first."
+                return .handled
+            }
+            return commitCircle(center: Vector3(x: cx, y: cy, z: 0), radius: radius,
+                                engine: engine, processor: processor)
+        case .commitAngle: return .handled
+        case .cancel:     return .finished
+        }
+    }
+
+    private func commitCircle(center: Vector3, radius: Double,
+                               engine: PhrostEngine, processor: CADCommandProcessor) -> CommandResult {
+        guard radius > 1e-9 else {
+            processor.commandPrompt = "Radius must be positive."
+            return .handled
+        }
+        let prim: CADPrimitive = .circle(center: center, radius: radius)
+        let entity = CADEntity(
+            layerID: engine.document.activeLayerID ?? UUID(),
+            localGeometry: [prim])
+        engine.document.addEntity(entity)
+        engine.tabManager.markActiveDirty()
+        processor.commandPrompt = "Circle created (r=\(String(format: "%.2f", radius)))."
+        return .finished
+    }
+
+    // MARK: - Overlay
 
     public func renderOverlay(cam: CameraTransform, engine: PhrostEngine) {
         guard case .waitingForRadius(let cx, let cy) = state else { return }
@@ -83,16 +146,16 @@ public final class CircleCommand: FeatureCommand {
 
         if radius > 1e-6 {
             let segments = 64
-            var points: [ImVec2] = []
+            var pts: [ImVec2] = []
             for i in 0...segments {
                 let angle = Double(i) * 2.0 * .pi / Double(segments)
                 let wx = cx + cos(angle) * radius
                 let wy = cy + sin(angle) * radius
                 let sp = EngineCameraManager.worldToScreen(worldX: wx, worldY: wy, cam: cam)
-                points.append(ImVec2(x: sp.x, y: sp.y))
+                pts.append(ImVec2(x: sp.x, y: sp.y))
             }
-            points.withUnsafeBufferPointer { buf in
-                ImDrawListAddPolyline(drawList, buf.baseAddress, Int32(points.count), col, 1.5, ImDrawFlags(0))
+            pts.withUnsafeBufferPointer { buf in
+                ImDrawListAddPolyline(drawList, buf.baseAddress, Int32(pts.count), col, 1.5, ImDrawFlags(0))
             }
         }
 
@@ -106,5 +169,16 @@ public final class CircleCommand: FeatureCommand {
         let mp = EngineCameraManager.worldToScreen(worldX: currentMouseWorldX, worldY: currentMouseWorldY, cam: cam)
         ImDrawListAddLine(drawList, ImVec2(x: cp.x, y: cp.y), ImVec2(x: mp.x, y: mp.y),
                           makeCol32(0, 255, 128, 100), 1.0)
+
+        // Show radius label
+        let midX = (cx + currentMouseWorldX) / 2
+        let midY = (cy + currentMouseWorldY) / 2
+        let midScreen = EngineCameraManager.worldToScreen(worldX: midX, worldY: midY, cam: cam)
+        let label = String(format: "R %.2f", radius)
+        ImDrawListAddText(drawList, ImVec2(x: midScreen.x, y: midScreen.y),
+                          makeCol32(255, 255, 255, 200), label, nil)
+
+        // Dynamic input pill
+        input.renderOverlay(cam: cam, worldX: currentMouseWorldX, worldY: currentMouseWorldY)
     }
 }

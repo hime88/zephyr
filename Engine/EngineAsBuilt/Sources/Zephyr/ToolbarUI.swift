@@ -167,8 +167,13 @@ struct ToolbarUI {
                         }
                     }
                 } else if selCount > 1 {
-                    ImGuiTextV(
-                        "%d entities selected  |  Drag to move  |  Grips to scale/rotate", selCount)
+                    if selCount > engine.gripObjectMax {
+                        ImGuiTextV(
+                            "%d entities selected  |  Grips hidden (>%d) |  Drag to move", selCount, engine.gripObjectMax)
+                    } else {
+                        ImGuiTextV(
+                            "%d entities selected  |  Drag to move  |  Grips to scale/rotate", selCount)
+                    }
                 } else {
                     ImGuiTextV("No selection  |  Click/drag to select  |  Space for commands")
                 }

@@ -312,7 +312,48 @@ struct PropertiesPanelUI {
             igSeparator()
         }
 
-        // Section 6: Geometry — delegates to GeometryPanelUI for resolved primitives
+        // Section 6: Geometry — editable Length for single-line entities
+        // (only for top-level, non-block, single-select entities)
+        if selectedHandles.count == 1,
+           entity.blockID == nil,
+           let localGeom = entity.localGeometry,
+           localGeom.count == 1,
+           case .line(let lineStart, let lineEnd, let lineColor) = localGeom[0]
+        {
+            let currentLength = hypot(lineEnd.x - lineStart.x, lineEnd.y - lineStart.y)
+            ImGuiTextV("Length: \(String(format: "%.4f", currentLength))")
+
+            var draftLength = currentLength
+            ImGuiPushItemWidth(ImGuiGetFontSize() * 8)
+            let changed = ImGuiInputDouble("##LineLength", &draftLength, 0.0, 0.0, "%.4f", Int32(ImGuiInputTextFlags_EnterReturnsTrue.rawValue))
+            ImGuiPopItemWidth()
+
+            let deactivated = ImGuiIsItemDeactivatedAfterEdit()
+            let committed = changed || deactivated
+            if committed && abs(draftLength - currentLength) > 1e-9 && draftLength > 1e-9 {
+                // Compute new endpoint preserving start point and original color.
+                let dx = lineEnd.x - lineStart.x
+                let dy = lineEnd.y - lineStart.y
+                let oldLen = hypot(dx, dy)
+                let dir: (x: Double, y: Double)
+                if oldLen > 1e-9 {
+                    dir = (dx / oldLen, dy / oldLen)
+                } else {
+                    dir = (1, 0)  // default direction for zero-length line
+                }
+                let newEnd = Vector3(
+                    x: lineStart.x + dir.x * draftLength,
+                    y: lineStart.y + dir.y * draftLength,
+                    z: 0
+                )
+                let newLine = CADPrimitive.line(start: lineStart, end: newEnd, color: lineColor)
+                engine.document.updateEntityGeometry(for: handle, geometry: [newLine])
+                engine.tabManager.markActiveDirty()
+            }
+            igSeparator()
+        }
+
+        // Section 6 (continued): Geometry tree — delegates to GeometryPanelUI for resolved primitives
         GeometryPanelUI.render(geometry: geometry)
 
         // Section 7: Remaining XData entries not shown in the overrides section
