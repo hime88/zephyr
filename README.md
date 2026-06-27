@@ -19,12 +19,13 @@ Zephyr is a drafting app that runs natively on macOS (Metal) and Windows (Direct
 
 | Layer | Technology |
 |---|---|
-| **Language** | Swift (~42k LOC) |
+| **Language** | Swift (~47k LOC) |
 | **GPU (macOS)** | Metal via SDL3 |
 | **GPU (Windows)** | Direct3D 12 via SDL3 |
 | **UI** | ImGui (SDL3 GPU backend) |
 | **DXF/DWG I/O** | libdxfrw C++ bridge |
-| **PDF** | PDFium (Windows/Linux) · PDFKit (macOS) |
+| **PDF Export** | PDFium (Windows/Linux) · PDFKit (macOS) |
+| **PDF Import** | PDFium (Windows/Linux) · PDFKit (macOS) |
 | **Compression** | zstd via zlib-ng |
 | **Fonts** | SDL_ttf + custom SHX byte-code interpreter |
 | **License** | GPL v2 — free to use, fork, and ship |
@@ -40,9 +41,9 @@ Zephyr is a drafting app that runs natively on macOS (Metal) and Windows (Direct
 
 ### File I/O
 - **DWG import** — Full read via libdxfrw bridge. Blocks, layers, text styles, hatches, splines, polylines with bulge, dimensions.
-- **DXF import/export** — R2007 round-trip. Dimensions, splines, hatches, leaders all preserved.
+- **DXF import/export** — R2007 round-trip. Dimensions, splines, hatches, leaders all preserved. Layer transparency (group code 440) supported.
 - **PDF export** — Vector PDF 1.7 with Bluebeam Revu-compatible Measurement dictionary.
-- **PDF import** — PDFKit on macOS, PDFium on Windows.
+- **PDF import** — Cross-platform: PDFKit on macOS, PDFium on Windows. Page selector with preview. Raster underlay at 150 DPI.
 - **EAB native format** — Fast binary save/load. zstd compression, BVH spatial index, viewport-culled partial loads.
 
 ### Drawing Commands
@@ -57,40 +58,83 @@ Zephyr is a drafting app that runs natively on macOS (Metal) and Windows (Direct
 | HATCH | `H` | Boundary hatches with pattern fill |
 | SPLINE | `SPL` | NURBS splines |
 | RAY | `R` | Infinite construction rays |
-| TEXT | `T` | Single-line and multi-line text |
-| IMAGE | `IMG` | Raster image placement |
-| PDFIMPORT | `PDFI` | PDF underlay import |
+| TEXT | `T` | Multi-line text with font selection, height, rotation, alignment, column width |
+| IMAGE | `IMG` | Raster image placement (PNG, JPG, etc.) |
+| PDFIMPORT | `PDFI` | PDF page underlay import with page selector |
 
 ### Edit & Modify
 | Command | Alias | Description |
 |---|---|---|
-| JOIN | `J` | Join collinear/contiguous entities |
+| JOIN | `J` | Join collinear/contiguous entities — lines and arcs auto-convert to NURBS splines for joining |
 | TRIM | `TR` | Trim to cutting edges |
-| SPLINEEDIT | `SPE` | Edit spline control points |
-| DDEDIT | `ED` | Edit text and attributes in-place |
+| SPLINEEDIT | `SPE` | Edit splines: convert to polyline, close, reverse, insert knot, join |
+| MATCHPROP | `MA` | Format painter — copy layer, color, weight, and linetype from source to destinations |
+| DDEDIT | `ED` | Edit text and attributes in-place via text editor dialog |
 | CLEANSPECKLES | `CS` | Sample-and-erase speckle artifacts from scanned drawings |
 | MEASUREGEOM | `MEA` | Quick Measure — hover to raycast orthogonal distances |
+| ERASE | `E` | Delete selected entities |
+| COPY | `CO` | Duplicate selected entities in-place |
+| BRINGTOFRONT | `BTF` | Move selected entities to front of draw order |
+| SENDTOBACK | `STB` | Move selected entities to back of draw order |
+| BRINGABOVEOBJECTS | `BAO` | Place selection above a picked reference entity |
+| SENDUNDEROBJECTS | `SUO` | Place selection under a picked reference entity |
+| TEXTTOFRONT | `TTF` | Bring all text, dimensions, and leaders to front |
+| HATCHTOBACK | `HTB` | Send all hatches and solid fills to back |
+
+### Clipboard (Copy/Paste)
+| Command | Description |
+|---|---|
+| COPYCLIP | Copy selected entities to clipboard |
+| COPYBASE | Copy selected entities with a specified base point |
+| PASTECLIP | Paste clipboard entities at viewport center |
+| PASTEORIG | Paste clipboard entities at original coordinates |
+| PASTEBLOCK | Paste clipboard entities as a new block |
 
 ### Tool Modes
 SELECT, MOVE, ROTATE, SCALE, PAN, ZOOM
+
+### View Commands
+| Command | Alias | Description |
+|---|---|---|
+| ZOOM | `Z` | AutoCAD-style ZOOM with sub-commands: All, Center, Dynamic, Extents, Left, Previous, Right, Scale, Object, Window, Realtime |
+| ZOOMEXTENTS | `ZOOME` | Zoom to fit all entities |
+| PAN | `P` | Click-and-drag pan (hand cursor mode) |
+| -PAN | | Pan by displacement vector |
+| DVIEW | `DV` | Dynamic view twist (rotate the 2D view angle) |
+| PLAN | | Reset view rotation to standard orientation |
+| VIEW | `VIEWS` | List, select, or cycle model and sheet views |
+| SHEET | `LAYOUT` | Select or cycle imported DXF sheet layouts |
+| MODEL | `2DVIEW` | Switch to the DXF 2D model-space view |
+| NEXTVIEW | | Switch to next model or sheet view |
+| PREVIOUSVIEW | | Switch to previous model or sheet view |
 
 ### Snap Engine
 9 anchor types with two-tier filtering (AABB proximity → exact distance):
 center, vertex, midpoint, insertion point, quadrant, nearest, perpendicular, tangent, intersection
 
 ### Tracking
-- **Polar tracking** at 15°, 30°, 45°, 90° increments
+- **Polar tracking** at configurable angle increments (`POLARANG`)
 - **Object snap tracking (OTRACK)** from acquired points
 - **Extension snapping** along existing geometry
+- **Snap angle** (`SNAPANG`) sets crosshair and ortho rotation angle
+- Toggle via `POLAR`, `OTRACK`, `EXTENSION` commands
 
 ### Grips
-Per-vertex grips on polylines and polygons. Corner, center, midpoint, and rotation grips on selection bounding boxes.
+Per-vertex grips on polylines and polygons. Corner, center, midpoint, and rotation grips on selection bounding boxes. Configurable limits: `SETTINGSGRIPOBJECTMAX` (entity count threshold, default 100) and `SETTINGSGRIPMAX` (total grip squares drawn, default 1000).
 
 ### Blocks
-Block edit in-place (`BEDIT` / `BE`). SIMPLIFY swaps heavy blocks for bounding-box stand-ins during pan/zoom.
+- **Block edit in-place** (`BEDIT` / `BE`) — enter block editor with green banner and titlebar indicator. Save/Discard/Cancel dialog on close.
+- **BCLOSE** — close block editor with save confirmation prompt.
+- **BLOCKS panel** — block library with preview.
+- **SIMPLIFY** — swaps heavy blocks for bounding-box stand-ins during pan/zoom.
+- **MAKE BLOCK** — `BLOCK` / `BMAKE` to create a new block from selected entities.
 
 ### Layers
-Full layer table with ACI color indexing. Per-layer line type and weight. Layer move command (`LAYMOVE` / `LM`).
+- Full layer table with ACI color indexing.
+- Per-layer line type, weight, and **opacity** (DXF group code 440, 0–100%).
+- Layer opacity slider in the layer panel.
+- Layer management commands: `LAYER NEW`, `LAYER DELETE`, `LAYER RENAME`.
+- Layer move command (`LAYERMOVE` / `LM`) — modal dialog with filterable layer list.
 
 ### Constraints (15 types)
 Coincident, parallel, perpendicular, tangent, concentric, horizontal, vertical, equal, distance, angle, fix, midpoint, collinear, symmetric, offset. Numeric solver with cached transforms.
@@ -105,14 +149,16 @@ Full interpreter for DXF formatting codes — `%%u` (underline), `%%o` (overline
 Adaptive subdivision keyed to screen pixels. Curves stay smooth at any zoom, bounded arcs stay bounded.
 
 ### UI
-- **Command palette** — Press Space, type, Tab-cycle through fuzzy-matched autocomplete. 46+ registered commands.
-- **Multi-drawing tabs** — Open multiple files, dirty-state tracking, unsaved-changes confirmation.
+- **Command palette** — Press Space, type, Tab-cycle through fuzzy-matched autocomplete. 100+ registered commands with descriptions and syntax hints.
+- **Multi-drawing tabs** — Open multiple files, dirty-state tracking, unsaved-changes confirmation. Tab management commands: `NEW`, `CLOSE`, `CLOSEALL`, `CLOSEALLOTHERS`.
 - **Draw palette** — Visual tool picker with categorized commands.
-- **Layer panel** — Visibility toggles, color swatches, entity counts.
-- **Properties panel** — Per-entity property editing.
-- **Block panel** — Block library with preview.
-- **Radial navigation** — Right-click radial menu for pan, zoom, fit.
-- **Status bar** — Coordinates, snap mode indicators, entity count.
+- **Layer panel** — Visibility toggles, color swatches, opacity sliders, entity counts.
+- **Properties panel** — Per-entity property editing with geometry inspector.
+- **Block panel** — Block library with preview and insert.
+- **Radial navigation** — Right-click radial menu for pan, zoom, fit (`NAV` to toggle).
+- **Text editor** — Modal dialog for text creation/editing with font selection, height, rotation, alignment, and MTEXT width.
+- **Toolbar** — Quick-access buttons for open, save, save-as, import-PDF, tool modes, AA toggle, nav toggle, edit block, view rotation slider with reset, and dark/light theme toggle. Collapsible to mini-toolbar.
+- **Status bar** — Coordinates, snap mode indicators, entity count, undo/redo depth.
 
 ### Rendering Engine
 - **Metal** (macOS) and **Direct3D 12** (Windows) via SDL3 GPU API
@@ -120,8 +166,15 @@ Adaptive subdivision keyed to screen pixels. Curves stay smooth at any zoom, bou
 - **GPU-based entity picking** — 9×9 pixel-perfect ID rendering
 - **BVH spatial index** — Accelerated hit testing and viewport culling
 
-### As-Built Tracking
-Schema-based XData metadata system for tracking construction as-built conditions. Date-stamped attributes, layer-state snapshots.
+### Display & Theme
+- **Dark/Light theme** toggle (`THEME` command or toolbar button).
+- **Background color** — settable via `SET-BACKGROUND <hex|ACI>`.
+- **Display palette generation counter** ensures line colors update immediately on background/theme change without requiring a zoom.
+- **Anti-aliased line rendering** toggle (`AALINES`/`AA`).
+- **FPS counter** (`FPS` toggle, shown in titlebar).
+
+### Grid
+- Configurable grid with `GRID`, `GRID SPACING <value>`, `GRID ORIGIN <x> <y>`, `GRID SNAP` commands.
 
 ## Nightly Builds
 
