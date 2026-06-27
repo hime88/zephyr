@@ -84,7 +84,7 @@ public final class HatchCommand: FeatureCommand {
                 let worldPts = CADGeometryMath.worldPointsForPrimitive(
                     firstPrim, transform: entity.transform)
                 if worldPts.count >= 3 {
-                    return commitHatch(boundary: worldPts,
+                    return commitHatch(boundary: worldPts, holes: [],
                                        engine: engine, processor: processor)
                 }
             }
@@ -93,12 +93,13 @@ public final class HatchCommand: FeatureCommand {
         }
 
         // ── Pick Points mode ──
-        if let polygon = CADBoundaryDetector.findEnclosingPolygon(
+        if let region = CADBoundaryDetector.findEnclosingRegion(
             seedX: worldX, seedY: worldY,
             document: engine.document,
             maxEdgeCount: 2000
         ) {
-            return commitHatch(boundary: polygon,
+            return commitHatch(boundary: region.outer,
+                               holes: region.holes,
                                engine: engine, processor: processor)
         } else {
             processor.commandPrompt =
@@ -131,6 +132,7 @@ public final class HatchCommand: FeatureCommand {
 
     private func commitHatch(
         boundary: [Vector3],
+        holes: [[Vector3]] = [],
         engine: PhrostEngine, processor: CADCommandProcessor
     ) -> CommandResult {
         let effectivePattern: String
@@ -160,35 +162,55 @@ public final class HatchCommand: FeatureCommand {
         let scale = Double(hatchScale)
         let angle = Double(hatchAngle)
 
-        let hatchPrim: CADPrimitive
+        var hatchPrims: [CADPrimitive] = []
         if fillType == 2, let c1 = primaryColor {
             // Gradient: build a gradient primitive with a fallback color2.
             let c2 = secondaryColor ?? ColorRGBA(
                 r: min(255, c1.r + 60), g: min(255, c1.g + 60),
                 b: min(255, c1.b + 60))
-            hatchPrim = CADPrimitive.gradient(
-                outer: boundary, holes: [],
-                gradientName: gradientName, angle: angle, color1: c1, color2: c2)
+            hatchPrims.append(.gradient(
+                outer: boundary, holes: holes,
+                gradientName: gradientName, angle: angle, color1: c1, color2: c2))
+        } else if effectivePattern.uppercased() == "SOLID" || effectivePattern.isEmpty {
+            hatchPrims.append(.fillComplexPolygon(
+                outer: boundary,
+                holes: holes,
+                color: effectiveColor
+            ))
         } else {
-            hatchPrim = CADPrimitive.hatch(
-                boundary: boundary,
+            if let bg = effectiveBgColor {
+                hatchPrims.append(.fillComplexPolygon(
+                    outer: boundary,
+                    holes: holes,
+                    color: bg
+                ))
+            }
+
+            let patternBoundary = holes.isEmpty
+                ? boundary
+                : DXFHatchGenerator.connectHoles(outer: boundary, holes: holes)
+
+            hatchPrims.append(.hatch(
+                boundary: patternBoundary,
                 pattern: effectivePattern,
                 scale: scale,
                 angle: angle,
                 color: effectiveColor,
-                backgroundColor: effectiveBgColor
-            )
+                backgroundColor: nil
+            ))
         }
 
         let layerID = engine.document.activeLayerID
             ?? engine.document.allLayers.first?.handle
             ?? UUID()
-        let entity = CADEntity(layerID: layerID, localGeometry: [hatchPrim])
+        let entity = CADEntity(layerID: layerID, localGeometry: hatchPrims)
 
         engine.document.addEntity(entity)
         engine.tabManager.markActiveDirty()
 
-        processor.commandPrompt = "Hatch created (\(boundary.count) boundary vertices)."
+        processor.commandPrompt = holes.isEmpty
+            ? "Hatch created (\(boundary.count) boundary vertices)."
+            : "Hatch created (\(boundary.count) boundary vertices, \(holes.count) hole(s))."
         state = .completed
         return .finished
     }
