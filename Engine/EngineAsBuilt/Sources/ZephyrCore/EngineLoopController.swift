@@ -444,6 +444,13 @@ public final class EngineLoopController {
                     let mid = Vector3(x: (metadata.defPoint.x + metadata.defPoint2.x) / 2.0, y: (metadata.defPoint.y + metadata.defPoint2.y) / 2.0, z: 0)
                     let dist = hypot(metadata.textMidpoint.x - mid.x, metadata.textMidpoint.y - mid.y)
                     metadata.textMidpoint = Vector3(x: mid.x + dir.x * dist, y: mid.y + dir.y * dist, z: 0)
+                } else if case .arcLength = metadata.type, let center = metadata.defPoint4 {
+                    // arc grip (defPoint) moved — change dimRadius, text follows proportionally
+                    let newRadius = hypot(metadata.defPoint.x - center.x, metadata.defPoint.y - center.y)
+                    // Compute text angle relative to center
+                    let textAngle = atan2(metadata.textMidpoint.y - center.y, metadata.textMidpoint.x - center.x)
+                    // Keep text at same angle but at new radius
+                    metadata.textMidpoint = Vector3(x: center.x + cos(textAngle) * newRadius, y: center.y + sin(textAngle) * newRadius, z: 0)
                 }
                 // Recompute measurement
                 if case .linearOrRotated = metadata.type, let p2 = metadata.defPoint3 {
@@ -515,6 +522,11 @@ public final class EngineLoopController {
                     let cv = Vector3(x: cursor.x - mid.x, y: cursor.y - mid.y, z: 0)
                     let projT = cv.x * dir.x + cv.y * dir.y
                     constrainedTextMid = Vector3(x: mid.x + dir.x * projT, y: mid.y + dir.y * projT, z: 0)
+                } else if case .arcLength = metadata.type, let center = metadata.defPoint4 {
+                    // Constrain text to slide along the arc at current dimRadius
+                    let dimRadius = hypot(metadata.defPoint.x - center.x, metadata.defPoint.y - center.y)
+                    let cursorAngle = atan2(cursor.y - center.y, cursor.x - center.x)
+                    constrainedTextMid = Vector3(x: center.x + cos(cursorAngle) * dimRadius, y: center.y + sin(cursorAngle) * dimRadius, z: 0)
                 }
                 metadata.textMidpoint = constrainedTextMid
                 let style = metadata.styleOverrides ?? engine.document.dimensionStyles[metadata.styleName] ?? CADDimensionStyle.default

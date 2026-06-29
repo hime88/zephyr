@@ -140,12 +140,17 @@ public final class DimArcLengthCommand: FeatureCommand {
         // Use an arc symbol prefix or just format it
         let valueStr = style.formatMeasurement(length)
         
+        // Place the dimension grip at the mid-angle of the arc, offset from text
+        let midAngle = startAngle + sweep / 2.0
+        let arcGripPos = Vector3(x: center.x + cos(midAngle) * dimRadius, y: center.y + sin(midAngle) * dimRadius, z: 0)
+        
         let metadata = CADDimensionMetadata(
             type: .arcLength,
             measurement: length,
-            defPoint: dimPos,
+            defPoint: arcGripPos,
             defPoint2: Vector3(x: center.x + cos(startAngle)*radius, y: center.y + sin(startAngle)*radius, z: 0),
             defPoint3: Vector3(x: center.x + cos(endAngle)*radius, y: center.y + sin(endAngle)*radius, z: 0),
+            defPoint4: center,
             textMidpoint: dimPos,
             rotationAngle: 0
         )

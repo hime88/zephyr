@@ -271,6 +271,38 @@ public enum DimensionPrimitives {
             
             return primitives
             
+        case .arcLength:
+            // defPoint = dimPos, defPoint2/3 = arc start/end, defPoint4 = center
+            guard let originalStart = metadata.defPoint2 as Vector3?,
+                  let originalEnd = metadata.defPoint3,
+                  let center = metadata.defPoint4 else { return [] }
+            let dimPos = metadata.defPoint
+            
+            let startAngle = atan2(originalStart.y - center.y, originalStart.x - center.x)
+            let endAngle = atan2(originalEnd.y - center.y, originalEnd.x - center.x)
+            let dimRadius = hypot(dimPos.x - center.x, dimPos.y - center.y)
+            
+            // Dimension arc at dimRadius
+            primitives.append(.arc(center: center, radius: dimRadius, startAngle: startAngle, endAngle: endAngle, color: color))
+            
+            // Extension lines from original arc to dimension arc
+            let d1 = Vector3(x: center.x + cos(startAngle) * dimRadius, y: center.y + sin(startAngle) * dimRadius, z: 0)
+            let d2 = Vector3(x: center.x + cos(endAngle) * dimRadius, y: center.y + sin(endAngle) * dimRadius, z: 0)
+            primitives.append(.line(start: originalStart, end: d1, color: color))
+            primitives.append(.line(start: originalEnd, end: d2, color: color))
+            
+            // Arrowheads pointing along tangent
+            let sweep = endAngle - startAngle
+            let a1Dir = Vector3(x: -sin(startAngle), y: cos(startAngle), z: 0)
+            let a2Dir = Vector3(x: sin(endAngle), y: -cos(endAngle), z: 0)
+            let sweepSign: Double = sweep >= 0 ? 1.0 : -1.0
+            primitives.append(contentsOf: arrowhead(tip: d1, direction: Vector3(x: a1Dir.x * sweepSign, y: a1Dir.y * sweepSign, z: 0), size: style.arrowSize, color: color))
+            primitives.append(contentsOf: arrowhead(tip: d2, direction: Vector3(x: a2Dir.x * (-sweepSign), y: a2Dir.y * (-sweepSign), z: 0), size: style.arrowSize, color: color))
+            
+            primitives.append(dimensionText(position: metadata.textMidpoint, value: valueStr, rotation: 0, style: style, color: color))
+            
+            return primitives
+            
         default:
             // Fallback just draws text
             primitives.append(dimensionText(position: metadata.textMidpoint, value: valueStr, rotation: metadata.rotationAngle, style: style, color: color))

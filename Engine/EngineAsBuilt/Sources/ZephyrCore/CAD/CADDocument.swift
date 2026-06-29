@@ -694,6 +694,7 @@ public final class CADDocument {
             entity.updateAnchorCache(from: geometry)
             entityRegistry[entityHandle] = entity
         }
+        invalidateEntityGrid()
     }
 
     public func setXData(for handle: UUID, key: String, value: XDataValue) {

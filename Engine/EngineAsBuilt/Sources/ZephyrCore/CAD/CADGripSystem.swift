@@ -298,6 +298,9 @@ public enum CADGripSystem {
         if metadata.type == .radius {
             // Only arcPoint grip (center is fixed to the arc/circle)
             addGrip(.vertex(entity: handle, index: 1001), worldPos: metadata.defPoint2)
+        } else if metadata.type == .arcLength {
+            // Only dimPos grip to move the dimension arc in/out
+            addGrip(.vertex(entity: handle, index: 1000), worldPos: metadata.defPoint)
         } else {
             // Dimension line position / first point grip
             addGrip(.vertex(entity: handle, index: 1000), worldPos: metadata.defPoint)
