@@ -648,7 +648,8 @@ public final class CADDocument {
     public func updateEntityLive(_ entity: CADEntity) {
         guard entityRegistry[entity.handle] != nil else { return }
         var updated = entity
-        updated.localBoundingBox = CADEntity.computeLocalBoundingBox(blockID: updated.blockID, localGeometry: updated.localGeometry)
+        let computedBB = CADEntity.computeLocalBoundingBox(blockID: updated.blockID, localGeometry: updated.localGeometry)
+        updated.localBoundingBox = computedBB ?? updated.localBoundingBox
         updated.updateAnchorCache()
         entityRegistry[updated.handle] = updated
         // Don't invalidate grid or push undo.

@@ -283,10 +283,14 @@ public final class EngineLoopController {
             let moved = interaction.dragTotalWorldX != 0 || interaction.dragTotalWorldY != 0
             switch interaction.gripType {
             case .vertex(let entityHandle, let index):
-                engine.cadBridge.vertexEditor.endVertexDirectEdit(
-                    handle: entityHandle, vertexIndex: index)
-                engine.document.invalidateEntityGrid()
-                engine.geometryManager.buildSpatialGridIfNeeded()
+                // Dimension grips (indices 1000-1002): skip vertex-direct-edit;
+                // geometry was already updated live via block regeneration.
+                if index < 1000 {
+                    engine.cadBridge.vertexEditor.endVertexDirectEdit(
+                        handle: entityHandle, vertexIndex: index)
+                    engine.document.invalidateEntityGrid()
+                    engine.geometryManager.buildSpatialGridIfNeeded()
+                }
             case .midpoint(let entityHandle, let aIndex, let bIndex):
                 engine.cadBridge.vertexEditor.endVertexDirectEdit(
                     handle: entityHandle, vertexIndex: aIndex)
@@ -382,6 +386,115 @@ public final class EngineLoopController {
             interaction.dragLastWorldY = snapWY
             interaction.dragTotalWorldX += dx
             interaction.dragTotalWorldY += dy
+
+            // ── Dimension grip drag: update metadata and regenerate block geometry ──
+            if case .vertex(let entityHandle, let index) = interaction.gripType,
+               index >= 1000, index <= 1002,
+               let entity = engine.document.entity(for: entityHandle),
+               let box = entity.dimensionMetadata,
+               let bid = entity.blockID {
+                var metadata = box.value
+                let newPos: Vector3
+                if engine.snap.currentSnapResult != nil {
+                    newPos = Vector3(x: snapWX, y: snapWY, z: 0)
+                } else {
+                    // Accumulate from last known grip position
+                    newPos = Vector3(
+                        x: interaction.dragLastWorldX,
+                        y: interaction.dragLastWorldY, z: 0)
+                }
+                switch index {
+                case 1000: metadata.defPoint = newPos       // dimension line position
+                case 1001: metadata.defPoint2 = newPos       // first extension line origin
+                case 1002: metadata.defPoint3 = newPos       // second extension line origin
+                default: break
+                }
+                // Update text midpoint for linear/aligned dimensions
+                if case .linearOrRotated = metadata.type, let p2 = metadata.defPoint3 {
+                    let dimStart: Vector3, dimEnd: Vector3
+                    let midX = (metadata.defPoint2.x + p2.x) / 2.0
+                    let midY = (metadata.defPoint2.y + p2.y) / 2.0
+                    let distX = abs(metadata.defPoint.x - midX)
+                    let distY = abs(metadata.defPoint.y - midY)
+                    if distY > distX {
+                        dimStart = Vector3(x: metadata.defPoint2.x, y: metadata.defPoint.y, z: 0)
+                        dimEnd = Vector3(x: p2.x, y: metadata.defPoint.y, z: 0)
+                    } else {
+                        dimStart = Vector3(x: metadata.defPoint.x, y: metadata.defPoint2.y, z: 0)
+                        dimEnd = Vector3(x: metadata.defPoint.x, y: p2.y, z: 0)
+                    }
+                    metadata.textMidpoint = Vector3(x: (dimStart.x + dimEnd.x) / 2.0, y: (dimStart.y + dimEnd.y) / 2.0, z: 0)
+                } else if case .aligned = metadata.type, let p2 = metadata.defPoint3 {
+                    let dir = Vector3(x: cos(metadata.rotationAngle), y: sin(metadata.rotationAngle), z: 0)
+                    let perp = Vector3(x: -dir.y, y: dir.x, z: 0).normalized
+                    let v = Vector3(x: metadata.defPoint.x - metadata.defPoint2.x, y: metadata.defPoint.y - metadata.defPoint2.y, z: 0)
+                    let offset = v.x * perp.x + v.y * perp.y
+                    let dimStart = Vector3(x: metadata.defPoint2.x + perp.x * offset, y: metadata.defPoint2.y + perp.y * offset, z: 0)
+                    let dimEnd = Vector3(x: p2.x + perp.x * offset, y: p2.y + perp.y * offset, z: 0)
+                    metadata.textMidpoint = Vector3(x: (dimStart.x + dimEnd.x) / 2.0, y: (dimStart.y + dimEnd.y) / 2.0, z: 0)
+                }
+                // Recompute measurement for linear/aligned
+                if case .linearOrRotated = metadata.type, let p2 = metadata.defPoint3 {
+                    metadata.measurement = hypot(metadata.defPoint2.x - p2.x, metadata.defPoint2.y - p2.y)
+                } else if case .aligned = metadata.type, let p2 = metadata.defPoint3 {
+                    metadata.measurement = hypot(metadata.defPoint2.x - p2.x, metadata.defPoint2.y - p2.y)
+                }
+                // Regenerate dimension primitives
+                let style = metadata.styleOverrides ?? engine.document.dimensionStyles[metadata.styleName] ?? CADDimensionStyle.default
+                let newPrimitives = DimensionPrimitives.generatePrimitives(for: metadata, style: style, color: .white)
+                engine.document.updateBlockGeometryLive(handle: bid, geometry: newPrimitives)
+                // Update entity metadata (live, no undo yet)
+                var updatedEntity = entity
+                updatedEntity.dimensionMetadata = CADDimensionMetadataBox(metadata)
+                updatedEntity.localBoundingBox = engine.document.block(for: bid)?.localBoundingBox ?? updatedEntity.localBoundingBox
+                engine.document.updateEntityLive(updatedEntity)
+                return
+            }
+
+            // ── Dimension center grip drag: slide text along the dimension line ──
+            if case .center = interaction.gripType,
+               let gripHandle = interaction.gripHandle,
+               let entity = engine.document.entity(for: gripHandle),
+               let box = entity.dimensionMetadata,
+               let bid = entity.blockID {
+                var metadata = box.value
+                let cursor = Vector3(x: snapWX, y: snapWY, z: 0)
+                // Project cursor onto the dimension line axis so text stays on the line
+                var constrainedTextMid = metadata.textMidpoint
+                if case .linearOrRotated = metadata.type, let p2 = metadata.defPoint3 {
+                    let midX = (metadata.defPoint2.x + p2.x) / 2.0
+                    let midY = (metadata.defPoint2.y + p2.y) / 2.0
+                    let isHorizontal = abs(metadata.defPoint.y - midY) > abs(metadata.defPoint.x - midX)
+                    if isHorizontal {
+                        // Horizontal dimension line — constrain Y, slide X
+                        constrainedTextMid = Vector3(x: cursor.x, y: metadata.defPoint.y, z: 0)
+                    } else {
+                        // Vertical dimension line — constrain X, slide Y
+                        constrainedTextMid = Vector3(x: metadata.defPoint.x, y: cursor.y, z: 0)
+                    }
+                } else if case .aligned = metadata.type, let p2 = metadata.defPoint3 {
+                    // Project cursor onto the oblique dimension line axis
+                    let dir = Vector3(x: p2.x - metadata.defPoint2.x, y: p2.y - metadata.defPoint2.y, z: 0).normalized
+                    let perp = Vector3(x: -dir.y, y: dir.x, z: 0).normalized
+                    // Current perpendicular offset from the line
+                    let v = Vector3(x: metadata.textMidpoint.x - metadata.defPoint2.x, y: metadata.textMidpoint.y - metadata.defPoint2.y, z: 0)
+                    let offset = v.x * perp.x + v.y * perp.y
+                    // Project cursor onto the axis, then add the perpendicular offset
+                    let cv = Vector3(x: cursor.x - metadata.defPoint2.x, y: cursor.y - metadata.defPoint2.y, z: 0)
+                    let projT = cv.x * dir.x + cv.y * dir.y
+                    constrainedTextMid = Vector3(
+                        x: metadata.defPoint2.x + dir.x * projT + perp.x * offset,
+                        y: metadata.defPoint2.y + dir.y * projT + perp.y * offset, z: 0)
+                }
+                metadata.textMidpoint = constrainedTextMid
+                let style = metadata.styleOverrides ?? engine.document.dimensionStyles[metadata.styleName] ?? CADDimensionStyle.default
+                let newPrimitives = DimensionPrimitives.generatePrimitives(for: metadata, style: style, color: .white)
+                engine.document.updateBlockGeometryLive(handle: bid, geometry: newPrimitives)
+                var updatedEntity = entity
+                updatedEntity.dimensionMetadata = CADDimensionMetadataBox(metadata)
+                engine.document.updateEntityLive(updatedEntity)
+                return
+            }
 
             if case .vertex(let entityHandle, let index) = interaction.gripType {
                 engine.cadBridge.moveVertexDirect(
@@ -577,9 +690,12 @@ public final class EngineLoopController {
                 nowTicks: now)
 
             // Ortho constraint: hard-lock cursor to nearest cardinal axis from reference point.
-            // Runs here (after OTRACK, before wide extension snap) so ortho gets priority.
+            // Runs here (after OTRACK, before wide extension snap) but only when no entity
+            // anchor snap is within the narrow acquisition threshold. Entity snap points
+            // (endpoints, midpoints, centers, etc.) take priority over ortho constraints.
             if snapMgr.orthoEnabled,
-               snapMgr.currentSnapResult == nil {
+               snapMgr.currentSnapResult == nil,
+               discreteAnchorSnap == nil {
                 var orthoRef: Vector3? = nil
                 if let mref = engine.commandProcessor.commandRefPoint, engine.commandProcessor.activeCommand == "MOVE" {
                     orthoRef = Vector3(x: mref.0, y: mref.1, z: 0)

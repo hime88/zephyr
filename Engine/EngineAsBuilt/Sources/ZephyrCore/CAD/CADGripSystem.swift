@@ -68,6 +68,15 @@ public enum CADGripSystem {
             guard let layer = document.layer(for: entity.layerID), layer.isVisible else { continue }
             guard let geometry = document.resolvedGeometry(for: entity), !geometry.isEmpty else { continue }
 
+            // ── Dimension entities: generate dimension-specific control grips
+            //     from metadata instead of individual block primitive grips.
+            if let dimBox = entity.dimensionMetadata {
+                results.append(contentsOf: dimensionGrips(
+                    for: handle, metadata: dimBox.value,
+                    entity: entity, cam: cam))
+                continue
+            }
+
             if simplifyComplexBlocks && geometry.count > 50 { continue }
 
             // ── Image entities: generate entity-level grips (center + 4 corners)
@@ -257,6 +266,44 @@ public enum CADGripSystem {
         }
         let corners = local.corners.prefix(4)
         return corners.map { entity.transform.transformPoint($0) }
+    }
+
+    // MARK: - Dimension Grips
+
+    /// Generate dimension-specific control grips from metadata instead of
+    /// individual block primitive grips. This gives the user grips at the
+    /// meaningful control points: text position, dimension line position,
+    /// and extension line origins.
+    private static func dimensionGrips(
+        for handle: UUID,
+        metadata: CADDimensionMetadata,
+        entity: CADEntity,
+        cam: CameraTransform
+    ) -> [CADSelectionManager.CadGripInfo] {
+        var grips: [CADSelectionManager.CadGripInfo] = []
+
+        func addGrip(_ type: CADSelectionManager.GripType, worldPos: Vector3) {
+            let sp = EngineCameraManager.worldToScreen(
+                worldX: worldPos.x, worldY: worldPos.y, cam: cam)
+            grips.append(CADSelectionManager.CadGripInfo(
+                handle: handle, grip: type, screenPos: sp, worldPos: worldPos))
+        }
+
+        // Text midpoint grip — reposition text along/around the dimension line
+        addGrip(.center, worldPos: metadata.textMidpoint)
+
+        // Dimension line position grip — move the dimension line closer/farther
+        addGrip(.vertex(entity: handle, index: 1000), worldPos: metadata.defPoint)
+
+        // First extension line origin
+        addGrip(.vertex(entity: handle, index: 1001), worldPos: metadata.defPoint2)
+
+        // Second extension line origin (if present)
+        if let p3 = metadata.defPoint3 {
+            addGrip(.vertex(entity: handle, index: 1002), worldPos: p3)
+        }
+
+        return grips
     }
 
     // MARK: - Primitive Classification Helpers

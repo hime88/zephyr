@@ -15,22 +15,22 @@ public enum CADDimensionType: Int, Sendable, Hashable, Codable {
 public struct CADDimensionMetadata: Sendable, Hashable, Codable {
     public let styleName: String
     public let type: CADDimensionType
-    public let measurement: Double
+    public var measurement: Double
     
     // Group 10,20,30 — definition point (varies by type)
-    public let defPoint: Vector3
+    public var defPoint: Vector3
     // Group 13,23,33 — first extension line origin / arc point
-    public let defPoint2: Vector3
+    public var defPoint2: Vector3
     // Group 14,24,34 — second extension line origin / jog point (optional)
-    public let defPoint3: Vector3?
+    public var defPoint3: Vector3?
     // Group 15,25,35 — optional point (vertex/center)
     public let defPoint4: Vector3?
     // Group 16,26,36 — optional point (arc endpoint)
     public let defPoint5: Vector3?
     // Group 11,21,31 — text midpoint
-    public let textMidpoint: Vector3
+    public var textMidpoint: Vector3
     
-    public let textOverride: String?
+    public var textOverride: String?
     public let rotationAngle: Double   // radians
     
     // Group 70 flags (bit 6 = ordinate X-type, bit 7 = text is user-positioned, etc.)

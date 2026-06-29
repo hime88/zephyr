@@ -19,35 +19,45 @@ import SwiftSDL
 public final class DDEditCommand: FeatureCommand {
 
     private enum State {
-        case findingTarget       // Looking for a text entity to edit
+        case findingTarget       // Looking for a text/dimension entity to edit
         case editorOpen          // Editor is displayed
         case finished
     }
 
     private var state: State = .findingTarget
     private var targetHandle: UUID? = nil
+    private var isEditingDimension: Bool = false
 
     public init() {}
 
     public func start(engine: PhrostEngine, processor: CADCommandProcessor) {
         print("[DDEDIT] start() called")
-        // Check if there's already a text-containing entity selected.
+        // Check if there's already a dimension entity or text entity selected.
         if let handle = engine.cadSelection.lastSelectedHandle,
-           let entity = engine.document.entity(for: handle),
-           entity.xdata["dxf.text"] != nil {
-            print("[DDEDIT] Found selected text entity: \(handle)")
-            targetHandle = handle
-            openEditor(for: handle, engine: engine, processor: processor)
-            return
+           let entity = engine.document.entity(for: handle) {
+            if entity.xdata["dxf.text"] != nil {
+                print("[DDEDIT] Found selected text entity: \(handle)")
+                targetHandle = handle
+                isEditingDimension = false
+                openEditor(for: handle, engine: engine, processor: processor)
+                return
+            }
+            if entity.dimensionMetadata != nil {
+                print("[DDEDIT] Found selected dimension entity: \(handle)")
+                targetHandle = handle
+                isEditingDimension = true
+                openDimensionEditor(for: handle, engine: engine, processor: processor)
+                return
+            }
         }
 
-        // No text entity selected — prompt user
-        print("[DDEDIT] No text entity selected, prompting user to select one")
+        // No text or dimension entity selected — prompt user
+        print("[DDEDIT] No text/dimension entity selected, prompting user to select one")
         state = .findingTarget
         targetHandle = nil
         engine.textManager.isEditorActive = false
         engine.textManager.editorResult = .active
-        processor.commandPrompt = "Select a text entity to edit (Esc to cancel)."
+        processor.commandPrompt = "Select a text or dimension entity to edit (Esc to cancel)."
     }
 
     public func cancel(engine: PhrostEngine, processor: CADCommandProcessor) {
@@ -62,20 +72,28 @@ public final class DDEditCommand: FeatureCommand {
     ) -> CommandResult {
         switch state {
         case .findingTarget:
-            // Try to hit-test for a text entity
+            // Try to hit-test for a text or dimension entity
             let hitHandle = engine.cadSelection.hitTest(
                 worldX: worldX, worldY: worldY,
                 document: engine.document,
                 threshold: 12.0 / engine.camera.zoom
             )
             if let handle = hitHandle,
-               let entity = engine.document.entity(for: handle),
-               entity.xdata["dxf.text"] != nil {
-                targetHandle = handle
-                openEditor(for: handle, engine: engine, processor: processor)
-                return .continue
+               let entity = engine.document.entity(for: handle) {
+                if entity.xdata["dxf.text"] != nil {
+                    targetHandle = handle
+                    isEditingDimension = false
+                    openEditor(for: handle, engine: engine, processor: processor)
+                    return .continue
+                }
+                if entity.dimensionMetadata != nil {
+                    targetHandle = handle
+                    isEditingDimension = true
+                    openDimensionEditor(for: handle, engine: engine, processor: processor)
+                    return .continue
+                }
             }
-            // Clicked something that isn't text — continue looking
+            // Clicked something that isn't text or a dimension — continue looking
             return .continue
 
         case .editorOpen, .finished:
@@ -189,7 +207,137 @@ public final class DDEditCommand: FeatureCommand {
         processor.commandPrompt = "Editing text. Modify and click OK."
     }
 
+    private func openDimensionEditor(
+        for handle: UUID,
+        engine: PhrostEngine,
+        processor: CADCommandProcessor
+    ) {
+        print("[DDEDIT] openDimensionEditor() for handle: \(handle)")
+        guard let entity = engine.document.entity(for: handle),
+              let box = entity.dimensionMetadata,
+              let bid = entity.blockID,
+              let block = engine.document.block(for: bid)
+        else {
+            print("[DDEDIT] Dimension entity or block not found!")
+            processor.commandPrompt = "Entity no longer exists."
+            state = .finished
+            return
+        }
+
+        // Extract text from the dimension block's .text primitive
+        var text = box.value.textOverride ?? ""
+        var fontName = "simplex.shx"
+        var height: Double = 3.5
+        var alignH: Int = 4  // Center Middle
+        var alignV: Int = 2  // Middle
+        var mtextWidth: Double = 0
+
+        for prim in block.geometry {
+            if case .text(_, let t, let h, _, let style, let ah, let av, let mw, _) = prim {
+                if text.isEmpty { text = t }
+                height = h
+                if let s = style { fontName = s }
+                alignH = ah
+                alignV = av
+                mtextWidth = mw ?? 0
+                break
+            }
+        }
+
+        print("[DDEDIT] dimension text='\(text.prefix(50))' font=\(fontName) height=\(height)")
+
+        engine.textManager.editorState = TextEditorState(
+            text: text,
+            fontName: fontName,
+            height: height,
+            rotation: 0,
+            alignH: alignH,
+            alignV: alignV,
+            mtextWidth: mtextWidth,
+            targetHandle: handle
+        )
+        engine.textManager.isEditorActive = true
+        engine.textManager.editorResult = .active
+        state = .editorOpen
+        processor.commandPrompt = "Editing dimension text. Modify and click OK."
+    }
+
     private func applyEdits(
+        from editorState: TextEditorState,
+        engine: PhrostEngine,
+        processor: CADCommandProcessor
+    ) {
+        guard let handle = editorState.targetHandle,
+              let entity = engine.document.entity(for: handle) else {
+            processor.commandPrompt = "Entity no longer exists."
+            return
+        }
+
+        let text = editorState.text
+        guard !text.isEmpty else {
+            processor.commandPrompt = "Edit cancelled (empty text)."
+            return
+        }
+
+        if isEditingDimension {
+            applyDimensionEdits(from: editorState, entity: entity, engine: engine, processor: processor)
+        } else {
+            applyTextEdits(from: editorState, engine: engine, processor: processor)
+        }
+    }
+
+    private func applyDimensionEdits(
+        from editorState: TextEditorState,
+        entity: CADEntity,
+        engine: PhrostEngine,
+        processor: CADCommandProcessor
+    ) {
+        guard let box = entity.dimensionMetadata,
+              let bid = entity.blockID,
+              let block = engine.document.block(for: bid)
+        else { return }
+
+        let text = editorState.text
+        let height = editorState.height
+        let fontName = editorState.fontName.isEmpty ? "simplex.shx" : editorState.fontName
+        let alignH = editorState.alignH
+        let alignV = editorState.alignV
+        let mtextWidth = editorState.mtextWidth
+
+        // Update the .text primitive in the block geometry
+        var newGeometry = block.geometry
+        for i in 0..<newGeometry.count {
+            if case .text(let pos, _, _, let rotation, _, _, _, _, let color) = newGeometry[i] {
+                newGeometry[i] = .text(
+                    position: pos,
+                    text: text,
+                    height: height,
+                    rotation: rotation,
+                    style: fontName,
+                    alignH: alignH,
+                    alignV: alignV,
+                    mtextWidth: mtextWidth > 0 ? mtextWidth : nil,
+                    color: color
+                )
+                break
+            }
+        }
+
+        // Update the block geometry
+        engine.document.updateBlockGeometry(handle: bid, geometry: newGeometry)
+
+        // Update dimension metadata text override
+        var metadata = box.value
+        metadata.textOverride = text
+        var updatedEntity = entity
+        updatedEntity.dimensionMetadata = CADDimensionMetadataBox(metadata)
+        engine.document.updateEntityLive(updatedEntity)
+
+        engine.tabManager.markActiveDirty()
+        processor.commandPrompt = "Dimension text updated."
+    }
+
+    private func applyTextEdits(
         from editorState: TextEditorState,
         engine: PhrostEngine,
         processor: CADCommandProcessor
