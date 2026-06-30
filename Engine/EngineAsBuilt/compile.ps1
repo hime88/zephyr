@@ -25,6 +25,8 @@ $env:SDL3_TTF_INCLUDE = "C:/dev/SDL3/include"
 $env:SDL3_TTF_LIB = "C:/dev/SDL3/lib/arm64"
 $env:DXFRW_INCLUDE = "C:/dev/libdxfrw/src"
 $env:DXFRW_LIB = "C:/dev/libdxfrw/build/Release"
+$env:DWG_INCLUDE = "C:/dev/libredwg/include"
+$env:DWG_LIB = "C:/dev/libredwg/build"
 $env:ZLIB_NG_INCLUDE = "C:/dev/zlib-ng/include"
 $env:ZLIB_NG_LIB = "C:/dev/zlib-ng/lib/arm64"
 # PDFium (optional - for PDF import). Download via Engine\SwiftPdfium\download_pdfium.ps1
@@ -108,6 +110,11 @@ Write-Host ""
 Write-Host "### Copying libdxfrw DLLs to build output... ###"
 
 Copy-Item -Path "$dxfrwDllSource\dxfrw.dll"  -Destination $dllDest -Force -ErrorAction SilentlyContinue
+
+# Copy LibreDWG DLL
+$dwgDllSource = "C:\dev\libredwg\build"
+Copy-Item -Path "$dwgDllSource\libredwg.dll" -Destination $dllDest -Force -ErrorAction SilentlyContinue
+Write-Host "  libredwg.dll"
 
 if ($isRelease) {
     Copy-Item -Path $iconvRelease -Destination $dllDest -Force -ErrorAction SilentlyContinue

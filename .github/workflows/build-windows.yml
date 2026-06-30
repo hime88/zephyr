@@ -335,7 +335,41 @@ jobs:
           Get-ChildItem "$dxfrwRoot\build\Release" -Filter "*.dll" | ForEach-Object { Write-Host "  $($_.Name)" }
 
       # ------------------------------------------------------------------
-# 6. Download PDFium
+# 6. Build LibreDWG from source
+      # ------------------------------------------------------------------
+      - name: Build LibreDWG
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $dwgRoot = "$env:DEV_ROOT\libredwg"
+
+          Write-Host "Cloning LibreDWG..."
+          git clone --depth 1 https://github.com/libredwg/libredwg.git $dwgRoot
+
+          Write-Host "Initializing submodules (jsmn)..."
+          Push-Location $dwgRoot
+          git submodule update --init --recursive
+          Pop-Location
+
+          Write-Host "Configuring LibreDWG (cmake) for ${{ matrix.cmake-arch }}..."
+          Push-Location $dwgRoot
+          cmake -S . -B build `
+            -G Ninja `
+            -DCMAKE_C_COMPILER=cl `
+            -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
+
+          Write-Host "Building LibreDWG..."
+          cmake --build build --config Release
+          if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
+          Pop-Location
+
+          Write-Host "--- LibreDWG build output ---"
+          Get-ChildItem "$dwgRoot\build" -Filter "*.lib" | ForEach-Object { Write-Host "  $($_.Name)" }
+          Get-ChildItem "$dwgRoot\build" -Filter "*.dll" | ForEach-Object { Write-Host "  $($_.Name)" }
+
+      # ------------------------------------------------------------------
+# 7. Download PDFium
       # ------------------------------------------------------------------
       - name: Download PDFium
         run: |
@@ -371,7 +405,7 @@ jobs:
           Remove-Item $tgzPath -Force -ErrorAction SilentlyContinue
 
       # ------------------------------------------------------------------
-# 7. Install Swift for Windows
+# 8. Install Swift for Windows
       # ------------------------------------------------------------------
       - name: Install Swift
         uses: SwiftyLab/setup-swift@v1
@@ -379,7 +413,7 @@ jobs:
           swift-version: '6.3.2'
 
       # ------------------------------------------------------------------
-# 8. Locate Visual Studio and DXC
+# 9. Locate Visual Studio and DXC
       # ------------------------------------------------------------------
       - name: Locate Build Tools
         id: tools
@@ -408,7 +442,7 @@ jobs:
           "dxcPath=$dxcPath" >> $env:GITHUB_OUTPUT
 
       # ------------------------------------------------------------------
-# 9. Swift Build
+# 10. Swift Build
       # ------------------------------------------------------------------
       - name: Swift Build (${{ inputs.configuration || 'debug' }})
         run: |
@@ -434,6 +468,10 @@ jobs:
           # libdxfrw
           $env:DXFRW_INCLUDE = "C:/dev/libdxfrw/src"
           $env:DXFRW_LIB     = "C:/dev/libdxfrw/build/Release"
+
+          # LibreDWG
+          $env:DWG_INCLUDE = "C:/dev/libredwg/include"
+          $env:DWG_LIB     = "C:/dev/libredwg/build"
 
           # zlib-ng (pre-built, see Download zlib-ng step)
           $env:ZLIB_NG_INCLUDE = "C:/dev/zlib-ng/include"
@@ -477,6 +515,8 @@ jobs:
           Write-Host "SDL3_TTF_LIB       = $env:SDL3_TTF_LIB"
           Write-Host "DXFRW_INCLUDE      = $env:DXFRW_INCLUDE"
           Write-Host "DXFRW_LIB          = $env:DXFRW_LIB"
+          Write-Host "DWG_INCLUDE        = $env:DWG_INCLUDE"
+          Write-Host "DWG_LIB            = $env:DWG_LIB"
           Write-Host "ZLIB_NG_INCLUDE    = $env:ZLIB_NG_INCLUDE"
           Write-Host "ZLIB_NG_LIB        = $env:ZLIB_NG_LIB"
           Write-Host "ICONV_LIB          = $env:ICONV_LIB"
@@ -502,7 +542,7 @@ jobs:
           Write-Host "Swift build succeeded."
 
       # ------------------------------------------------------------------
-# 10. Compile HLSL Shaders with DXC
+# 11. Compile HLSL Shaders with DXC
       # ------------------------------------------------------------------
       - name: Compile Shaders
         run: |
@@ -549,7 +589,7 @@ jobs:
           }
 
       # ------------------------------------------------------------------
-# 11. Copy runtime DLLs to build output
+# 12. Copy runtime DLLs to build output
       # ------------------------------------------------------------------
       - name: Copy Runtime DLLs
         run: |
@@ -586,6 +626,15 @@ jobs:
             Write-Host "  dxfrw.dll"
           } else {
             Write-Warning "dxfrw.dll not found."
+          }
+
+          # LibreDWG
+          $dwgDll = "C:\dev\libredwg\build\libredwg.dll"
+          if (Test-Path $dwgDll) {
+            Copy-Item -Path $dwgDll -Destination $dllDest -Force
+            Write-Host "  libredwg.dll"
+          } else {
+            Write-Warning "libredwg.dll not found."
           }
 
           # iconv
@@ -638,7 +687,7 @@ jobs:
           Get-ChildItem $dllDest -Filter "*.dll" | ForEach-Object { Write-Host "  $($_.Name)" }
 
       # ------------------------------------------------------------------
-# 12. Package for distribution
+# 13. Package for distribution
       # ------------------------------------------------------------------
       - name: Package Build
         run: |
@@ -672,7 +721,7 @@ jobs:
           Get-Item $zipPath | ForEach-Object { Write-Host "  Size: $($_.Length) bytes" }
 
       # ------------------------------------------------------------------
-# 13. Upload to Nightly Release
+# 14. Upload to Nightly Release
       # ------------------------------------------------------------------
       - name: Upload to Nightly Release
         uses: softprops/action-gh-release@v2

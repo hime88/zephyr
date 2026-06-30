@@ -1,0 +1,124 @@
+// swift-tools-version: 6.2.0
+import Foundation  // Required for ProcessInfo
+import PackageDescription
+
+// --- Read Environment Variables ---
+let env = ProcessInfo.processInfo.environment
+let dwgIncludePath = env["DWG_INCLUDE"]
+let dwgLibraryPath = env["DWG_LIB"]
+
+// --- Diagnostic Print ---
+print("--- SwiftDWG Manifest Diagnostic ---")
+print("DWG_INCLUDE env var is: \(dwgIncludePath ?? "NOT SET")")
+print("DWG_LIB env var is: \(dwgLibraryPath ?? "NOT SET")")
+print("------------------------------------")
+
+// --- Prepare Settings ---
+var cSettings: [CSetting] = []
+var swiftSettings: [SwiftSetting] = []
+var linkerSettings: [LinkerSetting] = []
+
+// --- Platform Specific Settings ---
+// SPM defines DEBUG=1 in debug builds, but LibreDWG uses DEBUG as an identifier.
+// Undefine it so the C bridge compiles cleanly.
+cSettings.append(.unsafeFlags(["-U", "DEBUG"]))
+
+// LibreDWG DLL linkage on Windows needs these defines
+#if os(Windows)
+cSettings.append(.define("_CRT_NONSTDC_NO_DEPRECATE", to: ""))
+cSettings.append(.define("DLL_EXPORT", to: ""))
+cSettings.append(.define("ENABLE_SHARED", to: ""))
+#endif
+
+#if os(macOS)
+    // --- LibreDWG Include Path ---
+    if let includePath = dwgIncludePath {
+        cSettings.append(.unsafeFlags(["-I", includePath]))
+        // Also need the src dir for bits.h
+        cSettings.append(.unsafeFlags(["-I", includePath + "/../src"]))
+        swiftSettings.append(.unsafeFlags(["-Xcc", "-I\(includePath)"]))
+        swiftSettings.append(.unsafeFlags(["-Xcc", "-I\(includePath)/../src"]))
+    } else {
+        let brewPrefix = ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"] ?? "/opt/homebrew"
+        cSettings.append(.unsafeFlags(["-I", "\(brewPrefix)/include"]))
+        swiftSettings.append(.unsafeFlags(["-Xcc", "-I\(brewPrefix)/include"]))
+    }
+
+    // --- LibreDWG Library Path ---
+    if let libPath = dwgLibraryPath {
+        linkerSettings.append(.unsafeFlags(["-L\(libPath)"]))
+    } else {
+        let brewPrefix = ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"] ?? "/opt/homebrew"
+        linkerSettings.append(.unsafeFlags(["-L\(brewPrefix)/lib"]))
+    }
+
+    linkerSettings.append(.linkedLibrary("redwg"))
+    // iconv is a system library on macOS
+    linkerSettings.append(.linkedLibrary("iconv"))
+
+#elseif os(Windows)
+    // --- LibreDWG Include Path ---
+    if let includePath = dwgIncludePath {
+        cSettings.append(.unsafeFlags(["-I", includePath]))
+        // Also need the src dir for bits.h and the build/src dir for config.h
+        cSettings.append(.unsafeFlags(["-I", includePath + "/../src"]))
+        cSettings.append(.unsafeFlags(["-I", includePath + "/../build/src"]))
+        swiftSettings.append(.unsafeFlags(["-Xcc", "-I", "-Xcc", "\(includePath)"]))
+        swiftSettings.append(.unsafeFlags(["-Xcc", "-I", "-Xcc", "\(includePath)/../src"]))
+        swiftSettings.append(.unsafeFlags(["-Xcc", "-I", "-Xcc", "\(includePath)/../build/src"]))
+    }
+
+    // --- LibreDWG Library Path ---
+    if let libPath = dwgLibraryPath {
+        linkerSettings.append(.unsafeFlags(["-L\(libPath)"]))
+    }
+
+    linkerSettings.append(.linkedLibrary("libredwg"))
+
+#elseif os(Linux)
+    // --- LibreDWG Include Path ---
+    if let includePath = dwgIncludePath {
+        cSettings.append(.unsafeFlags(["-I", includePath]))
+        cSettings.append(.unsafeFlags(["-I", includePath + "/../src"]))
+        swiftSettings.append(.unsafeFlags(["-Xcc", "-I\(includePath)"]))
+        swiftSettings.append(.unsafeFlags(["-Xcc", "-I\(includePath)/../src"]))
+    }
+
+    // --- LibreDWG Library Path ---
+    if let libPath = dwgLibraryPath {
+        linkerSettings.append(.unsafeFlags(["-L\(libPath)"]))
+    }
+
+    linkerSettings.append(.linkedLibrary("redwg"))
+#endif
+
+let package = Package(
+    name: "SwiftDWG",
+    platforms: [
+        .macOS(.v10_15),
+    ],
+    products: [
+        .library(name: "CDWG", targets: ["CDWG"]),
+        .library(name: "SwiftDWG", targets: ["SwiftDWG"]),
+    ],
+    targets: [
+        // C interop target: compiles dwg_bridge.c, exposes dwg_bridge.h
+        .target(
+            name: "CDWG",
+            path: "Dependencies/CDWG",
+            publicHeadersPath: ".",
+            cSettings: cSettings,
+            swiftSettings: swiftSettings,
+            linkerSettings: linkerSettings
+        ),
+
+        // Swift wrapper target
+        .target(
+            name: "SwiftDWG",
+            dependencies: [
+                .target(name: "CDWG"),
+            ],
+            swiftSettings: swiftSettings
+        ),
+    ]
+)

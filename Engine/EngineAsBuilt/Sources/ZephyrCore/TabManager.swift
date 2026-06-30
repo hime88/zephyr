@@ -246,13 +246,37 @@ public final class TabManager {
         return idx
     }
 
-    /// Open a DXF or EAB file in a new tab (auto-detects format from extension).
+    /// Open a DXF, DWG or EAB file in a new tab (auto-detects format from extension).
     /// - Parameter url: The file URL to import.
-    /// - Throws: `DXFImportError` or `EABError` if parsing fails.
+    /// - Throws: `DXFImportError`, `DWGImportError` or `EABError` if parsing fails.
     @discardableResult
     public func openTab(url: URL) throws -> Int {
-        if url.pathExtension.lowercased() == "eab" {
+        let ext = url.pathExtension.lowercased()
+        if ext == "eab" {
             return try openEAB(url: url)
+        }
+        if ext == "dwg" {
+            let (layers, blocks, entities, textStyleFonts, linetypePatterns) = try DWGImporter.importDWG(filePath: url.path)
+            for font in Set(textStyleFonts.values) {
+                CADFontManager.debugFontLookup(font)
+            }
+            let doc = CADDocument()
+            doc.importLayersBlocksEntities(layers: layers, blocks: blocks, entities: entities)
+            doc.textStyleFonts = textStyleFonts
+            doc.linetypePatterns = linetypePatterns
+            doc.savedRevision = doc.editRevision
+            let view = DrawingView(name: "Model", kind: .model, document: doc)
+            let displayName = url.lastPathComponent
+            let tab = DocumentTab(
+                document: doc,
+                fileURL: url,
+                displayName: displayName,
+                drawingViews: [view]
+            )
+            tabs.append(tab)
+            let idx = tabs.count - 1
+            switchToTab(at: idx)
+            return idx
         }
         let imported = try DXFImporter.importDXFViews(filePath: url.path)
 
@@ -506,18 +530,21 @@ public final class TabManager {
     }
 
     /// Save the active tab to a new file URL (sync, legacy — blocks UI).
-    /// Auto-detects format from file extension (.eab → binary, .dxf → DXF).
-    /// - Throws: `DXFExportError` or `EABError` if writing fails.
+    /// Auto-detects format from file extension (.eab → binary, .dwg → DWG, .dxf → DXF).
+    /// - Throws: `DXFExportError`, `DWGExportError` or `EABError` if writing fails.
     public func saveActiveTabAs(url: URL) throws {
         guard var tab = activeTab else { throw TabError.noActiveTab }
         if tab.editingBlockID != nil {
             throw TabError.cannotSaveWhileInBlockEditor
         }
-        if url.pathExtension.lowercased() == "eab" {
+        let ext = url.pathExtension.lowercased()
+        if ext == "eab" {
             try EABWriter.write(views: tab.drawingViews, to: url)
-        } else if url.pathExtension.lowercased() == "pdf" {
+        } else if ext == "pdf" {
             let bg = getBackgroundColor?()
             try PDFExporter.export(document: tab.document, to: url, backgroundColor: bg)
+        } else if ext == "dwg" {
+            try DWGExporter.export(document: tab.document, to: url)
         } else {
             try DXFExporter.export(document: tab.document, to: url)
         }

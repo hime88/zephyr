@@ -195,6 +195,7 @@ Adaptive subdivision keyed to screen pixels. Curves stay smooth at any zoom, bou
 | Command | Alias | Description |
 |---|---|---|
 | UNITS | `UNIT`, `DDUNITS` | Set or display the drawing base unit (mm, cm, m, in, ft, yd). Flows through to PDF `/Measure` dictionary for Bluebeam Revu, DXF `$INSUNITS`, and EAB file header. |
+| SETUISCALE | `ZOOMUI`, `UISCALE` | Override UI zoom scale (e.g. `SETUISCALE 1.5` for 150%). `SETUISCALE AUTO` reverts to system DPI. Scales all UI elements including fonts. |
 
 ## Nightly Builds
 

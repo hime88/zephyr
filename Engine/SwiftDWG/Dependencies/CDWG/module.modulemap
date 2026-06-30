@@ -1,0 +1,4 @@
+module CDWG [system][extern_c] {
+    header "dwg_bridge.h"
+    export *
+}

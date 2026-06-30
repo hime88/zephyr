@@ -65,6 +65,17 @@ public final class PhrostEngine {
     internal var scaleY: Float = 0
     internal var currentDpiScale: Float = 1.0
     internal var currentUiScale: Float = 1.0
+    /// The effective UI scale currently applied (auto or override).
+    /// Custom UI drawing code should multiply hardcoded sizes by this value.
+    public var effectiveUiScale: Float { currentUiScale }
+    /// Manual UI scale override. nil = auto (derived from system DPI).
+    /// Set via SETUISCALE command. 1.0 = 100%, 1.5 = 150%, etc.
+    /// Setting to 0 or "auto" reverts to system-derived scale.
+    public var uiScaleOverride: Float? = nil
+    /// Deferred rebuild flag — set by applyUiScaleOverride when called during a frame.
+    /// The render loop checks this before ImGuiNewFrame() and performs the rebuild
+    /// while the font atlas is unlocked.
+    internal var _pendingUiScaleRebuild: (dpiScale: Float, fbScale: Float, force: Bool)? = nil
 
     // Grip infos for the current frame (computed once, used for hit-test and render).
     public internal(set) var _cachedCadGrips: [CADSelectionManager.CadGripInfo] = []
@@ -599,36 +610,36 @@ public final class PhrostEngine {
         let geistMedium = fontsDir + "/Geist-Medium.ttf"
         let geistLarge = fontsDir + "/Geist-Medium.ttf"
 
-        let fbScale = (uiScale > 0.001) ? dpiScale / uiScale : 1.0
+        let dpi = dpiScale   // physical display pixel density; fonts rasterized at this resolution
         var loadedFont = false
 
         if FileManager.default.fileExists(atPath: geistReg) {
             let fontConfigPtr = ImFontConfig_ImFontConfig()!
-            fontConfigPtr.pointee.RasterizerDensity = fbScale
+            fontConfigPtr.pointee.RasterizerDensity = dpi
             _ = ImFontAtlas_AddFontFromFileTTF(atlas, geistReg, 16.0 * uiScale, fontConfigPtr, glyphRangesPtr)
             ImFontConfig_destroy(fontConfigPtr)
             loadedFont = true
             
             if FileManager.default.fileExists(atPath: geistBold) {
                 let boldConfig = ImFontConfig_ImFontConfig()!
-                boldConfig.pointee.RasterizerDensity = fbScale
+                boldConfig.pointee.RasterizerDensity = dpi
                 self.ui.boldFont = ImFontAtlas_AddFontFromFileTTF(atlas, geistBold, 16.0 * uiScale, boldConfig, glyphRangesPtr)
                 ImFontConfig_destroy(boldConfig)
             }
             
             let smallConfig = ImFontConfig_ImFontConfig()!
-            smallConfig.pointee.RasterizerDensity = fbScale
+            smallConfig.pointee.RasterizerDensity = dpi
             self.ui.smallFont = ImFontAtlas_AddFontFromFileTTF(atlas, geistSmall, 13.0 * uiScale, smallConfig, glyphRangesPtr)
             ImFontConfig_destroy(smallConfig)
 
             if FileManager.default.fileExists(atPath: geistMono) {
                 let monoConfig = ImFontConfig_ImFontConfig()!
-                monoConfig.pointee.RasterizerDensity = fbScale
+                monoConfig.pointee.RasterizerDensity = dpi
                 self.ui.monoFont = ImFontAtlas_AddFontFromFileTTF(atlas, geistMono, 14.0 * uiScale, monoConfig, glyphRangesPtr)
                 ImFontConfig_destroy(monoConfig)
 
                 let commandTitleConfig = ImFontConfig_ImFontConfig()!
-                commandTitleConfig.pointee.RasterizerDensity = fbScale
+                commandTitleConfig.pointee.RasterizerDensity = dpi
                 self.ui.commandTitleFont = ImFontAtlas_AddFontFromFileTTF(
                     atlas, geistMono, 16.0 * uiScale, commandTitleConfig, glyphRangesPtr)
                 ImFontConfig_destroy(commandTitleConfig)
@@ -636,7 +647,7 @@ public final class PhrostEngine {
 
             if FileManager.default.fileExists(atPath: geistMonoRegular) {
                 let commandPillConfig = ImFontConfig_ImFontConfig()!
-                commandPillConfig.pointee.RasterizerDensity = fbScale
+                commandPillConfig.pointee.RasterizerDensity = dpi
                 self.ui.commandPillFont = ImFontAtlas_AddFontFromFileTTF(
                     atlas, geistMonoRegular, 14.0 * uiScale, commandPillConfig, glyphRangesPtr)
                 ImFontConfig_destroy(commandPillConfig)
@@ -644,7 +655,7 @@ public final class PhrostEngine {
 
             if FileManager.default.fileExists(atPath: geistMedium) {
                 let commandDescriptionConfig = ImFontConfig_ImFontConfig()!
-                commandDescriptionConfig.pointee.RasterizerDensity = fbScale
+                commandDescriptionConfig.pointee.RasterizerDensity = dpi
                 self.ui.commandDescriptionFont = ImFontAtlas_AddFontFromFileTTF(
                     atlas, geistMedium, 13.0 * uiScale, commandDescriptionConfig, glyphRangesPtr)
                 ImFontConfig_destroy(commandDescriptionConfig)
@@ -652,11 +663,11 @@ public final class PhrostEngine {
 
             if FileManager.default.fileExists(atPath: geistLarge) {
                 let largeConfig = ImFontConfig_ImFontConfig()!
-                largeConfig.pointee.RasterizerDensity = fbScale
+                largeConfig.pointee.RasterizerDensity = dpi
                 self.ui.largeFont = ImFontAtlas_AddFontFromFileTTF(atlas, geistLarge, 20.0 * uiScale, largeConfig, glyphRangesPtr)
                 
                 let titleConfig = ImFontConfig_ImFontConfig()!
-                titleConfig.pointee.RasterizerDensity = fbScale
+                titleConfig.pointee.RasterizerDensity = dpi
                 self.ui.titleFont = ImFontAtlas_AddFontFromFileTTF(atlas, geistLarge, 34.0 * uiScale, titleConfig, glyphRangesPtr)
                 
                 ImFontConfig_destroy(largeConfig)
@@ -680,7 +691,7 @@ public final class PhrostEngine {
         for fontPath in fontPaths {
             if FileManager.default.fileExists(atPath: fontPath) {
                 let fontConfigPtr = ImFontConfig_ImFontConfig()!
-                fontConfigPtr.pointee.RasterizerDensity = fbScale
+                fontConfigPtr.pointee.RasterizerDensity = dpi
                 if loadedFont {
                     fontConfigPtr.pointee.MergeMode = true
                 }
@@ -697,7 +708,7 @@ public final class PhrostEngine {
                     }
                     if FileManager.default.fileExists(atPath: boldFontPath) {
                         let boldFontConfigPtr = ImFontConfig_ImFontConfig()!
-                        boldFontConfigPtr.pointee.RasterizerDensity = fbScale
+                        boldFontConfigPtr.pointee.RasterizerDensity = dpi
                         self.ui.boldFont = ImFontAtlas_AddFontFromFileTTF(atlas, boldFontPath, 16.0 * uiScale, boldFontConfigPtr, glyphRangesPtr)
                         ImFontConfig_destroy(boldFontConfigPtr)
                         print("Loaded bold font at: \(boldFontPath)")
@@ -760,25 +771,52 @@ public final class PhrostEngine {
     }
 
     /// Recompute UI scale and rebuild font atlas if display scale or framebuffer density changes.
+    /// Safe to call during a frame — the actual rebuild is deferred to before the next NewFrame.
     public func updateScale(dpiScale: Float, fbScale: Float, force: Bool = false) {
-        let newUiScale = (fbScale > 0.001) ? dpiScale / fbScale : 1.0
+        let autoScale = (fbScale > 0.001) ? dpiScale / fbScale : 1.0
+        let newUiScale = uiScaleOverride ?? autoScale
         
         let oldUiScale = self.currentUiScale
         let oldDpiScale = self.currentDpiScale
         
         if force || newUiScale != oldUiScale || dpiScale != oldDpiScale {
-            let factor = newUiScale / oldUiScale
-            if factor != 1.0 {
-                if let style = ImGuiGetStyle() {
-                    ImGuiStyleScaleAllSizes(style, factor)
-                }
-            }
-            
-            self.currentDpiScale = dpiScale
-            self.currentUiScale = newUiScale
-            
-            setupFontAtlas(dpiScale: dpiScale, uiScale: newUiScale)
-            camera.renderGeneration &+= 1
+            // Defer the atlas rebuild and style rescaling to before the next NewFrame.
+            // If the atlas is currently locked (during a frame), touching it will assert.
+            _pendingUiScaleRebuild = (dpiScale, fbScale, force)
         }
+    }
+
+    /// Perform a pending UI scale rebuild. Must be called outside of an ImGui frame
+    /// (before ImGuiNewFrame / after ImGuiRender), when the font atlas is unlocked.
+    internal func applyPendingUiScaleRebuild() {
+        guard let (dpiScale, fbScale, _) = _pendingUiScaleRebuild else { return }
+        _pendingUiScaleRebuild = nil
+
+        let autoScale = (fbScale > 0.001) ? dpiScale / fbScale : 1.0
+        let newUiScale = uiScaleOverride ?? autoScale
+        let oldUiScale = self.currentUiScale
+
+        let factor = oldUiScale > 0.001 ? newUiScale / oldUiScale : 1.0
+        if factor != 1.0 {
+            if let style = ImGuiGetStyle() {
+                ImGuiStyleScaleAllSizes(style, factor)
+            }
+        }
+
+        self.currentDpiScale = dpiScale
+        self.currentUiScale = newUiScale
+
+        setupFontAtlas(dpiScale: dpiScale, uiScale: newUiScale)
+        camera.renderGeneration &+= 1
+    }
+
+    /// Apply a UI scale override or revert to auto (pass nil or 0).
+    /// Triggers a full font atlas rebuild and ImGui style rescaling.
+    public func applyUiScaleOverride(_ override: Float?) {
+        let validOverride: Float? = (override != nil && override! > 0.001) ? override : nil
+        guard validOverride != uiScaleOverride else { return }
+        uiScaleOverride = validOverride
+        let fbScale = (windowWidth > 0) ? Float(pixelWidth) / Float(windowWidth) : 1.0
+        updateScale(dpiScale: currentDpiScale, fbScale: fbScale, force: true)
     }
 }

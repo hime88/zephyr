@@ -1125,6 +1125,33 @@ public final class CADDocument {
         try importDXF(url: tmpFile)
     }
 
+    @MainActor
+    public func importDWG(url: URL) throws {
+        let (layers, blocks, entities, textStyleFonts, linetypePatterns) = try DWGImporter.importDWG(filePath: url.path)
+
+        for font in Set(textStyleFonts.values) {
+            CADFontManager.debugFontLookup(font)
+        }
+
+        self.textStyleFonts = textStyleFonts
+        self.linetypePatterns = linetypePatterns
+        for layer in layers { layerTable[layer.handle] = layer }
+        if activeLayerID == nil, let first = layers.first { activeLayerID = first.handle }
+        for block in blocks { blockTable[block.handle] = block }
+        for entity in entities { entityRegistry[entity.handle] = entity }
+        markEdited(regenerate: true)
+        rebuildEntityGrid()
+    }
+
+    @MainActor
+    public func importDWG(data: Data) throws {
+        let tmpDir = FileManager.default.temporaryDirectory
+        let tmpFile = tmpDir.appendingPathComponent("import_\(UUID().uuidString).dwg")
+        try data.write(to: tmpFile)
+        defer { try? FileManager.default.removeItem(at: tmpFile) }
+        try importDWG(url: tmpFile)
+    }
+
     /// Bulk import with full EAB metadata: layers, blocks, entities, constraints, solved transforms, and unit.
     /// Loads data without creating an undo entry (undo stack starts empty after file open).
     public func importEAB(

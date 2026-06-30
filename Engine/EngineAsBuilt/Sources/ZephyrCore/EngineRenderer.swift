@@ -339,6 +339,9 @@ public final class EngineRenderer {
         engine.io.pointee.DisplayFramebufferScale = ImVec2(x: engine.scaleX, y: engine.scaleY)
         engine.io.pointee.DeltaTime = Float(deltaSec)
 
+        // Apply any deferred UI scale rebuild before NewFrame locks the font atlas.
+        engine.applyPendingUiScaleRebuild()
+
         ImGuiNewFrame()
 
         if let wantCapture = ImGuiGetIO()?.pointee.WantCaptureMouse {

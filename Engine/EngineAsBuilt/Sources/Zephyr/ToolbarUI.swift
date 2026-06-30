@@ -46,12 +46,12 @@ struct ToolbarUI {
 
             // File operations: Open, Save, Save As
             if igSmallButton("Open..") {
-                engine.fileBrowser.open(filterExtension: "dxf;eab")
+                engine.fileBrowser.open(filterExtension: "dxf;dwg;eab")
             }
             ImGuiSameLine(0, 4)
             if ImGuiIsItemHovered(0) {
                 ImGuiBeginTooltip()
-                ImGuiTextV("Ctrl+O to open a DXF file in a new tab")
+                ImGuiTextV("Ctrl+O to open a DXF/DWG file in a new tab")
                 ImGuiEndTooltip()
             }
 
@@ -61,7 +61,7 @@ struct ToolbarUI {
                 // Use async save; fall back to Save As browser if no file URL
                 engine.tabManager.startSaveActiveTab()
                 if engine.tabManager.activeFileURL == nil {
-                    engine.saveFileBrowser.open(filterExtension: "dxf;eab;pdf")
+                    engine.saveFileBrowser.open(filterExtension: "dxf;dwg;eab;pdf")
                 }
             }
             if ImGuiIsItemHovered(0) {
@@ -73,7 +73,7 @@ struct ToolbarUI {
             ImGuiSameLine(0, 4)
 
             if igSmallButton("Save As..") {
-                engine.saveFileBrowser.open(filterExtension: "dxf;eab;pdf")
+                engine.saveFileBrowser.open(filterExtension: "dxf;dwg;eab;pdf")
             }
             if ImGuiIsItemHovered(0) {
                 ImGuiBeginTooltip()

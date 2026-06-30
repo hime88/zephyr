@@ -145,7 +145,7 @@ public struct CommandDescriptor: Sendable {
     public nonisolated(unsafe) static var allCommands: [CommandDescriptor] = [
         // --- File ---
         CommandDescriptor(canonicalName: "NEW",        aliases: ["N"],             category: .draw,    syntax: "", description: "Create a new blank drawing in a new tab"),
-        CommandDescriptor(canonicalName: "OPEN",       aliases: [],                category: .draw,    syntax: "", description: "Open a DXF or EAB file in a new tab"),
+        CommandDescriptor(canonicalName: "OPEN",       aliases: [],                category: .draw,    syntax: "", description: "Open a DXF, DWG or EAB file in a new tab"),
         CommandDescriptor(canonicalName: "CLOSE",      aliases: [],                category: .draw,    syntax: "", description: "Close the active drawing tab"),
         CommandDescriptor(canonicalName: "CLOSEALL",   aliases: [],                category: .draw,    syntax: "", description: "Close all open drawing tabs"),
         CommandDescriptor(canonicalName: "CLOSEALLOTHERS", aliases: [],            category: .draw,    syntax: "", description: "Close all tabs except the active one"),
@@ -237,6 +237,7 @@ public struct CommandDescriptor: Sendable {
         CommandDescriptor(canonicalName: "EXTENSION",       aliases: ["EXT"],           category: .settings, syntax: "", description: "Toggle extension snapping on/off"),
         CommandDescriptor(canonicalName: "ORTHO",          aliases: [],                category: .settings, syntax: "", description: "Toggle ortho mode (F8) — constrain cursor to cardinal axes"),
         CommandDescriptor(canonicalName: "UNITS",          aliases: ["UNIT", "DDUNITS"], category: .settings, syntax: "[mm|cm|m|in|ft|yd]", description: "Set or display the drawing base unit"),
+        CommandDescriptor(canonicalName: "SETUISCALE",     aliases: ["ZOOMUI", "UISCALE"], category: .settings, syntax: "[scale|AUTO]", description: "Override UI zoom (1.0=100%, 1.5=150%, AUTO=system DPI)"),
     ]
 }
 
@@ -464,7 +465,7 @@ public final class CADCommandProcessor {
                 try eng.tabManager.saveActiveTab()
             } catch TabManager.TabError.noFileURL {
                 eng.saveFileBrowser.openSave(
-                    filterExtension: "dxf;eab;pdf",
+                    filterExtension: "dxf;dwg;eab;pdf",
                     defaultName: eng.tabManager.activeTab?.displayName ?? "untitled")
             } catch {
                 print("Save failed: \(error)")
@@ -472,7 +473,7 @@ public final class CADCommandProcessor {
             clearCommand()
         case "SAVEAS":
             engine?.saveFileBrowser.openSave(
-                filterExtension: "dxf;eab;pdf",
+                filterExtension: "dxf;dwg;eab;pdf",
                 defaultName: engine?.tabManager.activeTab?.displayName ?? "untitled")
             clearCommand()
         case "PDFEXPORT", "EXPORTPDF":
@@ -480,6 +481,7 @@ public final class CADCommandProcessor {
                 filterExtension: "pdf",
                 defaultName: (engine?.tabManager.activeTab?.displayName ?? "untitled")
                     .replacingOccurrences(of: ".dxf", with: "")
+                    .replacingOccurrences(of: ".dwg", with: "")
                     .replacingOccurrences(of: ".eab", with: "")
             )
             clearCommand()
@@ -1014,9 +1016,44 @@ public final class CADCommandProcessor {
         // --- Drawing Units ---
         case "UNITS", "UNIT", "DDUNITS":
             guard let engine = engine else { clearCommand(); return }
-            print("[CAD] Current drawing unit: \(engine.document.unit.description) (\(engine.document.unit.dxfINSUNITS == 1 ? "inches" : engine.document.unit.dxfINSUNITS == 2 ? "feet" : engine.document.unit.dxfINSUNITS == 3 ? "yards" : engine.document.unit.dxfINSUNITS == 4 ? "millimeters" : engine.document.unit.dxfINSUNITS == 5 ? "centimeters" : "meters"))")
+            let unitLabel = switch engine.document.unit {
+            case .millimeter: "millimeters"
+            case .centimeter: "centimeters"
+            case .meter: "meters"
+            case .inch: "inches"
+            case .foot: "feet"
+            case .yard: "yards"
+            }
+            print("[CAD] Current drawing unit: \(engine.document.unit.description) (\(unitLabel))")
             print("[CAD] Available units: mm, cm, m, in, ft, yd")
             print("[CAD] Usage: UNITS <unit>")
+            clearCommand()
+        // --- UI Scale ---
+        case "SETUISCALE", "ZOOMUI", "UISCALE":
+            guard let engine = engine else { clearCommand(); return }
+            if let override = engine.uiScaleOverride {
+                print("[CAD] Current UI scale: \(String(format: "%.1f", override))x (override)")
+            } else {
+                print("[CAD] Current UI scale: \(String(format: "%.1f", engine.currentUiScale))x (auto — system DPI)")
+            }
+            print("[CAD] Usage: SETUISCALE <scale|AUTO> — e.g. SETUISCALE 1.5, SETUISCALE AUTO")
+            clearCommand()
+        case _ where upper.hasPrefix("SETUISCALE ") || upper.hasPrefix("ZOOMUI ") || upper.hasPrefix("UISCALE "):
+            guard let engine = engine else { clearCommand(); return }
+            let prefixLen: Int
+            if upper.hasPrefix("SETUISCALE ") { prefixLen = 11 }
+            else if upper.hasPrefix("ZOOMUI ") { prefixLen = 7 }
+            else { prefixLen = 8 }  // "UISCALE "
+            let arg = String(upper.dropFirst(prefixLen)).trimmingCharacters(in: .whitespaces)
+            if arg == "AUTO" || arg == "0" || arg == "RESET" {
+                engine.applyUiScaleOverride(nil)
+                print("[CAD] UI scale reset to auto (system DPI): \(String(format: "%.1f", engine.currentUiScale))x")
+            } else if let scale = Float(arg), scale >= 0.5, scale <= 4.0 {
+                engine.applyUiScaleOverride(scale)
+                print("[CAD] UI scale set to \(String(format: "%.1f", scale))x (override)")
+            } else {
+                print("[CAD] Invalid scale '\(arg)'. Use a number from 0.5 to 4.0, or AUTO to reset.")
+            }
             clearCommand()
         case _ where upper.hasPrefix("UNITS ") || upper.hasPrefix("UNIT ") || upper.hasPrefix("DDUNITS "):
             guard let engine = engine else { clearCommand(); return }
