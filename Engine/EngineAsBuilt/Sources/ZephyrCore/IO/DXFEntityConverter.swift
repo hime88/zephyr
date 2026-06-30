@@ -419,75 +419,95 @@ public enum DXFEntityConverter {
         guard count > 0, let vertices = e.vertices else { return [] }
 
         var points: [Vector3] = []
+        points.reserveCapacity(count)
         for i in 0..<count {
-            // Note: startWidth stores the Z coordinate
             points.append(Vector3(x: vertices[i].x, y: -vertices[i].y, z: vertices[i].startWidth))
         }
 
-        if points.count < 2 {
-            return []
-        }
+        points = normalizedLeaderPoints(points, textHeight: e.textHeight, arrowSize: arrowSize)
+        guard points.count >= 2 else { return [] }
 
         var prims: [CADPrimitive] = []
 
-        // Determine arrow size and arrowhead if enabled
-        // flags stores data->arrow (0=disabled, 1=enabled)
         let hasArrow = e.flags != 0
         var startIdx = 0
 
-        if hasArrow, points.count >= 2 {
+        if hasArrow {
             let v0 = points[0]
             let v1 = points[1]
             let dir = v1 - v0
             let len = dir.magnitude
             if len > 1e-6 {
                 let d = dir.normalized
-                // Use uniform drawingArrowSize, clamped to at most 50% of the first segment length
                 let arrowLen = min(arrowSize, len * 0.5)
-                let arrowHalfWidth = arrowLen * 0.25 // ~30 degree total angle
-
-                // Arrow pointing towards v0 (the tip is at v0)
-                // The perpendicular vector in XY plane (2D)
+                let arrowHalfWidth = arrowLen * 0.25
                 let p = Vector3(x: -d.y, y: d.x, z: 0)
-
                 let pRight = v0 + d * arrowLen + p * arrowHalfWidth
                 let pLeft = v0 + d * arrowLen - p * arrowHalfWidth
-
-                // Add the filled arrowhead triangle
                 prims.append(.fillPolygon(points: [v0, pRight, pLeft], color: color))
-
-                // The line segment starts at the back center of the arrowhead to look clean
-                let arrowBackCenter = v0 + d * arrowLen
-                prims.append(.line(start: arrowBackCenter, end: v1, color: color))
+                prims.append(.line(start: v0 + d * arrowLen, end: v1, color: color))
                 startIdx = 1
             }
         }
 
-        // Draw the remaining segments
         for i in startIdx..<(points.count - 1) {
             prims.append(.line(start: points[i], end: points[i + 1], color: color))
         }
 
-        // Draw horizontal underline (landing extension) under the text if textWidthScale (textwidth) > 0
-        if e.textWidthScale > 0 {
-            let last = points[points.count - 1]
-            let prev = points[points.count - 2]
-            let dx = last.x - prev.x
-            
-            // Determine direction: if offset is non-zero, use it. Otherwise, use dx.
-            let dirSign: Double
-            if abs(e.leaderOffsettext.x) > 1e-5 {
-                dirSign = e.leaderOffsettext.x >= 0 ? 1.0 : -1.0
-            } else {
-                dirSign = dx >= 0 ? 1.0 : -1.0
+        return prims
+    }
+
+    private static func normalizedLeaderPoints(
+        _ input: [Vector3],
+        textHeight: Double,
+        arrowSize: Double
+    ) -> [Vector3] {
+        var points: [Vector3] = []
+        points.reserveCapacity(input.count)
+
+        for point in input {
+            if let last = points.last, last.distance(to: point) < 1e-8 {
+                continue
             }
-            
-            let underlineStart = last + Vector3(x: e.leaderOffsettext.x, y: 0, z: 0)
-            let underlineEnd = underlineStart + Vector3(x: e.textWidthScale * dirSign, y: 0, z: 0)
-            prims.append(.line(start: underlineStart, end: underlineEnd, color: color))
+            points.append(point)
         }
 
-        return prims
+        while points.count >= 3, shouldDropLeaderHookOutlier(points, textHeight: textHeight, arrowSize: arrowSize) {
+            points.removeLast()
+        }
+
+        return points
+    }
+
+    private static func shouldDropLeaderHookOutlier(
+        _ points: [Vector3],
+        textHeight: Double,
+        arrowSize: Double
+    ) -> Bool {
+        guard points.count >= 3 else { return false }
+
+        let a = points[points.count - 3]
+        let b = points[points.count - 2]
+        let c = points[points.count - 1]
+        let last = c - b
+        let lastLen = last.magnitude
+        guard lastLen > 1e-8 else { return true }
+
+        let isNearlyHorizontal = abs(last.y) <= max(abs(last.x) * 0.02, 1e-6)
+        guard isNearlyHorizontal else { return false }
+
+        var priorMax = max((b - a).magnitude, 1e-8)
+        if points.count > 3 {
+            for i in 0..<(points.count - 2) {
+                priorMax = max(priorMax, (points[i + 1] - points[i]).magnitude)
+            }
+        }
+
+        let leaderTextHeight = textHeight > 0 ? textHeight : 2.5
+        let drawingScale = max(leaderTextHeight, arrowSize, 1.0)
+        let outlierLimit = max(priorMax * 8.0, drawingScale * 40.0)
+
+        return lastLen > outlierLimit
     }
 
 

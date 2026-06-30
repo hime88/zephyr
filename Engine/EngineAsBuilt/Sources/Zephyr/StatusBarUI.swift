@@ -32,7 +32,6 @@ struct StatusBarUI {
 
         // Check for active save state
         let saveState = engine.tabManager.activeSaveState
-        let hasSaveState = saveState != nil
 
         if let ss = saveState {
             // When saving, always rebuild status text to show progress

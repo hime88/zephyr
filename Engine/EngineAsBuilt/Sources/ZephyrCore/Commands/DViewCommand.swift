@@ -75,8 +75,7 @@ public final class DViewCommand: FeatureCommand {
         worldX: Double, worldY: Double,
         engine: PhrostEngine, processor: CADCommandProcessor
     ) {
-        guard case .twist(let anchorRad, let anchorMX, let anchorMY) = phase else { return }
-        let curX = engine.interaction.lastMouseX
+        guard case .twist(let anchorRad, let _, let anchorMY) = phase else { return }
         let curY = engine.interaction.lastMouseY
         let dy = Double(curY - anchorMY)
         // Map screen pixels to degrees: ~2 pixels per degree (adjustable sensitivity)

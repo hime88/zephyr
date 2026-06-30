@@ -309,7 +309,7 @@ struct PropertiesPanelUI {
                 var changed = false
                 
                 // Text Override
-                var textOverride = metadata.textOverride ?? ""
+                let textOverride = metadata.textOverride ?? ""
                 let bufSize = 256
                 var buffer = [CChar](repeating: 0, count: bufSize)
                 let bytes = textOverride.utf8CString
@@ -330,7 +330,7 @@ struct PropertiesPanelUI {
                 ImGuiPopItemWidth()
                 
                 if submitted || ImGuiIsItemDeactivatedAfterEdit() {
-                    let newText = String(cString: buffer)
+                    let newText = buffer.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
                     var newMeta = metadata
                     // empty string means clear the override
                     newMeta = CADDimensionMetadata(
@@ -490,7 +490,7 @@ struct PropertiesPanelUI {
                 ImGuiTextV("Pattern")
                 ImGuiSameLine(0, 8)
                 let pats = ["SOLID"] + DXFHatchGenerator.predefinedPatterns.keys.sorted()
-                var currentPat = pattern.isEmpty ? "SOLID" : pattern.uppercased()
+                let currentPat = pattern.isEmpty ? "SOLID" : pattern.uppercased()
                 ImGuiPushItemWidth(ImGuiGetFontSize() * 8)
                 if ImGuiBeginCombo("##PropsHatchPat", currentPat, 0) {
                     for pn in pats {

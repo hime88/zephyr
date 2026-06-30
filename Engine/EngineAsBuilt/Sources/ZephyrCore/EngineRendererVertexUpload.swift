@@ -405,7 +405,7 @@ extension EngineRenderer {
 
         // 6. Render pending distance entry tooltip (direct distance during MOVE)
         if !engine.commandProcessor.pendingDistanceBuffer.isEmpty,
-           let ref = engine.commandProcessor.commandRefPoint,
+           engine.commandProcessor.commandRefPoint != nil,
            engine.commandProcessor.activeCommand == "MOVE" {
             let ghostX = engine.commandProcessor._moveGhostWorldX
             let ghostY = engine.commandProcessor._moveGhostWorldY

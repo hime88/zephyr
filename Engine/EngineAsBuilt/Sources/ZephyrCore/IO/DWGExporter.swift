@@ -86,7 +86,7 @@ public enum DWGExporter {
 
         // Layer
         if let layer = document.layer(for: entity.layerID) {
-            layer.name.withCString { bridge.layerName = strdup($0) }
+            layer.name.withCString { bridge.layerName = _strdup($0) }
         }
 
         // Color
@@ -108,7 +108,7 @@ public enum DWGExporter {
         let primitives: [CADPrimitive]
         if let bid = entity.blockID, let block = document.block(for: bid) {
             primitives = block.geometry
-            block.name.withCString { bridge.blockName = strdup($0) }
+            block.name.withCString { bridge.blockName = _strdup($0) }
             bridge.type = DWG_ET_INSERT
             bridge.basePoint.x = entity.transform.position.x
             bridge.basePoint.y = entity.transform.position.y
@@ -158,8 +158,8 @@ public enum DWGExporter {
             bridge.textRotation = rotation
             bridge.textAlignH = Int32(alignH)
             bridge.textAlignV = Int32(alignV)
-            text.withCString { bridge.textValue = strdup($0) }
-            if let s = style { s.withCString { bridge.textStyle = strdup($0) } }
+            text.withCString { bridge.textValue = _strdup($0) }
+            if let s = style { s.withCString { bridge.textStyle = _strdup($0) } }
 
         case .polyline(let path, _):
             bridge.type = DWG_ET_LWPOLYLINE

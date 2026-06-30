@@ -1455,8 +1455,8 @@ public final class EngineRenderer {
         let dx = ghostX - base.0
         let dy = ghostY - base.1
 
-        let baseScreen = engine.camera.transformWorldToScreen(worldX: base.0, worldY: base.1, cam: cam)
-        let ghostScreen = engine.camera.transformWorldToScreen(worldX: ghostX, worldY: ghostY, cam: cam)
+        let _ = engine.camera.transformWorldToScreen(worldX: base.0, worldY: base.1, cam: cam)
+        let _ = engine.camera.transformWorldToScreen(worldX: ghostX, worldY: ghostY, cam: cam)
 
         let drawList = igGetBackgroundDrawList(nil)
         let color = makeImCol32(r: 255, g: 200, b: 64, a: 190)

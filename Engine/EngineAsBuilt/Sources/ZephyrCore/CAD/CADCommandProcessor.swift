@@ -577,7 +577,7 @@ public final class CADCommandProcessor {
 
         case "PASTEORIG":
             guard let engine = engine else { clearCommand(); return }
-            guard let entry = clipboard.entry else {
+            guard clipboard.entry != nil else {
                 print("[CAD] Clipboard is empty. Use COPYCLIP or COPYBASE first.")
                 clearCommand()
                 break
@@ -587,7 +587,7 @@ public final class CADCommandProcessor {
 
         case "PASTEBLOCK":
             guard let engine = engine else { clearCommand(); return }
-            guard let entry = clipboard.entry else {
+            guard clipboard.entry != nil else {
                 print("[CAD] Clipboard is empty. Use COPYCLIP or COPYBASE first.")
                 clearCommand()
                 break
@@ -604,7 +604,7 @@ public final class CADCommandProcessor {
             cmd.start(engine: engine, processor: self)
 
         case "-PAN":
-            guard let engine = engine else { clearCommand(); return }
+            guard engine != nil else { clearCommand(); return }
             startCommand("-PAN", prompt: "Specify base point")
 
         case "PLAN":

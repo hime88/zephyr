@@ -134,7 +134,7 @@ public final class DimAngularCommand: FeatureCommand {
             processor.commandPrompt = "Specify second angle endpoint:"
             return .continue
             
-        case .pickingSecondPoint(let v, let p1):
+        case .pickingSecondPoint:
             self.p2 = snapPos
             state = .pickingDimensionPos
             processor.commandPrompt = "Specify dimension arc line location:"

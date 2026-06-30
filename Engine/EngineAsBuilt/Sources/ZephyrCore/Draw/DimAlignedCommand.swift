@@ -111,9 +111,6 @@ public final class DimAlignedCommand: FeatureCommand {
             
             // Project dimLinePos onto the line perpendicular to dir passing through p1?
             // Actually, we can just find distance from dimLinePos to line p1-p2 to set the offset.
-            let angle = atan2(dir.y, dir.x)
-            let length = hypot(dir.x, dir.y)
-            
             // Vector from p1 to dimLinePos
             let v = Vector3(x: dimLinePos.x - p1.x, y: dimLinePos.y - p1.y, z: 0)
             

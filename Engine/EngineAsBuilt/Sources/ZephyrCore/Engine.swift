@@ -378,7 +378,7 @@ public final class PhrostEngine {
         // Set DWM rounded corners preference
         let hwnd = SDL_GetPointerProperty(SDL_GetWindowProperties(window), "SDL.window.win32.hwnd", nil)
         if let rawHwnd = hwnd {
-            let winHwnd = unsafeBitCast(rawHwnd, to: HWND.self)
+            let winHwnd = rawHwnd.assumingMemoryBound(to: HWND__.self)
             var cornerPreference: DWORD = 2 // DWMWCP_ROUND
             _ = DwmSetWindowAttribute(
                 winHwnd,

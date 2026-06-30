@@ -148,7 +148,6 @@ public final class EllipseCommand: FeatureCommand {
             // Place minor axis at the given length perpendicular to the major axis
             let majorDx = mx - cx
             let majorDy = my - cy
-            let majorLen = hypot(majorDx, majorDy)
             let angle = atan2(majorDy, majorDx)
             let perpX = -sin(angle)
             let perpY = cos(angle)

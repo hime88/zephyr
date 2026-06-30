@@ -535,7 +535,7 @@ public final class CADDocument {
         // Remap block UUIDs by copying the block definitions with new handles.
         // (The caller is expected to add these new blocks to the document.)
         for origBlockID in referencedBlockIDs {
-            if let block = blockTable[origBlockID] {
+            if blockTable[origBlockID] != nil {
                 let newBlockID = UUID()
                 blockRemap[origBlockID] = newBlockID
             }
