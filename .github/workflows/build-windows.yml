@@ -351,22 +351,34 @@ jobs:
           git submodule update --init --recursive
           Pop-Location
 
-          Write-Host "Configuring LibreDWG (cmake) for ${{ matrix.cmake-arch }}..."
-          Push-Location $dwgRoot
-          cmake -S . -B build `
-            -G Ninja `
-            -DCMAKE_C_COMPILER=cl `
-            -DCMAKE_BUILD_TYPE=Release
-          if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
+          # Find Visual Studio and vcvars (cl.exe is only on PATH after vcvarsall.bat)
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $vcvarsPath = "$vsPath\VC\Auxiliary\Build\vcvarsall.bat"
+          Write-Host "Visual Studio: $vsPath"
+          Write-Host "vcvarsall.bat: $vcvarsPath"
 
-          Write-Host "Building LibreDWG..."
-          cmake --build build --config Release
-          if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
-          Pop-Location
+          Write-Host "Configuring LibreDWG (cmake) for ${{ matrix.cmake-arch }}..."
+          $dwgBuildDir = "$dwgRoot\build"
+          $cmakeConfigureCmd = "cmake -S `"$dwgRoot`" -B `"$dwgBuildDir`" -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Release"
+          $cmakeBuildCmd = "cmake --build `"$dwgBuildDir`" --config Release"
+
+          # Run cmake inside vcvars context so cl.exe is on PATH
+          $scriptPath = "$env:TEMP\build-libredwg-${{ matrix.arch }}.cmd"
+          Set-Content -Path $scriptPath -Encoding ASCII -Value @(
+            "@echo off",
+            "call `"$vcvarsPath`" ${{ matrix.vcvars-arch }} >nul 2>&1",
+            "if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%",
+            $cmakeConfigureCmd,
+            "if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%",
+            $cmakeBuildCmd,
+            "if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%"
+          )
+          cmd.exe /c $scriptPath
+          if ($LASTEXITCODE -ne 0) { throw "LibreDWG build failed with exit code $LASTEXITCODE" }
 
           Write-Host "--- LibreDWG build output ---"
-          Get-ChildItem "$dwgRoot\build" -Filter "*.lib" | ForEach-Object { Write-Host "  $($_.Name)" }
-          Get-ChildItem "$dwgRoot\build" -Filter "*.dll" | ForEach-Object { Write-Host "  $($_.Name)" }
+          Get-ChildItem "$dwgBuildDir" -Filter "*.lib" | ForEach-Object { Write-Host "  $($_.Name)" }
+          Get-ChildItem "$dwgBuildDir" -Filter "*.dll" | ForEach-Object { Write-Host "  $($_.Name)" }
 
       # ------------------------------------------------------------------
 # 7. Download PDFium
