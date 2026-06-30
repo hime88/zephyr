@@ -23,24 +23,25 @@ Zephyr is a drafting app that runs natively on macOS (Metal) and Windows (Direct
 | **GPU (macOS)** | Metal via SDL3 |
 | **GPU (Windows)** | Direct3D 12 via SDL3 |
 | **UI** | ImGui (SDL3 GPU backend) |
-| **DXF/DWG I/O** | libdxfrw C++ bridge |
+| **DXF I/O** | libdxfrw C++ bridge |
+| **DWG I/O** | libreDWG C bridge (import/export) |
 | **PDF Export** | PDFium (Windows/Linux) · PDFKit (macOS) |
 | **PDF Import** | PDFium (Windows/Linux) · PDFKit (macOS) |
 | **Compression** | zstd via zlib-ng |
 | **Fonts** | SDL_ttf + custom SHX byte-code interpreter |
-| **License** | GPL v2 — free to use, fork, and ship |
+| **License** | GPL v3 — free to use, fork, and ship |
 
 ## Why Zephyr?
 
 - **QCAD/LibreCAD replacement** — DXF parsing that actually works: MText formatting, SHX shape fonts, NURBS splines, dimension styles, and title blocks all render correctly. No raw escape codes leaking into labels, no scrambled curves, no missing logos.
 - **AutoCAD LT alternative** — AutoCAD muscle memory preserved. `L`, `PL`, `C`, `REC`, `M`, `TR`, `J` all work. Command palette with fuzzy autocomplete, polar tracking, object snap tracking, grips, and a full snap engine.
 - **GPU-native** — Metal on macOS, Direct3D 12 on Windows. Single Swift rendering pipeline. 120 FPS canvas with pixel-perfect GPU picking. No OpenGL emulation layer.
-- **Free forever** — GPL v2. No account, no email gate, no subscription. ~14 MB download.
+- **Free forever** — GPL v3. No account, no email gate, no subscription. ~14 MB download.
 
 ## Current Features
 
 ### File I/O
-- **DWG import** — Full read via libdxfrw bridge. Blocks, layers, text styles, hatches, splines, polylines with bulge, dimensions.
+- **DWG import/export** — Full read/write via libreDWG. Blocks, layers, text styles, hatches, splines, polylines with bulge, dimensions. Native DWG round-trip.
 - **DXF import/export** — R2007 round-trip. Dimensions, splines, hatches, leaders all preserved. Layer transparency (group code 440) supported.
 - **PDF export** — Vector PDF 1.7 with Bluebeam Revu-compatible Measurement dictionary.
 - **PDF import** — Cross-platform: PDFKit on macOS, PDFium on Windows. Page selector with preview. Raster underlay at 150 DPI.
