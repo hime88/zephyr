@@ -76,6 +76,14 @@ public final class EngineRenderer {
     internal var imguiIndexCapacity: Int = 0
 
 
+    internal var usesTriangleHairlines: Bool {
+        #if os(macOS) || os(iOS)
+        return true
+        #else
+        return false
+        #endif
+    }
+
     /// Anti-aliased line rendering toggle.
     public var antiAliasLines: Bool = false {
         didSet {
@@ -176,6 +184,7 @@ public final class EngineRenderer {
             inputs,
             cameraZoom: engine.camera.zoom,
             antiAliasLines: antiAliasLines,
+            hairlineQuads: usesTriangleHairlines,
             region: region,
             mutationGen: engine.geometryManager.mutationGeneration
         ) else {

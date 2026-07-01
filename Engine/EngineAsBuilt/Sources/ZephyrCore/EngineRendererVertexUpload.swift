@@ -238,6 +238,7 @@ extension EngineRenderer {
 
         let capturedZoom = zoom
         let capturedAA = antiAliasLines
+        let capturedHairlineQuads = usesTriangleHairlines
         let capturedMutationGen = mutationGen
 
         _vbBuildTask = Task.detached { [vbBuilder] in
@@ -246,6 +247,7 @@ extension EngineRenderer {
                 token: token,
                 cameraZoom: capturedZoom,
                 antiAliasLines: capturedAA,
+                hairlineQuads: capturedHairlineQuads,
                 region: region,
                 mutationGen: capturedMutationGen
             )

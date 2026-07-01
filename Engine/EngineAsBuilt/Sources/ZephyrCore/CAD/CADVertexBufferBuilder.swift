@@ -136,6 +136,7 @@ public final class CADVertexBufferBuilder {
         _ inputs: [TessInput],
         cameraZoom: Double,
         antiAliasLines: Bool,
+        hairlineQuads: Bool,
         region: (minX: Double, minY: Double, maxX: Double, maxY: Double),
         mutationGen: Int
     ) -> VertexBuildResult? {
@@ -152,6 +153,64 @@ public final class CADVertexBufferBuilder {
         vertices.reserveCapacity(estimatedVertices)
         
         var batches: [CADDrawBatch] = []
+        let safeZoom = max(Float(cameraZoom), 0.000001)
+
+        func lineWorldWidth(for input: TessInput) -> Float {
+            if input.geomWidth > 0.0 {
+                let coreWidth = Float(input.geomWidth)
+                return antiAliasLines ? coreWidth + (2.0 / safeZoom) : coreWidth
+            }
+
+            let corePixels: Float
+            if input.lineWeight > 0.25 {
+                corePixels = max(1.0, Float(input.lineWeight) * (96.0 / 25.4))
+            } else {
+                corePixels = 1.0
+            }
+
+            let totalPixels = antiAliasLines ? corePixels + 2.0 : corePixels
+            return totalPixels / safeZoom
+        }
+
+        func appendLineVertex(_ p: SDL_FPoint, _ r: Float, _ g: Float, _ b: Float, _ a: Float) {
+            vertices.append(CADVertex(x: p.x, y: p.y, r: r, g: g, b: b, a: a, u: 0.0, v: 0.0))
+        }
+
+        func appendLineSegment(_ p1: SDL_FPoint, _ p2: SDL_FPoint, _ r: Float, _ g: Float, _ b: Float, _ a: Float) {
+            appendLineVertex(p1, r, g, b, a)
+            appendLineVertex(p2, r, g, b, a)
+        }
+
+        func appendQuadSegment(_ p1: SDL_FPoint, _ p2: SDL_FPoint, _ width: Float, _ r: Float, _ g: Float, _ b: Float, _ a: Float) {
+            let dx = p2.x - p1.x
+            let dy = p2.y - p1.y
+            let len = sqrt(dx * dx + dy * dy)
+            guard len > 1e-5 else { return }
+
+            let halfW = width * 0.5
+            let nx = -dy / len * halfW
+            let ny = dx / len * halfW
+            let c1 = SDL_FPoint(x: p1.x + nx, y: p1.y + ny)
+            let c2 = SDL_FPoint(x: p1.x - nx, y: p1.y - ny)
+            let c3 = SDL_FPoint(x: p2.x - nx, y: p2.y - ny)
+            let c4 = SDL_FPoint(x: p2.x + nx, y: p2.y + ny)
+
+            vertices.append(CADVertex(x: c1.x, y: c1.y, r: r, g: g, b: b, a: a, u: 0.0, v: 1.0))
+            vertices.append(CADVertex(x: c2.x, y: c2.y, r: r, g: g, b: b, a: a, u: 0.0, v: -1.0))
+            vertices.append(CADVertex(x: c3.x, y: c3.y, r: r, g: g, b: b, a: a, u: 1.0, v: -1.0))
+
+            vertices.append(CADVertex(x: c1.x, y: c1.y, r: r, g: g, b: b, a: a, u: 0.0, v: 1.0))
+            vertices.append(CADVertex(x: c3.x, y: c3.y, r: r, g: g, b: b, a: a, u: 1.0, v: -1.0))
+            vertices.append(CADVertex(x: c4.x, y: c4.y, r: r, g: g, b: b, a: a, u: 1.0, v: 1.0))
+        }
+
+        func appendRenderableSegment(_ p1: SDL_FPoint, _ p2: SDL_FPoint, _ input: TessInput, _ r: Float, _ g: Float, _ b: Float, _ a: Float) {
+            if input.lineWeight > 0.25 || input.geomWidth > 0.0 || antiAliasLines || hairlineQuads {
+                appendQuadSegment(p1, p2, lineWorldWidth(for: input), r, g, b, a)
+            } else {
+                appendLineSegment(p1, p2, r, g, b, a)
+            }
+        }
 
         for (i, input) in inputs.enumerated() {
             // Cooperative cancellation: check every 256 primitives.
@@ -187,103 +246,21 @@ public final class CADVertexBufferBuilder {
                 }
 
             case .line:
+                guard input.points.count >= 2 else { break }
                 if input.isHatchLine {
-                    for p in input.points {
-                        vertices.append(CADVertex(x: p.x, y: p.y, r: r, g: g, b: b, a: a, u: 0.0, v: 0.0))
-                    }
-                } else if input.lineWeight > 0.25 || input.geomWidth > 0.0 || antiAliasLines {
-                    guard input.points.count >= 2 else { break }
-                    let p1 = input.points[0]
-                    let p2 = input.points[1]
-                    let dx = p2.x - p1.x
-                    let dy = p2.y - p1.y
-                    let len = sqrt(dx*dx + dy*dy)
-                    if len > 1e-5 {
-                        // World-space line width (no zoom compensation — zoom scales naturally via camera matrix).
-                        // geomWidth and lineWeight are both in world units (mm).
-                        // The ×8 factor gives reasonable visibility: 0.25 mm → 2.0 world units.
-                        let w: Float
-                        if input.geomWidth > 0.0 {
-                            w = Float(input.geomWidth)
-                        } else if input.lineWeight > 0.25 {
-                            w = Float(input.lineWeight * 8.0)
-                        } else {
-                            w = 2.0
-                        }
-
-                        let halfW: Float = w * 0.5
-                        let nx: Float = -dy / len * halfW
-                        let ny: Float = dx / len * halfW
-                        let c1 = SDL_FPoint(x: p1.x + nx, y: p1.y + ny)
-                        let c2 = SDL_FPoint(x: p1.x - nx, y: p1.y - ny)
-                        let c3 = SDL_FPoint(x: p2.x - nx, y: p2.y - ny)
-                        let c4 = SDL_FPoint(x: p2.x + nx, y: p2.y + ny)
-
-                        vertices.append(CADVertex(x: c1.x, y: c1.y, r: r, g: g, b: b, a: a, u: 0.0, v: 1.0))
-                        vertices.append(CADVertex(x: c2.x, y: c2.y, r: r, g: g, b: b, a: a, u: 0.0, v: -1.0))
-                        vertices.append(CADVertex(x: c3.x, y: c3.y, r: r, g: g, b: b, a: a, u: 1.0, v: -1.0))
-
-                        vertices.append(CADVertex(x: c1.x, y: c1.y, r: r, g: g, b: b, a: a, u: 0.0, v: 1.0))
-                        vertices.append(CADVertex(x: c3.x, y: c3.y, r: r, g: g, b: b, a: a, u: 1.0, v: -1.0))
-                        vertices.append(CADVertex(x: c4.x, y: c4.y, r: r, g: g, b: b, a: a, u: 1.0, v: 1.0))
+                    var j = 0
+                    while j + 1 < input.points.count {
+                        appendRenderableSegment(input.points[j], input.points[j + 1], input, r, g, b, a)
+                        j += 2
                     }
                 } else {
-                    for p in input.points {
-                        vertices.append(CADVertex(x: p.x, y: p.y, r: r, g: g, b: b, a: a, u: 0.0, v: 0.0))
-                    }
+                    appendRenderableSegment(input.points[0], input.points[1], input, r, g, b, a)
                 }
 
             case .lines:
                 guard input.points.count >= 2 else { break }
-                if input.isHatchLine {
-                    for j in 0..<(input.points.count - 1) {
-                        let p1 = input.points[j]
-                        let p2 = input.points[j+1]
-                        vertices.append(CADVertex(x: p1.x, y: p1.y, r: r, g: g, b: b, a: a, u: 0.0, v: 0.0))
-                        vertices.append(CADVertex(x: p2.x, y: p2.y, r: r, g: g, b: b, a: a, u: 0.0, v: 0.0))
-                    }
-                } else if input.lineWeight > 0.25 || input.geomWidth > 0.0 || antiAliasLines {
-                    for j in 0..<(input.points.count - 1) {
-                        let p1 = input.points[j]
-                        let p2 = input.points[j+1]
-                        let dx = p2.x - p1.x
-                        let dy = p2.y - p1.y
-                        let len = sqrt(dx*dx + dy*dy)
-                        if len > 1e-5 {
-                            // World-space line width (no zoom compensation — zoom scales naturally via camera matrix).
-                            let w: Float
-                            if input.geomWidth > 0.0 {
-                                w = Float(input.geomWidth)
-                            } else if input.lineWeight > 0.25 {
-                                w = Float(input.lineWeight * 8.0)
-                            } else {
-                                w = 2.0
-                            }
-
-                            let halfW: Float = w * 0.5
-                            let nx: Float = -dy / len * halfW
-                            let ny: Float = dx / len * halfW
-                            let c1 = SDL_FPoint(x: p1.x + nx, y: p1.y + ny)
-                            let c2 = SDL_FPoint(x: p1.x - nx, y: p1.y - ny)
-                            let c3 = SDL_FPoint(x: p2.x - nx, y: p2.y - ny)
-                            let c4 = SDL_FPoint(x: p2.x + nx, y: p2.y + ny)
-
-                            vertices.append(CADVertex(x: c1.x, y: c1.y, r: r, g: g, b: b, a: a, u: 0.0, v: 1.0))
-                            vertices.append(CADVertex(x: c2.x, y: c2.y, r: r, g: g, b: b, a: a, u: 0.0, v: -1.0))
-                            vertices.append(CADVertex(x: c3.x, y: c3.y, r: r, g: g, b: b, a: a, u: 1.0, v: -1.0))
-
-                            vertices.append(CADVertex(x: c1.x, y: c1.y, r: r, g: g, b: b, a: a, u: 0.0, v: 1.0))
-                            vertices.append(CADVertex(x: c3.x, y: c3.y, r: r, g: g, b: b, a: a, u: 1.0, v: -1.0))
-                            vertices.append(CADVertex(x: c4.x, y: c4.y, r: r, g: g, b: b, a: a, u: 1.0, v: 1.0))
-                        }
-                    }
-                } else {
-                    for j in 0..<(input.points.count - 1) {
-                        let p1 = input.points[j]
-                        let p2 = input.points[j+1]
-                        vertices.append(CADVertex(x: p1.x, y: p1.y, r: r, g: g, b: b, a: a, u: 0.0, v: 0.0))
-                        vertices.append(CADVertex(x: p2.x, y: p2.y, r: r, g: g, b: b, a: a, u: 0.0, v: 0.0))
-                    }
+                for j in 0..<(input.points.count - 1) {
+                    appendRenderableSegment(input.points[j], input.points[j + 1], input, r, g, b, a)
                 }
 
             case .rect, .rects:
@@ -437,12 +414,10 @@ public final class CADVertexBufferBuilder {
             case .fillRect, .fillRects:
                 pipeType = .triangle
             case .line, .lines:
-                if input.isHatchLine {
-                    pipeType = .line
-                } else if input.lineWeight > 0.25 || input.geomWidth > 0.0 {
+                if input.lineWeight > 0.25 || input.geomWidth > 0.0 || antiAliasLines {
                     pipeType = antiAliasLines ? .aaLine : .triangle
-                } else if antiAliasLines {
-                    pipeType = .aaLine
+                } else if hairlineQuads {
+                    pipeType = .triangle
                 } else {
                     pipeType = .line
                 }
@@ -486,12 +461,13 @@ public final class CADVertexBufferBuilder {
         token: Int,
         cameraZoom: Double,
         antiAliasLines: Bool,
+        hairlineQuads: Bool,
         region: (minX: Double, minY: Double, maxX: Double, maxY: Double),
         mutationGen: Int
     ) async {
         guard let result = Self.tessellate(
             inputs, cameraZoom: cameraZoom, antiAliasLines: antiAliasLines,
-            region: region, mutationGen: mutationGen)
+            hairlineQuads: hairlineQuads, region: region, mutationGen: mutationGen)
         else {
             // Cancelled mid-loop — don't stash anything.
             return
