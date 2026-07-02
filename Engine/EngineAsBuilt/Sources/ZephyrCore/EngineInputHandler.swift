@@ -99,6 +99,22 @@ internal final class EngineInputHandler {
             case UInt32(SDL_EVENT_KEY_UP.rawValue):
                 handleKeyUp(event: e)
 
+            case UInt32(SDL_EVENT_TEXT_INPUT.rawValue):
+                // SDL text input events deliver actual text — handles paste,
+                // composed characters, dead keys, and IME.
+                // Only process when ImGui isn't handling input (e.g. when the
+                // command line was *just* opened and ImGui's InputText isn't
+                // focused yet). Once ImGui has focus, it handles text itself.
+                if !handledByImGui,
+                   engine.commandProcessor.commandLineActive,
+                   let cString = e.text.text {
+                    let text = String(cString: cString)
+                    engine.commandProcessor.commandBuffer += text
+                    engine.commandProcessor.commandSelectionIndex = 0
+                    engine.commandProcessor._lastMatchInput = ""
+                    engine.commandProcessor._cachedMatches = []
+                }
+
             case UInt32(SDL_EVENT_MOUSE_MOTION.rawValue):
                 engine.interaction.lastMouseX = e.motion.x
                 engine.interaction.lastMouseY = e.motion.y
@@ -369,10 +385,12 @@ internal final class EngineInputHandler {
                         let char = keycodeToChar(e.key.key)
                         if !char.isEmpty {
                             engine.commandProcessor.commandLineActive = true
-                            engine.commandProcessor.commandBuffer = char
+                            engine.commandProcessor.commandBuffer = ""
                             engine.commandProcessor.commandSelectionIndex = 0
                             engine.commandProcessor._lastMatchInput = ""
                             engine.commandProcessor._cachedMatches = []
+                            // Don't set commandBuffer here — SDL_EVENT_TEXT_INPUT
+                            // will deliver the actual character right after this event.
                         }
                     }
                 }
@@ -584,8 +602,27 @@ internal final class EngineInputHandler {
         engine.tabManager.markActiveDirty()
     }
 
-    /// Handle Ctrl+V: paste image from clipboard if available.
+    /// Handle Ctrl+V: paste image from clipboard if available, or paste text
+    /// into the command line when it's active.
     private func handleClipboardPaste() {
+        // If the command line is active, paste text from the clipboard.
+        if engine.commandProcessor.commandLineActive {
+            if SDL_HasClipboardText() {
+                if let ptr = SDL_GetClipboardText() {
+                    let pasted = String(cString: ptr)
+                    SDL_free(ptr)
+                    // Strip newlines for single-line command entry.
+                    let cleaned = pasted.replacingOccurrences(of: "\n", with: "")
+                        .replacingOccurrences(of: "\r", with: "")
+                    engine.commandProcessor.commandBuffer += cleaned
+                    engine.commandProcessor.commandSelectionIndex = 0
+                    engine.commandProcessor._lastMatchInput = ""
+                    engine.commandProcessor._cachedMatches = []
+                }
+            }
+            return
+        }
+
         // Check for image data on clipboard
         let mimeTypes: [String] = ["image/png", "image/jpeg", "image/bmp", "image/tiff"]
         for mime in mimeTypes {
