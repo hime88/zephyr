@@ -720,6 +720,20 @@ public class DXFHatchLoop {
     }
 }
 
+public struct DXFHatchPatternLineData: Equatable, Sendable {
+    public var angle: Double
+    public var base: Vector3
+    public var offset: Vector3
+    public var dashes: [Double]
+
+    public init(angle: Double = 0.0, base: Vector3 = .zero, offset: Vector3 = .zero, dashes: [Double] = []) {
+        self.angle = angle
+        self.base = base
+        self.offset = offset
+        self.dashes = dashes
+    }
+}
+
 // MARK: - Hatch (DRW_Hatch)
 
 public class DXFHatchEntity: DXFPointEntity {
@@ -744,6 +758,7 @@ public class DXFHatchEntity: DXFPointEntity {
     public var gradientTint: Double    // 462
 
     public var gradientColors: [(position: Double, aci: UInt16, rgb: Int32)] = []
+    public var patternLines: [DXFHatchPatternLineData] = []
 
     public var loops: [DXFHatchLoop] = []
 

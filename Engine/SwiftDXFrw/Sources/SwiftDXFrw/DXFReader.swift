@@ -825,12 +825,36 @@ extension DXFReader {
         var splineDegree: Int = 0
         var splineNKnots: Int = 0
         var splineNControl: Int = 0
+        var currentPatternLine: DXFHatchPatternLineData?
+
+        func flushPatternLine() {
+            guard let line = currentPatternLine else { return }
+            if abs(line.offset.x) > 1e-12 || abs(line.offset.y) > 1e-12 || !line.dashes.isEmpty {
+                e.patternLines.append(line)
+            }
+            currentPatternLine = nil
+        }
 
         for (c, v) in pairs {
             switch c {
             case 2:   e.name = decode(v)
             case 41:  e.scale = d(v)
             case 52:  e.angle_p = d(v)
+            case 53:
+                flushPatternLine()
+                currentPatternLine = DXFHatchPatternLineData(angle: d(v))
+            case 43:
+                currentPatternLine?.base.x = d(v)
+            case 44:
+                currentPatternLine?.base.y = d(v)
+            case 45:
+                currentPatternLine?.offset.x = d(v)
+            case 46:
+                currentPatternLine?.offset.y = d(v)
+            case 49:
+                currentPatternLine?.dashes.append(d(v))
+            case 79:
+                break
             case 63:
                 if e.isGradient != 0 {
                     let aci = Int(i(v))
@@ -994,6 +1018,7 @@ extension DXFReader {
             default: break
             }
         }
+        flushPatternLine()
         return e
     }
 

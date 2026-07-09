@@ -181,7 +181,8 @@ public enum DXFEntityConverter {
         let regions = extractHatchRegions(from: h)
         guard !regions.isEmpty else { return [] }
 
-        let pattern = h.name.isEmpty ? "SOLID" : h.name
+        let basePattern = h.name.isEmpty ? "SOLID" : h.name
+        let pattern = hatchPatternName(for: h, fallback: basePattern)
         let scale = h.scale > 0 ? h.scale : 1.0
         let angle = h.angle_p * .pi / 180.0
 
@@ -215,6 +216,42 @@ public enum DXFEntityConverter {
                           scale: scale, angle: angle,
                           color: color, backgroundColor: background)
         }
+    }
+
+
+    private static func hatchPatternName(for h: DXFHatchEntity, fallback: String) -> String {
+        guard h.solid == 0, !h.patternLines.isEmpty else { return fallback }
+        let safeScale = max(abs(h.scale), 1e-9)
+        let hatchAngle = h.angle_p
+
+        let lines = h.patternLines.map { line -> DXFHatchPatternLine in
+            let cadAngle = -line.angle
+            let angleRad = cadAngle * .pi / 180.0
+            let cosA = cos(-angleRad)
+            let sinA = sin(-angleRad)
+
+            func toLineSpace(_ p: SwiftDXFrw.Vector3) -> Vector3 {
+                let cad = Vector3(x: p.x, y: -p.y, z: 0)
+                return Vector3(
+                    x: (cad.x * cosA - cad.y * sinA) / safeScale,
+                    y: (cad.x * sinA + cad.y * cosA) / safeScale,
+                    z: 0)
+            }
+
+            var offset = toLineSpace(line.offset)
+            if offset.y < 0.0 {
+                offset.x = -offset.x
+                offset.y = -offset.y
+            }
+
+            return DXFHatchPatternLine(
+                angleDegrees: cadAngle - hatchAngle,
+                base: toLineSpace(line.base),
+                offset: offset,
+                dashes: line.dashes.map { $0 / safeScale })
+        }
+
+        return DXFHatchGenerator.registerImportedPatternDefinition(name: fallback, lines: lines)
     }
 
     /// Extract hatch regions. A single DXF HATCH can contain several disconnected
@@ -365,7 +402,7 @@ public enum DXFEntityConverter {
 
         func appendEdge(_ edge: [Vector3]) {
             guard !edge.isEmpty else { return }
-            if let tail = out.last, let first = edge.first, distSq(tail, first) < 1e-10 {
+            if let tail = out.last, let first = edge.first, distSq(tail, first) <= toleranceSquared {
                 out.append(contentsOf: edge.dropFirst())
             } else {
                 out.append(contentsOf: edge)
@@ -423,7 +460,7 @@ public enum DXFEntityConverter {
         let dx = maxX - minX
         let dy = maxY - minY
         let diagonal = sqrt(dx * dx + dy * dy)
-        let tolerance = max(diagonal * 1e-8, 1e-2)
+        let tolerance = min(max(diagonal * 1e-3, 1e-2), 10.0)
         return tolerance * tolerance
     }
 

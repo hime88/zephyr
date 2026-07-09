@@ -51,6 +51,30 @@ public struct DXFHatchPatternDefinition: Hashable, Sendable {
 
 public enum DXFHatchGenerator {
     public static let maxGeneratedLinesPerPatternDefinition: Double = 4096.0
+    public nonisolated(unsafe) static var importedPatternDefinitions: [String: DXFHatchPatternDefinition] = [:]
+
+    public static func registerImportedPatternDefinition(name: String, lines: [DXFHatchPatternLine]) -> String {
+        let key = importedPatternKey(name: name, lines: lines)
+        importedPatternDefinitions[key.uppercased()] = DXFHatchPatternDefinition(name: name, kind: .custom, lines: lines)
+        return key
+    }
+
+    private static func importedPatternKey(name: String, lines: [DXFHatchPatternLine]) -> String {
+        var hash: UInt64 = 1469598103934665603
+        func mix(_ value: String) {
+            for byte in value.utf8 {
+                hash ^= UInt64(byte)
+                hash &*= 1099511628211
+            }
+        }
+        mix(name.uppercased())
+        for line in lines {
+            mix(String(format: "%.12g,%.12g,%.12g,%.12g,%.12g", line.angleDegrees, line.base.x, line.base.y, line.offset.x, line.offset.y))
+            for dash in line.dashes { mix(String(format: ",%.12g", dash)) }
+        }
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().filter { $0.isLetter || $0.isNumber || $0 == "_" }
+        return "__DXF_\(cleanName.isEmpty ? "HATCH" : cleanName)_\(String(hash, radix: 16, uppercase: true))"
+    }
 
     public static func adaptiveMinimumSpacing(for polygon: [Vector3]) -> Double {
         guard polygon.count >= 3 else { return 0.0 }
@@ -143,6 +167,7 @@ public enum DXFHatchGenerator {
         if key.isEmpty || key == "SOLID" {
             return DXFHatchPatternDefinition(name: "SOLID", kind: .solid, lines: [])
         }
+        if let imported = importedPatternDefinitions[key] { return imported }
         return predefinedPatterns[key]
     }
 
@@ -180,7 +205,7 @@ public enum DXFHatchGenerator {
         let safeScale = max(abs(scale), 1e-9)
         let extraAngle = angleDegrees * .pi / 180.0
 
-        if let definition = predefinedPatterns[key] {
+        if let definition = patternDefinition(for: key), !definition.lines.isEmpty {
             var out: [CADPrimitive] = []
             for line in definition.lines {
                 out.append(contentsOf: generateDefinitionLine(
