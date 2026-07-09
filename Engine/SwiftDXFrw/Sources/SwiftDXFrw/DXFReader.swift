@@ -888,22 +888,28 @@ extension DXFReader {
                 }
             case 10:
                 if e.spline != nil {
-                    let cp = Vector3(x: d(v), y: 0, z: 0)
-                    e.spline?.controlPoints.append(cp)
-                } else if let pline = e.pline {
-                    e.plvert = DXFVertex2D()
-                    e.plvert?.x = d(v)
-                    pline.vertices.append(e.plvert!)
-                } else {
+                    e.spline?.controlPoints.append(Vector3(x: d(v), y: 0, z: 0))
+                } else if e.pt != nil {
                     e.pt?.basePoint.x = d(v)
+                } else if let pline = e.pline {
+                    let vertex = DXFVertex2D()
+                    vertex.x = d(v)
+                    e.plvert = vertex
+                    pline.vertices.append(vertex)
                 }
             case 20:
                 if e.spline != nil, !(e.spline?.controlPoints ?? []).isEmpty {
                     e.spline?.controlPoints[e.spline!.controlPoints.count - 1].y = d(v)
+                } else if e.pt != nil {
+                    e.pt?.basePoint.y = d(v)
                 } else if e.plvert != nil {
                     e.plvert?.y = d(v)
-                } else {
-                    e.pt?.basePoint.y = d(v)
+                }
+            case 30:
+                if e.spline != nil, !(e.spline?.controlPoints ?? []).isEmpty {
+                    e.spline?.controlPoints[e.spline!.controlPoints.count - 1].z = d(v)
+                } else if e.pt != nil {
+                    e.pt?.basePoint.z = d(v)
                 }
             case 11:
                 if e.spline != nil {
@@ -919,6 +925,19 @@ extension DXFReader {
                     e.line?.secPoint.y = d(v)
                     e.ellipse?.secPoint.y = d(v)
                 }
+            case 31:
+                if e.spline != nil, !(e.spline?.fitPoints ?? []).isEmpty {
+                    e.spline?.fitPoints[e.spline!.fitPoints.count - 1].z = d(v)
+                } else {
+                    e.line?.secPoint.z = d(v)
+                    e.ellipse?.secPoint.z = d(v)
+                }
+            case 12: e.spline?.tgStart.x = d(v)
+            case 22: e.spline?.tgStart.y = d(v)
+            case 32: e.spline?.tgStart.z = d(v)
+            case 13: e.spline?.tgEnd.x = d(v)
+            case 23: e.spline?.tgEnd.y = d(v)
+            case 33: e.spline?.tgEnd.z = d(v)
             case 40:
                 if e.spline != nil { e.spline?.knots.append(d(v)) }
                 else if let arc = e.arc { arc.radius = d(v) }

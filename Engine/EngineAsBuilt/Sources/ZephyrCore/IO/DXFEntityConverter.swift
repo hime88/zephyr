@@ -124,22 +124,13 @@ public enum DXFEntityConverter {
 
     private static func convertEllipse(_ e: DXFEntity, color: ColorRGBA?) -> [CADPrimitive] {
         guard let el = e as? DXFEllipseEntity else { return [] }
-        let center = yflip(el.basePoint)
-        let rawMajor = Vector3(x: el.secPoint.x, y: el.secPoint.y, z: el.secPoint.z)
-        let majorLen = rawMajor.magnitude; let minorLen = majorLen * el.ratio
-        guard majorLen > 1e-12, minorLen > 1e-12 else { return [.point(position: center, color: color)] }
-        let startP = el.startParam; let endP = el.endParam
-        let isFull = abs(abs(endP - startP) - .pi * 2) < 1e-5 || abs(endP - startP) < 1e-5
-        var sweep = endP - startP; if sweep < 0 && !isFull { sweep += .pi * 2.0 }
-        let angle = atan2(rawMajor.y, rawMajor.x); let cosR = cos(angle); let sinR = sin(angle)
-        let segs = 64; var pts: [Vector3] = []
-        for i in 0...segs {
-            let t = Double(i) / Double(segs); let param = startP + sweep * t
-            let px = majorLen * cos(param); let py = minorLen * sin(param)
-            let rx = px * cosR - py * sinR; let ry = px * sinR + py * cosR
-            pts.append(Vector3(x: center.x + rx, y: center.y - ry, z: center.z))
+        let pts = ellipsePoints(el, segments: 96, honorIsCCW: false)
+        guard !pts.isEmpty else { return [.point(position: yflip(el.basePoint), color: color)] }
+
+        let normalized = normalizedEllipse(el)
+        if normalized.isFull {
+            return [.polygon(points: pts, color: color)]
         }
-        if isFull { return [.polygon(points: pts, color: color)] }
         return (0..<(pts.count - 1)).map { .line(start: pts[$0], end: pts[$0 + 1], color: color) }
     }
 
@@ -187,36 +178,50 @@ public enum DXFEntityConverter {
 
     private static func convertHatch(_ e: DXFEntity, color: ColorRGBA?) -> [CADPrimitive] {
         guard let h = e as? DXFHatchEntity else { return [] }
-        let (outerLoop, holes) = extractHatchBoundaries(from: h)
-        let holesArr = holes.map { $0 }
-        if h.isGradient == 1, !outerLoop.isEmpty {
-            var c1 = color ?? .white; var c2 = ColorRGBA(r: UInt8(min(255, Int(c1.r) + 60)), g: UInt8(min(255, Int(c1.g) + 60)), b: UInt8(min(255, Int(c1.b) + 60)))
+        let regions = extractHatchRegions(from: h)
+        guard !regions.isEmpty else { return [] }
+
+        let pattern = h.name.isEmpty ? "SOLID" : h.name
+        let scale = h.scale > 0 ? h.scale : 1.0
+        let angle = h.angle_p * .pi / 180.0
+
+        if h.isGradient == 1 {
+            var c1 = color ?? .white
+            var c2 = ColorRGBA(
+                r: UInt8(min(255, Int(c1.r) + 60)),
+                g: UInt8(min(255, Int(c1.g) + 60)),
+                b: UInt8(min(255, Int(c1.b) + 60)))
             if let gc = h.gradientColors.first, gc.rgb >= 0 { c1 = rgbToRGBA(gc.rgb) }
             if h.gradientColors.count > 1, h.gradientColors[1].rgb >= 0 { c2 = rgbToRGBA(h.gradientColors[1].rgb) }
-            if c1 == c2 { return [.fillComplexPolygon(outer: outerLoop, holes: holesArr, color: c1)] }
-            return [.gradient(outer: outerLoop, holes: holesArr, gradientName: h.gradientName,
-                             angle: h.gradientAngle * .pi / 180.0, color1: c1, color2: c2)]
+            if c1 == c2 {
+                return regions.map { .fillComplexPolygon(outer: $0.outer, holes: $0.holes, color: c1) }
+            }
+            return regions.map {
+                .gradient(outer: $0.outer, holes: $0.holes, gradientName: h.gradientName,
+                          angle: h.gradientAngle * .pi / 180.0, color1: c1, color2: c2)
+            }
         }
-        if h.solid == 1, !outerLoop.isEmpty {
-            return [.fillComplexPolygon(outer: outerLoop, holes: holesArr, color: color)]
+
+        if h.solid == 1 {
+            return regions.map { .fillComplexPolygon(outer: $0.outer, holes: $0.holes, color: color) }
         }
-        if !outerLoop.isEmpty {
-            let background = h.bgColor >= 0 ? DXFColorTable.aciToRGBA(h.bgColor, color24: -1) : nil
-            return [.hatch(boundary: outerLoop, pattern: h.name.isEmpty ? "SOLID" : h.name,
-                          scale: h.scale > 0 ? h.scale : 1.0, angle: h.angle_p * .pi / 180.0,
-                          color: color, backgroundColor: background)]
+
+        let background = h.bgColor >= 0 ? DXFColorTable.aciToRGBA(h.bgColor, color24: -1) : nil
+        return regions.map { region in
+            let boundary = region.holes.isEmpty
+                ? region.outer
+                : DXFHatchGenerator.connectHoles(outer: region.outer, holes: region.holes)
+            return .hatch(boundary: boundary, pattern: pattern,
+                          scale: scale, angle: angle,
+                          color: color, backgroundColor: background)
         }
-        return []
     }
 
-    /// Extract outer boundary and holes from a hatch entity's loops.
-    /// Each loop may contain multiple boundary entities (lines, arcs, ellipses, splines, polylines).
-    private static func extractHatchBoundaries(from h: DXFHatchEntity) -> (outer: [Vector3], holes: [[Vector3]]) {
-        guard !h.loops.isEmpty else { return ([], []) }
+    /// Extract hatch regions. A single DXF HATCH can contain several disconnected
+    /// outer loops, not just one outer loop plus holes.
+    private static func extractHatchRegions(from h: DXFHatchEntity) -> [(outer: [Vector3], holes: [[Vector3]])] {
+        guard !h.loops.isEmpty else { return [] }
 
-        // Build polygon from all entities in a loop. Hatch edge order is not
-        // guaranteed, so each edge is tessellated independently and then stitched
-        // by matching nearest endpoints.
         func buildLoopPolygon(_ loop: DXFHatchLoop) -> [Vector3] {
             var edges: [[Vector3]] = []
             edges.reserveCapacity(loop.entities.count)
@@ -244,15 +249,76 @@ public enum DXFEntityConverter {
             return cleanAdjacentPoints(stitchHatchEdges(edges))
         }
 
-        let loops = h.loops.map { buildLoopPolygon($0) }.filter { $0.count >= 3 }
-        guard !loops.isEmpty else { return ([], []) }
+        let candidates: [(loop: DXFHatchLoop, points: [Vector3])] = h.loops.compactMap { loop in
+            let points = buildLoopPolygon(loop)
+            return points.count >= 3 ? (loop: loop, points: points) : nil
+        }
+        guard !candidates.isEmpty else { return [] }
 
-        // First non-empty loop is the outer boundary; rest are holes
-        let outer = loops[0]
-        let holes = Array(loops.dropFirst())
-        return (outer, holes)
+        let explicitOuterIndices = candidates.indices.filter { hatchLoopLooksOuter(candidates[$0].loop) }
+        let outerIndices = explicitOuterIndices.isEmpty ? Array(candidates.indices) : explicitOuterIndices
+        var consumed = Set<Int>()
+        var regions: [(outer: [Vector3], holes: [[Vector3]])] = []
+
+        for outerIndex in outerIndices.sorted(by: { abs(signedArea(candidates[$0].points)) > abs(signedArea(candidates[$1].points)) }) {
+            guard !consumed.contains(outerIndex) else { continue }
+            let outer = candidates[outerIndex].points
+            var holes: [[Vector3]] = []
+
+            for index in candidates.indices where index != outerIndex && !consumed.contains(index) {
+                let points = candidates[index].points
+                guard points.count >= 3 else { continue }
+                guard pointInPolygon(centroid(points), outer) || pointInPolygon(points[0], outer) else { continue }
+                holes.append(points)
+                consumed.insert(index)
+            }
+
+            consumed.insert(outerIndex)
+            regions.append((outer: outer, holes: holes))
+        }
+
+        for index in candidates.indices where !consumed.contains(index) {
+            regions.append((outer: candidates[index].points, holes: []))
+        }
+
+        return regions
     }
 
+    private static func hatchLoopLooksOuter(_ loop: DXFHatchLoop) -> Bool {
+        (loop.type & 0x01) != 0 || (loop.type & 0x10) != 0
+    }
+
+    private static func signedArea(_ points: [Vector3]) -> Double {
+        guard points.count >= 3 else { return 0.0 }
+        var area = 0.0
+        for i in points.indices {
+            let a = points[i]
+            let b = points[(i + 1) % points.count]
+            area += a.x * b.y - b.x * a.y
+        }
+        return area * 0.5
+    }
+
+    private static func centroid(_ points: [Vector3]) -> Vector3 {
+        guard !points.isEmpty else { return .zero }
+        let sum = points.reduce(Vector3.zero) { $0 + $1 }
+        return sum / Double(points.count)
+    }
+
+    private static func pointInPolygon(_ point: Vector3, _ polygon: [Vector3]) -> Bool {
+        guard polygon.count >= 3 else { return false }
+        var inside = false
+        var j = polygon.count - 1
+        for i in polygon.indices {
+            let pi = polygon[i]
+            let pj = polygon[j]
+            let crosses = ((pi.y > point.y) != (pj.y > point.y)) &&
+                (point.x < (pj.x - pi.x) * (point.y - pi.y) / ((pj.y - pi.y) == 0.0 ? 1e-20 : (pj.y - pi.y)) + pi.x)
+            if crosses { inside.toggle() }
+            j = i
+        }
+        return inside
+    }
 
     private static func hatchLWPolylineToPoints(_ polyline: DXFLWPolylineEntity) -> [Vector3] {
         guard !polyline.vertices.isEmpty else { return [] }
@@ -288,6 +354,7 @@ public enum DXFEntityConverter {
         var out = edges[0]
         used[0] = true
         var usedCount = 1
+        let toleranceSquared = hatchStitchToleranceSquared(for: edges)
 
         func distSq(_ a: Vector3, _ b: Vector3) -> Double {
             let dx = a.x - b.x
@@ -329,7 +396,7 @@ public enum DXFEntityConverter {
                 }
             }
 
-            guard let index = bestIndex else { break }
+            guard let index = bestIndex, bestDistance <= toleranceSquared else { break }
             used[index] = true
             usedCount += 1
             if reverse {
@@ -340,6 +407,24 @@ public enum DXFEntityConverter {
         }
 
         return out
+    }
+
+    private static func hatchStitchToleranceSquared(for edges: [[Vector3]]) -> Double {
+        let points = edges.flatMap { $0 }
+        guard let first = points.first else { return 1e-4 }
+        var minX = first.x, maxX = first.x
+        var minY = first.y, maxY = first.y
+        for point in points.dropFirst() {
+            minX = min(minX, point.x)
+            maxX = max(maxX, point.x)
+            minY = min(minY, point.y)
+            maxY = max(maxY, point.y)
+        }
+        let dx = maxX - minX
+        let dy = maxY - minY
+        let diagonal = sqrt(dx * dx + dy * dy)
+        let tolerance = max(diagonal * 1e-8, 1e-2)
+        return tolerance * tolerance
     }
 
     private static func cleanAdjacentPoints(_ points: [Vector3], toleranceSquared: Double = 1e-10) -> [Vector3] {
@@ -384,24 +469,72 @@ public enum DXFEntityConverter {
 
     /// Convert an ellipse to a polyline approximation
     private static func ellipseToPolyline(_ ellipse: DXFEllipseEntity, segments: Int = 64) -> [Vector3] {
+        ellipsePoints(ellipse, segments: segments, honorIsCCW: true)
+    }
+
+    private static func normalizedEllipse(_ ellipse: DXFEllipseEntity) -> (major: Vector3, ratio: Double, start: Double, end: Double, isFull: Bool) {
+        let twoPi = Double.pi * 2.0
+        var major = Vector3(x: ellipse.secPoint.x, y: ellipse.secPoint.y, z: ellipse.secPoint.z)
+        var ratio = ellipse.ratio
+        var start = ellipse.startParam
+        var end = ellipse.endParam
+        var isFull = abs(abs(end - start) - twoPi) < 1e-5 || abs(end - start) < 1e-5
+
+        if abs(end - start) < 1e-10 {
+            start = 0.0
+            end = twoPi
+            isFull = true
+        }
+
+        if ratio > 1.0 {
+            let oldX = major.x
+            major.x = -(major.y * ratio)
+            major.y = oldX * ratio
+            ratio = 1.0 / ratio
+            if !isFull {
+                let halfPi = Double.pi / 2.0
+                if start < halfPi { start += twoPi }
+                if end < halfPi { end += twoPi }
+                end -= halfPi
+                start -= halfPi
+            }
+        }
+
+        if ellipse.haveExtrusion && ellipse.extrusion.z < 0.0 {
+            let oldStart = start
+            start = twoPi - end
+            end = twoPi - oldStart
+        }
+
+        return (major, ratio, start, end, isFull)
+    }
+
+    private static func ellipsePoints(_ ellipse: DXFEllipseEntity, segments: Int, honorIsCCW: Bool) -> [Vector3] {
+        let normalized = normalizedEllipse(ellipse)
         let center = yflip(ellipse.basePoint)
-        let rawMajor = Vector3(x: ellipse.secPoint.x, y: ellipse.secPoint.y, z: ellipse.secPoint.z)
-        let majorLen = rawMajor.magnitude
-        let minorLen = majorLen * ellipse.ratio
+        let major = normalized.major
+        let majorLen = major.magnitude
+        let minorLen = majorLen * normalized.ratio
         guard majorLen > 1e-12, minorLen > 1e-12 else { return [] }
-        let startP = ellipse.startParam
-        let endP = ellipse.endParam
-        let isFull = abs(abs(endP - startP) - .pi * 2) < 1e-5 || abs(endP - startP) < 1e-5
-        var sweep = endP - startP
-        if sweep < 0 && !isFull { sweep += .pi * 2.0 }
-        let angle = atan2(rawMajor.y, rawMajor.x)
+
+        var sweep = normalized.end - normalized.start
+        if normalized.isFull {
+            sweep = Double.pi * 2.0
+        } else if honorIsCCW && ellipse.isCCW == 0 {
+            if sweep > 0.0 { sweep -= Double.pi * 2.0 }
+        } else if sweep < 0.0 {
+            sweep += Double.pi * 2.0
+        }
+
+        let angle = atan2(major.y, major.x)
         let cosR = cos(angle)
         let sinR = sin(angle)
         let n = max(segments, 3)
         var pts: [Vector3] = []
+        pts.reserveCapacity(n + 1)
         for i in 0...n {
             let t = Double(i) / Double(n)
-            let param = startP + sweep * t
+            let param = normalized.start + sweep * t
             let px = majorLen * cos(param)
             let py = minorLen * sin(param)
             let rx = px * cosR - py * sinR
