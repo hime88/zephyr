@@ -513,8 +513,9 @@ public enum DXFEntityConverter {
         let ins = yflip(img.basePoint)
         let u = yflip(img.secPoint) * (img.sizeU > 0 ? img.sizeU : 1.0)
         let v = yflip(img.vVector) * (img.sizeV > 0 ? img.sizeV : 1.0)
+        let imageName = !img.imageFilePath.isEmpty ? img.imageFilePath : String(format: "%X", img.ref)
         return [.image(insertion: ins, uAxis: u, vAxis: v,
-                      imageName: String(format: "%X", img.ref), clipBoundary: nil, tint: nil)]
+                      imageName: imageName, clipBoundary: nil, tint: nil)]
     }
 
     // MARK: - Helpers

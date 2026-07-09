@@ -60,6 +60,7 @@ public class DXFReader {
         pairs = try parsePairs(content)
         pos = 0
         try parseSections()
+        resolveImageReferences()
         return self
     }
 
@@ -122,7 +123,7 @@ public class DXFReader {
         case "TABLES":    try parseTables()
         case "BLOCKS":    try parseBlocks()
         case "ENTITIES":  try parseEntities()
-        case "OBJECTS":   try skipToEndsec()
+        case "OBJECTS":   try parseObjects()
         default:          try skipToEndsec()
         }
     }
@@ -206,31 +207,41 @@ public class DXFReader {
     // MARK: - TABLES
 
     private func parseTables() throws {
-        var inTable = false
-        var tableType = ""
-
         while pos < pairs.count {
-            let (code, value) = pairs[pos]; pos += 1
-            if code == 0 {
-                if value == "ENDSEC" { return }
-                if value == "ENDTAB" { inTable = false; continue }
-                if value == "TABLE" { inTable = true; continue }
-                // Table entry
-                if inTable {
-                    switch tableType {
-                    case "LAYER":     tryParse { try parseLayer(at: pos - 1) }
-                    case "LTYPE":     tryParse { try parseLType(at: pos - 1) }
-                    case "DIMSTYLE":  tryParse { try parseDimstyle(at: pos - 1) }
-                    case "STYLE":     tryParse { try parseStyle(at: pos - 1) }
-                    case "VPORT":     tryParse { try parseVport(at: pos - 1) }
-                    case "APPID":     tryParse { try parseAppId(at: pos - 1) }
-                    case "BLOCK_RECORD": tryParse { try parseBlockRecord(at: pos - 1) }
-                    case "IMAGEDEF":  tryParse { try parseImageDef(at: pos - 1) }
-                    default: break
-                    }
+            let (code, value) = pairs[pos]
+            if code == 0 && value == "ENDSEC" { pos += 1; return }
+            guard code == 0 && value == "TABLE" else { pos += 1; continue }
+
+            pos += 1
+            var tableType = ""
+            while pos < pairs.count {
+                let (c, v) = pairs[pos]
+                if c == 2 {
+                    tableType = v.uppercased()
+                    pos += 1
+                    break
                 }
-            } else if code == 2 && inTable == false {
-                tableType = value
+                if c == 0 { break }
+                pos += 1
+            }
+
+            while pos < pairs.count {
+                let (c, v) = pairs[pos]
+                if c == 0 && v == "ENDSEC" { return }
+                if c == 0 && v == "ENDTAB" { pos += 1; break }
+                if c != 0 { pos += 1; continue }
+
+                switch tableType {
+                case "LAYER":        tryParse { try parseLayer(at: pos) }
+                case "LTYPE":        tryParse { try parseLType(at: pos) }
+                case "DIMSTYLE":     tryParse { try parseDimstyle(at: pos) }
+                case "STYLE":        tryParse { try parseStyle(at: pos) }
+                case "VPORT":        tryParse { try parseVport(at: pos) }
+                case "APPID":        tryParse { try parseAppId(at: pos) }
+                case "BLOCK_RECORD": tryParse { try parseBlockRecord(at: pos) }
+                case "IMAGEDEF":     tryParse { try parseImageDef(at: pos) }
+                default:              pos += 1
+                }
             }
         }
     }
@@ -249,13 +260,22 @@ public class DXFReader {
         let (code, typeName) = pairs[startPos]
         guard code == 0 else { return nil }
 
-        // Read all pairs until next 0
+        // Read all pairs until next 0. MTEXT can contain a 101/Embedded Object
+        // payload with opaque group codes that look like normal MTEXT placement
+        // fields; ignore that payload so later 10/20/40 codes do not overwrite
+        // the real insertion point or text height.
         var props: [(Int, String)] = []
         var idx = startPos + 1
+        var skippingEmbeddedMTextObject = false
         while idx < pairs.count {
             let (c, v) = pairs[idx]
             if c == 0 { break }
-            props.append((c, v))
+            if typeName == "MTEXT", c == 101, v.uppercased() == "EMBEDDED OBJECT" {
+                skippingEmbeddedMTextObject = true
+                idx += 1
+                continue
+            }
+            if !skippingEmbeddedMTextObject { props.append((c, v)) }
             idx += 1
         }
         startPos = idx  // advance to next 0
@@ -294,7 +314,7 @@ public class DXFReader {
         case "LEADER":   return parseLeader(allPairs)
         case "IMAGE":    return parseImage(allPairs)
         case "VIEWPORT": return parseViewport(allPairs)
-        case "ACAD_TABLE": return parseTable(allPairs)
+        case "ACAD_TABLE", "TABLE": return parseTable(allPairs)
         default: return DXFEntity(eType: .uNKNOWN)
         }
     }
@@ -408,6 +428,7 @@ extension DXFReader {
             case 40: e.ratio = d(v)
             case 41: e.startParam = d(v)  // already in radians
             case 42: e.endParam = d(v)    // already in radians
+            case 73: e.isCCW = i(v)
             default: break
             }
         }
@@ -916,6 +937,8 @@ extension DXFReader {
                     e.spline?.flags = (e.spline?.flags ?? 0) | (i(v) != 0 ? 4 : 0)  // rational flag
                 } else if let arc = e.arc {
                     arc.isCCW = i(v)
+                } else if let ellipse = e.ellipse {
+                    ellipse.isCCW = i(v)
                 } else if isPolyline {
                     e.pline?.flags = i(v)
                 }
@@ -1028,21 +1051,70 @@ extension DXFReader {
             case 10: e.basePoint.x = d(v)
             case 20: e.basePoint.y = d(v)
             case 30: e.basePoint.z = d(v)
-            case 40: e.psHeight = d(v)
-            case 41: e.psWidth = d(v)
+            case 40: e.psWidth = d(v)
+            case 41: e.psHeight = d(v)
             case 12: e.centerPX = d(v)
             case 22: e.centerPY = d(v)
+            case 17: e.viewTarget.x = d(v)
+            case 27: e.viewTarget.y = d(v)
+            case 37: e.viewTarget.z = d(v)
+            case 45: e.viewHeight = d(v)
+            case 51: e.twistAngle = d(v)
             case 68: e.vpStatus = i(v)
+            case 69: e.vpID = i(v)
             default: break
             }
         }
         return e
     }
 
-    func parseTable(_ pairs: [(Int, String)]) -> DXFTableEntity {
-        let e = DXFTableEntity()
-        applyCommon(pairs, to: e)
-        return e
+    func parseTable(_ pairs: [(Int, String)]) -> DXFEntity {
+        let table = DXFTableEntity()
+        applyCommon(pairs, to: table)
+
+        var blockName = ""
+        var insertion = Vector3.zero
+        var horizontal = Vector3(x: 1, y: 0, z: 0)
+        var inAcDbTable = false
+        var sawHorizontal = false
+
+        for (c, v) in pairs {
+            if c == 100 {
+                inAcDbTable = v.uppercased() == "ACDBTABLE"
+                continue
+            }
+
+            if !inAcDbTable {
+                switch c {
+                case 2: if blockName.isEmpty { blockName = v }
+                case 10: insertion.x = d(v)
+                case 20: insertion.y = d(v)
+                case 30: insertion.z = d(v)
+                default: break
+                }
+            } else {
+                switch c {
+                case 11: horizontal.x = d(v); sawHorizontal = true
+                case 21: horizontal.y = d(v)
+                case 31: horizontal.z = d(v)
+                default: break
+                }
+            }
+        }
+
+        guard !blockName.isEmpty else { return table }
+
+        let insert = DXFInsertEntity()
+        applyCommon(pairs, to: insert)
+        insert.name = blockName
+        insert.basePoint = insertion
+        insert.xScale = 1.0
+        insert.yScale = 1.0
+        insert.zScale = 1.0
+        insert.colCount = 1
+        insert.rowCount = 1
+        insert.angle = sawHorizontal ? atan2(horizontal.y, horizontal.x) : 0.0
+        return insert
     }
 
     // MARK: - Table entry parsers
@@ -1053,7 +1125,7 @@ extension DXFReader {
         idx += 1
         while idx < pairs.count {
             let (c, v) = pairs[idx]; idx += 1
-            if c == 0 { pos = idx; break }
+            if c == 0 { pos = idx - 1; break }
             switch c {
             case 2:   entry.name = decode(v)
             case 5:   entry.handle = parseHandle(v)
@@ -1076,7 +1148,7 @@ extension DXFReader {
         idx += 1
         while idx < pairs.count {
             let (c, v) = pairs[idx]; idx += 1
-            if c == 0 { pos = idx; break }
+            if c == 0 { pos = idx - 1; break }
             switch c {
             case 2:   entry.name = v
             case 3:   entry.desc = v
@@ -1097,7 +1169,7 @@ extension DXFReader {
         idx += 1
         while idx < pairs.count {
             let (c, v) = pairs[idx]; idx += 1
-            if c == 0 { pos = idx; break }
+            if c == 0 { pos = idx - 1; break }
             switch c {
             case 2:   entry.name = v
             case 3:   entry.dimpost = v
@@ -1180,7 +1252,7 @@ extension DXFReader {
         idx += 1
         while idx < pairs.count {
             let (c, v) = pairs[idx]; idx += 1
-            if c == 0 { pos = idx; break }
+            if c == 0 { pos = idx - 1; break }
             switch c {
             case 2:   entry.name = v
             case 3:   entry.font = v
@@ -1205,7 +1277,7 @@ extension DXFReader {
         idx += 1
         while idx < pairs.count {
             let (c, v) = pairs[idx]; idx += 1
-            if c == 0 { pos = idx; break }
+            if c == 0 { pos = idx - 1; break }
             switch c {
             case 2:   entry.name = v
             case 5:   entry.handle = parseHandle(v)
@@ -1256,7 +1328,7 @@ extension DXFReader {
         idx += 1
         while idx < pairs.count {
             let (c, v) = pairs[idx]; idx += 1
-            if c == 0 { pos = idx; break }
+            if c == 0 { pos = idx - 1; break }
             switch c {
             case 2:   entry.name = v
             case 5:   entry.handle = parseHandle(v)
@@ -1273,7 +1345,7 @@ extension DXFReader {
         idx += 1
         while idx < pairs.count {
             let (c, v) = pairs[idx]; idx += 1
-            if c == 0 { pos = idx; break }
+            if c == 0 { pos = idx - 1; break }
             switch c {
             case 2:   entry.name = v
             case 5:   entry.handle = parseHandle(v)
@@ -1293,7 +1365,7 @@ extension DXFReader {
         idx += 1
         while idx < pairs.count {
             let (c, v) = pairs[idx]; idx += 1
-            if c == 0 { pos = idx; break }
+            if c == 0 { pos = idx - 1; break }
             switch c {
             case 1:   entry.name_p = v
             case 5:   entry.handle = parseHandle(v)
@@ -1309,6 +1381,41 @@ extension DXFReader {
             }
         }
         imagedefs.append(entry)
+    }
+
+    // MARK: - OBJECTS section
+
+    private func parseObjects() throws {
+        while pos < pairs.count {
+            let (c, v) = pairs[pos]
+            if c == 0 && v == "ENDSEC" { pos += 1; return }
+            if c == 0 && v == "IMAGEDEF" {
+                tryParse { try parseImageDef(at: pos) }
+            } else {
+                pos += 1
+            }
+        }
+    }
+
+    private func resolveImageReferences() {
+        guard !imagedefs.isEmpty else { return }
+        var pathByHandle: [UInt32: String] = [:]
+        for def in imagedefs where def.handle != 0 && !def.name_p.isEmpty {
+            pathByHandle[def.handle] = def.name_p
+        }
+        guard !pathByHandle.isEmpty else { return }
+
+        func resolve(_ list: [DXFEntity]) {
+            for entity in list {
+                if let image = entity as? DXFImageEntity, let path = pathByHandle[image.ref] {
+                    image.imageFilePath = path
+                }
+                if let block = entity as? DXFBlockEntity { resolve(block.entities) }
+            }
+        }
+
+        resolve(entities)
+        for block in blocks { resolve(block.entities) }
     }
 
     // MARK: - BLOCKS section

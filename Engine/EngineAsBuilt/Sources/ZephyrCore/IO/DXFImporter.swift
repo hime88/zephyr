@@ -209,8 +209,13 @@ public enum DXFImporter {
         Vector3(x: point.x, y: -point.y, z: point.z)
     }
 
+    private static func cadPoint(_ point: SwiftDXFrw.Vector3, extrusion: SwiftDXFrw.Vector3?) -> Vector3 {
+        guard let extrusion, !isDefaultExtrusion(extrusion) else { return cadPoint(point) }
+        return cadPoint(ocsToWcs(point, extrusion: extrusion))
+    }
+
     private static func insertTransform(_ insert: DXFInsertEntity, blockBase: Vector3, column: Int = 0, row: Int = 0) -> Transform3D {
-        let insertion = Self.cadPoint(insert.basePoint)
+        let insertion = Self.cadPoint(insert.basePoint, extrusion: insert.haveExtrusion ? insert.extrusion : nil)
         let translate = Transform3D.translated(by: insertion)
         let rotate = Transform3D.rotated(by: -insert.angle)
         let arrayOffset = Transform3D.translated(by: Vector3(
@@ -227,6 +232,41 @@ public enum DXFImporter {
             .multiplying(by: arrayOffset)
             .multiplying(by: scale)
             .multiplying(by: base)
+    }
+
+    private static func isDefaultExtrusion(_ n: SwiftDXFrw.Vector3) -> Bool {
+        abs(n.x) < 1e-12 && abs(n.y) < 1e-12 && abs(n.z - 1.0) < 1e-12
+    }
+
+    private static func ocsToWcs(_ point: SwiftDXFrw.Vector3, extrusion n: SwiftDXFrw.Vector3) -> SwiftDXFrw.Vector3 {
+        var az = n
+        var mag = sqrt(az.x * az.x + az.y * az.y + az.z * az.z)
+        if mag < 1e-12 {
+            az = SwiftDXFrw.Vector3(x: 0, y: 0, z: 1)
+            mag = 1.0
+        }
+        az.x /= mag; az.y /= mag; az.z /= mag
+
+        var ax: SwiftDXFrw.Vector3
+        if abs(az.x) < 0.015625 && abs(az.y) < 0.015625 {
+            ax = SwiftDXFrw.Vector3(x: az.z, y: 0, z: -az.x)
+        } else {
+            ax = SwiftDXFrw.Vector3(x: -az.y, y: az.x, z: 0)
+        }
+        mag = sqrt(ax.x * ax.x + ax.y * ax.y + ax.z * ax.z)
+        if mag > 1e-12 { ax.x /= mag; ax.y /= mag; ax.z /= mag }
+
+        var ay = SwiftDXFrw.Vector3(
+            x: az.y * ax.z - az.z * ax.y,
+            y: az.z * ax.x - az.x * ax.z,
+            z: az.x * ax.y - az.y * ax.x)
+        mag = sqrt(ay.x * ay.x + ay.y * ay.y + ay.z * ay.z)
+        if mag > 1e-12 { ay.x /= mag; ay.y /= mag; ay.z /= mag }
+
+        return SwiftDXFrw.Vector3(
+            x: ax.x * point.x + ay.x * point.y + az.x * point.z,
+            y: ax.y * point.x + ay.y * point.y + az.y * point.z,
+            z: ax.z * point.x + ay.z * point.y + az.z * point.z)
     }
 
     private static func transformPrimitive(_ primitive: CADPrimitive, by transform: Transform3D) -> CADPrimitive {

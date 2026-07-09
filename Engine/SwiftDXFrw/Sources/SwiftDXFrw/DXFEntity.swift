@@ -817,6 +817,7 @@ public class DXFHatchEntity: DXFPointEntity {
 
 public class DXFImageEntity: DXFLineEntity {
     public var ref: UInt32             // 340
+    public var imageFilePath: String   // resolved IMAGEDEF path/name
     public var vVector: Vector3        // 12,22,32
     public var sizeU: Double           // 13
     public var sizeV: Double           // 23
@@ -828,6 +829,7 @@ public class DXFImageEntity: DXFLineEntity {
 
     public override init(eType: DXFEType = .iMAGE) {
         self.ref = 0
+        self.imageFilePath = ""
         self.vVector = .zero
         self.sizeU = 0
         self.sizeV = 0
@@ -934,10 +936,13 @@ public class DXFLeaderEntity: DXFEntity {
 public class DXFViewportEntity: DXFPointEntity {
     public var vpStatus: Int          // 68
     public var vpID: Int              // 69
-    public var psWidth: Double        // 41
-    public var psHeight: Double       // 40
+    public var psWidth: Double        // 40
+    public var psHeight: Double       // 41
     public var centerPX: Double       // 12
     public var centerPY: Double       // 22
+    public var viewTarget: Vector3    // 17,27,37
+    public var viewHeight: Double     // 45
+    public var twistAngle: Double     // 51
 
     public override init(eType: DXFEType = .vIEWPORT) {
         self.vpStatus = 0
@@ -946,6 +951,9 @@ public class DXFViewportEntity: DXFPointEntity {
         self.psHeight = 156
         self.centerPX = 128.5
         self.centerPY = 97.5
+        self.viewTarget = .zero
+        self.viewHeight = 0
+        self.twistAngle = 0
         super.init(eType: eType)
     }
 }
@@ -953,7 +961,14 @@ public class DXFViewportEntity: DXFPointEntity {
 // MARK: - Table (ACAD_TABLE)
 
 public class DXFTableEntity: DXFEntity {
+    public var blockName: String
+    public var insertion: Vector3
+    public var horizontal: Vector3
+
     public override init(eType: DXFEType = .tABLE) {
+        self.blockName = ""
+        self.insertion = .zero
+        self.horizontal = Vector3(x: 1, y: 0, z: 0)
         super.init(eType: eType)
     }
 }
