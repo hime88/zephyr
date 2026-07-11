@@ -1087,6 +1087,33 @@ public final class CADDocument {
     /// Bulk import layers, blocks, and entities without per-item undo snapshots.
     /// Used by the tab manager to load a DXF file cleanly.
     public func importLayersBlocksEntities(layers: [Layer], blocks: [CADBlock], entities: [CADEntity]) {
+        // Guard against potentially corrupted data from DXF import
+        guard layers.count < 100_000 else {
+            print("[CADDocument] ERROR: refusing to import \(layers.count) layers (limit 100k)")
+            return
+        }
+        guard blocks.count < 500_000 else {
+            print("[CADDocument] ERROR: refusing to import \(blocks.count) blocks (limit 500k)")
+            return
+        }
+        guard entities.count < 10_000_000 else {
+            print("[CADDocument] ERROR: refusing to import \(entities.count) entities (limit 10M)")
+            return
+        }
+        print("[CADDocument] importLayersBlocksEntities: \(layers.count) layers, \(blocks.count) blocks, \(entities.count) entities")
+
+        // Pre-validate entity handles: duplicate handles can cause dictionary corruption
+        var seenHandles = Set<UUID>()
+        seenHandles.reserveCapacity(entities.count)
+        for entity in entities {
+            guard seenHandles.insert(entity.handle).inserted else {
+                print("[CADDocument] WARNING: duplicate entity handle \(entity.handle), skipping")
+                continue
+            }
+        }
+        seenHandles.removeAll(keepingCapacity: true)
+
+        entityRegistry.reserveCapacity(entities.count)
         for layer in layers { layerTable[layer.handle] = layer }
         if activeLayerID == nil, let first = layers.first { activeLayerID = first.handle }
         for block in blocks { blockTable[block.handle] = block }
@@ -1098,6 +1125,7 @@ public final class CADDocument {
             }
             entityRegistry[e.handle] = e
         }
+        print("[CADDocument] import complete: registry has \(entityRegistry.count) entities")
         markEdited(regenerate: true)
         rebuildEntityGrid()   // build eagerly so the first hover doesn't pay for it
     }
@@ -1200,6 +1228,27 @@ public final class CADDocument {
     // MARK: - Snapshot / Restore
 
     public func snapshot() -> CADDocumentSnapshot {
+        // Validate internal dictionaries haven't been corrupted
+        let entityCount = entityRegistry.count
+        let layerCount = layerTable.count
+        let blockCount = blockTable.count
+        guard entityCount < 10_000_000 else {
+            print("[CADDocument] FATAL: entityRegistry.count = \(entityCount) — possible memory corruption, refusing snapshot")
+            return CADDocumentSnapshot(
+                layers: [:], blocks: [:], entities: [:], constraints: [:],
+                solvedTransforms: [:], activeLayerID: nil, unit: unit,
+                textStyleFonts: [:], dimensionStyles: [:], linetypePatterns: [:],
+                imageAssetNames: [])
+        }
+        guard layerCount < 100_000 else {
+            print("[CADDocument] FATAL: layerTable.count = \(layerCount) — possible memory corruption")
+            return CADDocumentSnapshot(
+                layers: [:], blocks: [:], entities: [:], constraints: [:],
+                solvedTransforms: [:], activeLayerID: nil, unit: unit,
+                textStyleFonts: [:], dimensionStyles: [:], linetypePatterns: [:],
+                imageAssetNames: [])
+        }
+
         // Collect asset names from all entities and blocks
         var names = Set<String>()
         for entity in entityRegistry.values {

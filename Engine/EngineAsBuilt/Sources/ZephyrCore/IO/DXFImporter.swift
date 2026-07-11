@@ -48,6 +48,17 @@ public enum DXFImporter {
     }
 
     private static func convertDXFToCAD(reader: DXFReader) -> DXFImportResult {
+        let entityCount = reader.entities.count
+        let blockCount = reader.blocks.count
+        let totalBlockEntities = reader.blocks.reduce(0) { $0 + $1.entities.count }
+        print("[DXFImporter] Converting: \(entityCount) entities, \(blockCount) blocks (\(totalBlockEntities) sub-entities), \(reader.layers.count) layers")
+
+        // Guard against pathological data
+        guard entityCount < 10_000_000 else {
+            print("[DXFImporter] ERROR: \(entityCount) entities exceeds safety limit")
+            return DXFImportResult(layers: [], blocks: [], entities: [], textStyleFonts: [:], linetypePatterns: [:], dimensionStyles: [:], views: [])
+        }
+
         let globalLineTypeScale = reader.header.ltScale > 0 ? reader.header.ltScale : 1.0
         var layers: [Layer] = []
         var layerNameToID: [String: UUID] = [:]

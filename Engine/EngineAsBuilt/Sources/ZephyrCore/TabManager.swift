@@ -251,6 +251,7 @@ public final class TabManager {
     /// - Throws: `DXFImportError`, `DWGImportError` or `EABError` if parsing fails.
     @discardableResult
     public func openTab(url: URL) throws -> Int {
+        print("[TabManager] openTab: \(url.lastPathComponent)")
         let ext = url.pathExtension.lowercased()
         if ext == "eab" {
             return try openEAB(url: url)
@@ -278,7 +279,9 @@ public final class TabManager {
             switchToTab(at: idx)
             return idx
         }
+        print("[TabManager] Importing DXF...")
         let imported = try DXFImporter.importDXFViews(filePath: url.path)
+        print("[TabManager] DXF imported: \(imported.layers.count) layers, \(imported.blocks.count) blocks, \(imported.entities.count) entities, \(imported.views.count) views")
 
         for font in Set(imported.textStyleFonts.values) {
             CADFontManager.debugFontLookup(font)

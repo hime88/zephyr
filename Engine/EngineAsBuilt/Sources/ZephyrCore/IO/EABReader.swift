@@ -311,7 +311,7 @@ public enum EABReader {
 
     private static func parseDimensionStyles(_ r: BinaryReader) throws -> [String: CADDimensionStyle] {
         var styles: [String: CADDimensionStyle] = [:]
-        let count = r.readUInt32()
+        let count = safeCount(r.readUInt32(), limit: maxSafeSectionCount, label: "dimensionStyles")
         let decoder = JSONDecoder()
         for _ in 0..<count {
             let styleName = r.readString()
@@ -444,7 +444,7 @@ public enum EABReader {
 
     private static func parseSectionTable(from data: Data, at offset: Int) throws -> [EABSectionEntry] {
         let r = BinaryReader(data: data, startOffset: offset)
-        let count = Int(r.readUInt32())
+        let count = safeCount(r.readUInt32(), limit: 1000, label: "sectionTable")
         var entries: [EABSectionEntry] = []
         for _ in 0..<count {
             let typeRaw = r.readUInt32()
@@ -464,10 +464,39 @@ public enum EABReader {
         return entries
     }
 
+    // MARK: - Safety Limits
+
+    /// Maximum entity count per document to prevent OOM on corrupted files.
+    private static let maxSafeEntityCount = 5_000_000
+    /// Maximum block count per document.
+    private static let maxSafeBlockCount = 500_000
+    /// Maximum layer count per document.
+    private static let maxSafeLayerCount = 50_000
+    /// Maximum primitive count per block/entity.
+    private static let maxSafePrimitiveCount = 10_000_000
+    /// Maximum vertex count per polyline/polygon.
+    private static let maxSafeVertexCount = 1_000_000
+    /// Maximum edge count per hatch.
+    private static let maxSafeHatchEdgeCount = 100_000
+    /// Maximum style count per block.
+    private static let maxSafeStyleCount = 100_000
+    /// Maximum count for any section array/dict.
+    private static let maxSafeSectionCount = 10_000_000
+
+    /// Clamp a UInt32 count to a safe limit, logging a warning if it was exceeded.
+    private static func safeCount(_ raw: UInt32, limit: Int, label: String) -> Int {
+        let value = Int(raw)
+        guard value <= limit else {
+            print("[EABReader] WARNING: \(label) count \(value) exceeds limit \(limit), capping")
+            return limit
+        }
+        return value
+    }
+
     // MARK: - Layer Parsing
 
     private static func parseLayers(_ r: BinaryReader, version: UInt32) throws -> [Layer] {
-        let count = Int(r.readUInt32())
+        let count = safeCount(r.readUInt32(), limit: maxSafeLayerCount, label: "layers")
         var layers: [Layer] = []
         for _ in 0..<count {
             let handle = r.readUUID()
@@ -507,7 +536,7 @@ public enum EABReader {
     // MARK: - Block Parsing
 
     private static func parseBlocks(_ r: BinaryReader, version: UInt32) throws -> [CADBlock] {
-        let count = Int(r.readUInt32())
+        let count = safeCount(r.readUInt32(), limit: maxSafeBlockCount, label: "blocks")
         var blocks: [CADBlock] = []
         for _ in 0..<count {
             let handle = r.readUUID()
@@ -536,7 +565,7 @@ public enum EABReader {
     }
 
     private static func parsePrimitiveStyles(_ r: BinaryReader) -> [Int: CADPrimitiveStyle] {
-        let count = Int(r.readUInt32())
+        let count = safeCount(r.readUInt32(), limit: maxSafeStyleCount, label: "primitiveStyles")
         var styles: [Int: CADPrimitiveStyle] = [:]
         styles.reserveCapacity(count)
         for _ in 0..<count {
@@ -594,7 +623,7 @@ public enum EABReader {
     // MARK: - Entity Parsing
 
     private static func parseEntities(_ r: BinaryReader, version: UInt32) throws -> [CADEntity] {
-        let count = Int(r.readUInt32())
+        let count = safeCount(r.readUInt32(), limit: maxSafeEntityCount, label: "entities")
         var entities: [CADEntity] = []
         entities.reserveCapacity(count)
         for _ in 0..<count {
@@ -717,7 +746,7 @@ public enum EABReader {
     // MARK: - Constraint Parsing
 
     private static func parseConstraints(_ r: BinaryReader) throws -> [CADConstraint] {
-        let count = Int(r.readUInt32())
+        let count = safeCount(r.readUInt32(), limit: maxSafeSectionCount, label: "constraints")
         var constraints: [CADConstraint] = []
         for _ in 0..<count {
             let handle = r.readUUID()
@@ -752,7 +781,7 @@ public enum EABReader {
     // MARK: - Solved Transforms Parsing
 
     private static func parseSolvedTransforms(_ r: BinaryReader) throws -> [UUID: Transform3D] {
-        let count = Int(r.readUInt32())
+        let count = safeCount(r.readUInt32(), limit: maxSafeSectionCount, label: "solvedTransforms")
         var transforms: [UUID: Transform3D] = [:]
         for _ in 0..<count {
             let handle = r.readUUID()
@@ -805,7 +834,7 @@ public enum EABReader {
     // MARK: - Text Style Fonts Parsing
 
     private static func parseTextStyleFonts(_ r: BinaryReader) throws -> [String: String] {
-        let count = Int(r.readUInt32())
+        let count = safeCount(r.readUInt32(), limit: maxSafeSectionCount, label: "textStyleFonts")
         var fonts: [String: String] = [:]
         fonts.reserveCapacity(count)
         for _ in 0..<count {
@@ -819,12 +848,12 @@ public enum EABReader {
     // MARK: - Linetype Patterns Parsing
 
     private static func parseLinetypePatterns(_ r: BinaryReader) throws -> [String: [Double]] {
-        let count = Int(r.readUInt32())
+        let count = safeCount(r.readUInt32(), limit: maxSafeSectionCount, label: "linetypePatterns")
         var patterns: [String: [Double]] = [:]
         patterns.reserveCapacity(count)
         for _ in 0..<count {
             let name = r.readString()
-            let patternCount = Int(r.readUInt32())
+            let patternCount = safeCount(r.readUInt32(), limit: 10_000, label: "patternDashes")
             var pattern: [Double] = []
             pattern.reserveCapacity(patternCount)
             for _ in 0..<patternCount {
@@ -838,15 +867,15 @@ public enum EABReader {
     // MARK: - Image Store Parsing
 
     private static func parseImageStore(_ r: BinaryReader) throws -> [String: CADImageAsset] {
-        let count = Int(r.readUInt32())
+        let count = safeCount(r.readUInt32(), limit: maxSafeSectionCount, label: "imageStore")
         var store: [String: CADImageAsset] = [:]
         store.reserveCapacity(count)
         for _ in 0..<count {
             let name = r.readString()
             let originalFilename = r.readString()
             let mimeType = r.readString()
-            let pixelWidth = Int(r.readUInt32())
-            let pixelHeight = Int(r.readUInt32())
+            let pixelWidth = safeCount(r.readUInt32(), limit: 100_000, label: "imgPixelWidth")
+            let pixelHeight = safeCount(r.readUInt32(), limit: 100_000, label: "imgPixelHeight")
             let sha256 = r.readString()
             let rawDataLen = r.readUInt64()
             guard rawDataLen <= UInt64(Int.max) else {
@@ -895,17 +924,17 @@ public enum EABReader {
 
     private static func parseBVHTree(_ r: BinaryReader) throws -> BVHTree {
         // Entity indices
-        let entityCount = Int(r.readUInt32())
+        let entityCount = safeCount(r.readUInt32(), limit: maxSafeEntityCount, label: "bvhEntities")
         var entityIndices: [UInt32] = []
         for _ in 0..<entityCount { entityIndices.append(r.readUInt32()) }
 
         // Block indices
-        let blockCount = Int(r.readUInt32())
+        let blockCount = safeCount(r.readUInt32(), limit: maxSafeBlockCount, label: "bvhBlocks")
         var blockIndices: [UInt32] = []
         for _ in 0..<blockCount { blockIndices.append(r.readUInt32()) }
 
         // Nodes
-        let nodeCount = Int(r.readUInt32())
+        let nodeCount = safeCount(r.readUInt32(), limit: maxSafeSectionCount, label: "bvhNodes")
         var nodes: [BVHNode] = []
         nodes.reserveCapacity(nodeCount)
         for _ in 0..<nodeCount {
@@ -931,7 +960,7 @@ public enum EABReader {
 
     /// Parse CADPrimitives from inline block/entity record data.
     private static func parsePrimitives(_ r: BinaryReader, version: UInt32) throws -> [CADPrimitive] {
-        let count = Int(r.readUInt32())
+        let count = safeCount(r.readUInt32(), limit: maxSafePrimitiveCount, label: "primitives")
         guard count > 0 else { return [] }
         var prims: [CADPrimitive] = []
         prims.reserveCapacity(count)
@@ -948,7 +977,7 @@ public enum EABReader {
             let readHatchPathMetadata = { () -> (edges: [CADHatchEdge], carrier: Bool) in
                 guard version >= 11 else { return ([], false) }
                 let carrier = r.readUInt8() != 0
-                let edgeCount = Int(r.readUInt32())
+                let edgeCount = safeCount(r.readUInt32(), limit: maxSafeHatchEdgeCount, label: "hatchEdges")
                 var edges: [CADHatchEdge] = []
                 edges.reserveCapacity(edgeCount)
                 for _ in 0..<edgeCount {
@@ -973,20 +1002,20 @@ public enum EABReader {
                         let degree = Int(r.readUInt32())
                         let closed = r.readUInt8() != 0
                         let periodic = r.readUInt8() != 0
-                        let controlCount = Int(r.readUInt32())
+                        let controlCount = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "splineCtrlPts")
                         var controlPoints: [Vector3] = []
                         controlPoints.reserveCapacity(controlCount)
                         for _ in 0..<controlCount {
                             controlPoints.append(Vector3(x: r.readFloat64(), y: r.readFloat64(), z: r.readFloat64()))
                         }
-                        let knotCount = Int(r.readUInt32())
+                        let knotCount = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "splineKnots")
                         var knots: [Double] = []
                         knots.reserveCapacity(knotCount)
                         for _ in 0..<knotCount { knots.append(r.readFloat64()) }
                         let hasWeights = r.readUInt8() != 0
                         var weights: [Double]? = nil
                         if hasWeights {
-                            let weightCount = Int(r.readUInt32())
+                            let weightCount = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "splineWeights")
                             var values: [Double] = []
                             values.reserveCapacity(weightCount)
                             for _ in 0..<weightCount { values.append(r.readFloat64()) }
@@ -1022,7 +1051,7 @@ public enum EABReader {
                 let color = readColor()
                 prims.append(.fillRect(origin: origin, size: size, color: color))
             case 4: // polygon
-                let ptCount = Int(r.readUInt32())
+                let ptCount = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "polygonVerts")
                 var pts: [Vector3] = []
                 for _ in 0..<ptCount {
                     pts.append(Vector3(x: r.readFloat64(), y: r.readFloat64(), z: r.readFloat64()))
@@ -1030,7 +1059,7 @@ public enum EABReader {
                 let color = readColor()
                 prims.append(.polygon(points: pts, color: color))
             case 15: // polyline
-                let ptCount = Int(r.readUInt32())
+                let ptCount = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "polylineVerts")
                 var pts: [Vector3] = []
                 for _ in 0..<ptCount {
                     pts.append(Vector3(x: r.readFloat64(), y: r.readFloat64(), z: r.readFloat64()))
@@ -1040,7 +1069,7 @@ public enum EABReader {
             case 18: // bulge-aware polyline
                 let isClosed = r.readUInt8() != 0
                 let lineTypeGenerationEnabled = r.readUInt8() != 0
-                let vertexCount = Int(r.readUInt32())
+                let vertexCount = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "bulgePolyVerts")
                 var vertices: [CADPolylineVertex] = []
                 vertices.reserveCapacity(vertexCount)
                 for _ in 0..<vertexCount {
@@ -1065,7 +1094,7 @@ public enum EABReader {
                         isHatchBoundaryCarrier: metadata.carrier),
                     color: color))
             case 7: // fillPolygon
-                let ptCount = Int(r.readUInt32())
+                let ptCount = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "fillPolyVerts")
                 var pts: [Vector3] = []
                 for _ in 0..<ptCount {
                     pts.append(Vector3(x: r.readFloat64(), y: r.readFloat64(), z: r.readFloat64()))
@@ -1108,12 +1137,12 @@ public enum EABReader {
                     color: color
                 ))
             case 11: // spline
-                let cpCount = Int(r.readUInt32())
+                let cpCount = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "splineCPs")
                 var controlPoints: [Vector3] = []
                 for _ in 0..<cpCount {
                     controlPoints.append(Vector3(x: r.readFloat64(), y: r.readFloat64(), z: r.readFloat64()))
                 }
-                let knotCount = Int(r.readUInt32())
+                let knotCount = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "splineKnots2")
                 var knots: [Double] = []
                 for _ in 0..<knotCount {
                     knots.append(r.readFloat64())
@@ -1138,7 +1167,7 @@ public enum EABReader {
                 let color = readColor()
                 prims.append(.ellipse(center: center, majorAxis: majorAxis, minorRatio: minorRatio, color: color))
             case 13: // hatch
-                let bCount = Int(r.readUInt32())
+                let bCount = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "hatchBoundary")
                 var boundary: [Vector3] = []
                 for _ in 0..<bCount {
                     boundary.append(Vector3(x: r.readFloat64(), y: r.readFloat64(), z: r.readFloat64()))
@@ -1150,7 +1179,7 @@ public enum EABReader {
                 prims.append(.hatch(boundary: boundary, pattern: pattern, scale: scale, angle: angle, color: color, backgroundColor: nil))
             case 19: // hatchPath
                 func readPath() -> CADPolyline {
-                    let count = Int(r.readUInt32())
+                    let count = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "hatchPathVerts")
                     let isClosed = r.readUInt8() != 0
                     let lineTypeGenerationEnabled = r.readUInt8() != 0
                     var vertices: [CADPolylineVertex] = []
@@ -1174,7 +1203,7 @@ public enum EABReader {
                                        isHatchBoundaryCarrier: metadata.carrier)
                 }
                 let boundary = readPath()
-                let holeCount = Int(r.readUInt32())
+                let holeCount = safeCount(r.readUInt32(), limit: maxSafeHatchEdgeCount, label: "hatchHoles")
                 var holes: [CADPolyline] = []
                 holes.reserveCapacity(holeCount)
                 for _ in 0..<holeCount { holes.append(readPath()) }
@@ -1195,7 +1224,7 @@ public enum EABReader {
                 let uAxis = Vector3(x: r.readFloat64(), y: r.readFloat64(), z: r.readFloat64())
                 let vAxis = Vector3(x: r.readFloat64(), y: r.readFloat64(), z: r.readFloat64())
                 let imageName = r.readString()
-                let clipCount = Int(r.readUInt32())
+                let clipCount = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "imageClip")
                 let clipBoundary: [Vector3]? = clipCount > 0 ? (0..<clipCount).map { _ in
                     Vector3(x: r.readFloat64(), y: r.readFloat64(), z: r.readFloat64())
                 } : nil
@@ -1212,15 +1241,15 @@ public enum EABReader {
                     tint: tint
                 ))
             case 9: // fillComplexPolygon
-                let outerCount = Int(r.readUInt32())
+                let outerCount = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "fillComplexOuter")
                 var outer: [Vector3] = []
                 for _ in 0..<outerCount {
                     outer.append(Vector3(x: r.readFloat64(), y: r.readFloat64(), z: r.readFloat64()))
                 }
-                let holeCount = Int(r.readUInt32())
+                let holeCount = safeCount(r.readUInt32(), limit: maxSafeHatchEdgeCount, label: "fillComplexHoles")
                 var holes: [[Vector3]] = []
                 for _ in 0..<holeCount {
-                    let hc = Int(r.readUInt32())
+                    let hc = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "fillComplexHoleVerts")
                     var hole: [Vector3] = []
                     for _ in 0..<hc {
                         hole.append(Vector3(x: r.readFloat64(), y: r.readFloat64(), z: r.readFloat64()))
@@ -1245,15 +1274,15 @@ public enum EABReader {
                     : nil
                 prims.append(.table(data: data, origin: origin, color: color))
             case 10: // gradient
-                let outerCount = Int(r.readUInt32())
+                let outerCount = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "gradientOuter")
                 var outer: [Vector3] = []
                 for _ in 0..<outerCount {
                     outer.append(Vector3(x: r.readFloat64(), y: r.readFloat64(), z: r.readFloat64()))
                 }
-                let holeCount = Int(r.readUInt32())
+                let holeCount = safeCount(r.readUInt32(), limit: maxSafeHatchEdgeCount, label: "gradientHoles")
                 var holes: [[Vector3]] = []
                 for _ in 0..<holeCount {
-                    let hc = Int(r.readUInt32())
+                    let hc = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "gradientHoleVerts")
                     var hole: [Vector3] = []
                     for _ in 0..<hc {
                         hole.append(Vector3(x: r.readFloat64(), y: r.readFloat64(), z: r.readFloat64()))
