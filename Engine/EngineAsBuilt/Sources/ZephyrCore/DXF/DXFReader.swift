@@ -25,6 +25,7 @@ public class DXFReader {
     public var appids: [DXFAppIdEntry] = []
     public var blockRecords: [DXFBlockRecordEntry] = []
     public var imagedefs: [DXFImageDefEntry] = []
+    public var layouts: [DXFLayoutEntry] = []
     public var blocks: [DXFBlockEntity] = []
     public var entities: [DXFEntity] = []
 
@@ -1509,10 +1510,42 @@ extension DXFReader {
             if c == 0 && v == "ENDSEC" { pos += 1; return }
             if c == 0 && v == "IMAGEDEF" {
                 tryParse { try parseImageDef(at: pos) }
+            } else if c == 0 && v == "LAYOUT" {
+                tryParse { try parseLayout(at: pos) }
             } else {
                 pos += 1
             }
         }
+    }
+
+    private func parseLayout(at startIdx: Int) throws {
+        var properties: [(Int, String)] = []
+        var idx = startIdx + 1
+        while idx < pairs.count {
+            let (code, value) = pairs[idx]
+            if code == 0 { break }
+            properties.append((code, value))
+            idx += 1
+        }
+        pos = idx
+
+        guard let subclassIndex = properties.firstIndex(where: {
+            $0.0 == 100 && $0.1.caseInsensitiveCompare("AcDbLayout") == .orderedSame
+        }) else { return }
+
+        let layoutProperties = properties[properties.index(after: subclassIndex)...]
+        guard let name = layoutProperties.first(where: { $0.0 == 1 })?.1,
+              !name.isEmpty else { return }
+
+        let tabOrder = layoutProperties.first(where: { $0.0 == 71 })
+            .map { i($0.1) } ?? Int.max
+        let blockRecordHandle = layoutProperties.last(where: { $0.0 == 330 })
+            .map { parseHandle($0.1) } ?? 0
+
+        layouts.append(DXFLayoutEntry(
+            name: name,
+            tabOrder: tabOrder,
+            blockRecordHandle: blockRecordHandle))
     }
 
     private func resolveImageReferences() {

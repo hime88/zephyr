@@ -29,6 +29,9 @@ struct StatusBarUI {
     ) {
         let doc = engine.document
         let currentEntityCount = doc.entityCount
+        let activeViewName = engine.tabManager.activeTab.map { tab in
+            tab.drawingViews[tab.activeViewIndex].name
+        } ?? "Model"
 
         // Check for active save state
         let saveState = engine.tabManager.activeSaveState
@@ -50,6 +53,7 @@ struct StatusBarUI {
             || engine._lastStatusUndo != doc.undoManager.undoDepth
             || engine._lastStatusRedo != doc.undoManager.redoDepth
             || engine._lastStatusLayerID != doc.activeLayerID
+            || engine._lastStatusViewName != activeViewName
             || engine._lastPolarEnabled != engine.snap.polarTrackingEnabled
             || engine._lastOTrackEnabled != engine.snap.objectSnapTrackingEnabled
             || engine._lastExtEnabled != engine.snap.extensionSnapEnabled
@@ -82,12 +86,13 @@ struct StatusBarUI {
 
             // New mockup format: filename · Layer 0 · Entities: 967 · POLAR(45°)
             engine._cachedStatusLeft =
-                "\(tabName)\(dirtyMark)  ·  Layer: \(activeLayerName)  ·  Entities: \(currentEntityCount)\(trackingStr)"
+                "\(tabName)\(dirtyMark)  ·  View: \(activeViewName)  ·  Layer: \(activeLayerName)  ·  Entities: \(currentEntityCount)\(trackingStr)"
 
             engine._lastStatusEntityCount = currentEntityCount
             engine._lastStatusUndo = doc.undoManager.undoDepth
             engine._lastStatusRedo = doc.undoManager.redoDepth
             engine._lastStatusLayerID = doc.activeLayerID
+            engine._lastStatusViewName = activeViewName
             engine._lastPolarEnabled = engine.snap.polarTrackingEnabled
             engine._lastOTrackEnabled = engine.snap.objectSnapTrackingEnabled
             engine._lastExtEnabled = engine.snap.extensionSnapEnabled

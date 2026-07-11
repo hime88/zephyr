@@ -35,7 +35,10 @@ struct AppUI {
 
         // Create a dockspace covering the work area
         let topOffset = AppLayout.topChromeHeight + AppLayout.tabBarHeight
+        let showsDrawingViewTabs = (engine.tabManager.activeTab?.drawingViews.count ?? 0) > 1
+            && engine.tabManager.activeTab?.editingBlockID == nil
         let bottomOffset = AppLayout.statusBarHeight
+            + (showsDrawingViewTabs ? AppLayout.drawingViewTabBarHeight : 0)
         let workH = dh - topOffset - bottomOffset
 
         ImGuiSetNextWindowPos(ImVec2(x: 0, y: topOffset), Int32(ImGuiCond_Always.rawValue), ImVec2(x: 0, y: 0))
@@ -133,7 +136,10 @@ struct AppUI {
             }
         }
 
-        // 10. Status bar at the very bottom — shows entity count, FPS, etc.
+        // 10. Drawing view tabs and status bar at the bottom.
+        if showsDrawingViewTabs {
+            DrawingViewTabBarUI.render(engine: engine, dw: dw, dh: dh)
+        }
         StatusBarUI.render(engine: engine, io: io, dw: dw, dh: dh)
 
         // 11. (Removed: Block editor banner now fully integrated into titlebar)

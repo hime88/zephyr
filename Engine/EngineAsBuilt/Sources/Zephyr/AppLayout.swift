@@ -34,6 +34,8 @@ struct AppLayout {
 
     /// Height of the command-line input strip.
     static var commandLineHeight: Float { ImGuiGetFrameHeight() + 8 }
+    /// Height of the drawing-view tab strip above the status bar.
+    static var drawingViewTabBarHeight: Float { ImGuiGetFrameHeight() + 8 }
     /// Height of the thin status bar at the bottom.
     static var statusBarHeight: Float { ImGuiGetTextLineHeight() + 12 }
     

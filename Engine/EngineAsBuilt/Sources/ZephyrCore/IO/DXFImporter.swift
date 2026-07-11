@@ -36,6 +36,67 @@ public enum DXFImporter {
         var style: CADPrimitiveStyle?
     }
 
+    private struct SheetViewport {
+        let paperCenterX: Double
+        let paperCenterY: Double
+        let paperWidth: Double
+        let paperHeight: Double
+        let status: Int
+        let id: Int
+        let viewCenterX: Double
+        let viewCenterY: Double
+        let viewTargetX: Double
+        let viewTargetY: Double
+        let viewHeight: Double
+        let twistAngle: Double
+
+        init(_ source: DXFViewportEntity) {
+            paperCenterX = source.basePoint.x
+            paperCenterY = source.basePoint.y
+            paperWidth = source.psWidth
+            paperHeight = source.psHeight
+            status = source.vpStatus
+            id = source.vpID
+            viewCenterX = source.centerPX
+            viewCenterY = source.centerPY
+            viewTargetX = source.viewTarget.x
+            viewTargetY = source.viewTarget.y
+            viewHeight = source.viewHeight
+            twistAngle = source.twistAngle * .pi / 180.0
+        }
+
+        var isModelViewport: Bool {
+            let isLayoutViewport = id > 0 ? id == 1 : status == 1
+            return status > 0 && !isLayoutViewport
+                && paperWidth > 1e-9 && paperHeight > 1e-9 && viewHeight > 1e-9
+        }
+
+        var modelToPaperTransform: Transform3D {
+            let scale = paperHeight / viewHeight
+            let centerX = viewTargetX + viewCenterX
+            let centerY = viewTargetY + viewCenterY
+            return Transform3D
+                .translated(by: Vector3(x: paperCenterX, y: -paperCenterY, z: 0))
+                .multiplying(by: .rotated(by: twistAngle))
+                .multiplying(by: .scaled(by: Vector3(x: scale, y: scale, z: 1)))
+                .multiplying(by: .translated(by: Vector3(x: -centerX, y: centerY, z: 0)))
+        }
+
+        func intersects(_ entity: CADEntity) -> Bool {
+            guard let box = entity.worldBoundingBox else { return false }
+            let scale = paperHeight / viewHeight
+            let modelWidth = paperWidth / scale
+            let centerX = viewTargetX + viewCenterX
+            let centerY = -(viewTargetY + viewCenterY)
+            let minX = centerX - modelWidth / 2.0
+            let maxX = centerX + modelWidth / 2.0
+            let minY = centerY - viewHeight / 2.0
+            let maxY = centerY + viewHeight / 2.0
+            return box.max.x >= minX && box.min.x <= maxX
+                && box.max.y >= minY && box.min.y <= maxY
+        }
+    }
+
     public static func importDXF(filePath: String) throws -> (layers: [Layer], blocks: [CADBlock], entities: [CADEntity], textStyleFonts: [String: String], linetypePatterns: [String: [Double]], dimensionStyles: [String: CADDimensionStyle]) {
         let result = try importDXFViews(filePath: filePath)
         return (result.layers, result.blocks, result.entities, result.textStyleFonts, result.linetypePatterns, result.dimensionStyles)
@@ -199,74 +260,132 @@ public enum DXFImporter {
             blockByID[handle] = cadBlock
         }
 
-        var looseEntities: [CADEntity] = []
-        for (drawOrder, entity) in reader.entities.enumerated() {
-            if let insert = entity as? DXFInsertEntity,
-               let blockID = blockNameToID[insert.name],
-               let block = blockByID[blockID] {
-                let columns = max(1, insert.colCount)
-                let rows = max(1, insert.rowCount)
-                let blockBase = blockBaseByName[insert.name] ?? .zero
-                for row in 0..<rows {
-                    for column in 0..<columns {
-                        var cadEnt = CADEntity(handle: UUID(),
-                                               layerID: layerID(for: entity),
-                                               blockID: blockID,
-                                               localGeometry: nil,
-                                               transform: Self.insertTransform(insert, blockBase: blockBase, column: column, row: row),
-                                               xdata: Self.entityStyleXData(from: entity, globalLineTypeScale: globalLineTypeScale),
-                                               drawOrder: drawOrder,
-                                               localBoundingBox: block.localBoundingBox)
-                        cadEnt.drawOrder = drawOrder
-                        looseEntities.append(cadEnt)
-                    }
-                }
-                continue
-            }
+        func convertEntities(_ sourceEntities: [DXFEntity]) -> [CADEntity] {
+            var converted: [CADEntity] = []
+            converted.reserveCapacity(sourceEntities.count)
 
-            if let dimension = entity as? DXFDimensionEntity {
-                var metadata = Self.dimensionMetadata(from: dimension)
-                if let blockID = blockNameToID[dimension.name],
+            for (drawOrder, entity) in sourceEntities.enumerated() {
+                if let insert = entity as? DXFInsertEntity,
+                   let blockID = blockNameToID[insert.name],
                    let block = blockByID[blockID] {
-                    metadata = Self.preservingCachedDimensionText(
-                        metadata, block: block, dimensionStyles: dimensionStyles)
-                    var cadEnt = CADEntity(handle: UUID(),
-                                           layerID: layerID(for: entity),
-                                           blockID: blockID,
-                                           localGeometry: nil,
-                                           transform: .identity,
-                                           xdata: Self.entityStyleXData(from: entity, globalLineTypeScale: globalLineTypeScale),
-                                           drawOrder: drawOrder,
-                                           localBoundingBox: block.localBoundingBox)
-                    cadEnt.dimensionMetadata = metadata.map(CADDimensionMetadataBox.init)
-                    cadEnt.drawOrder = drawOrder
-                    looseEntities.append(cadEnt)
+                    let columns = max(1, insert.colCount)
+                    let rows = max(1, insert.rowCount)
+                    let blockBase = blockBaseByName[insert.name] ?? .zero
+                    for row in 0..<rows {
+                        for column in 0..<columns {
+                            var cadEnt = CADEntity(
+                                handle: UUID(),
+                                layerID: layerID(for: entity),
+                                blockID: blockID,
+                                localGeometry: nil,
+                                transform: Self.insertTransform(
+                                    insert,
+                                    blockBase: blockBase,
+                                    column: column,
+                                    row: row),
+                                xdata: Self.entityStyleXData(
+                                    from: entity,
+                                    globalLineTypeScale: globalLineTypeScale),
+                                drawOrder: drawOrder,
+                                localBoundingBox: block.localBoundingBox)
+                            cadEnt.drawOrder = drawOrder
+                            converted.append(cadEnt)
+                        }
+                    }
                     continue
                 }
 
-                let prims = DXFEntityConverter.convertEntityToPrimitives(entity, bylayerColor: nil)
-                var cadEnt = CADEntity(handle: UUID(),
-                                       layerID: layerID(for: entity),
-                                       blockID: nil,
-                                       localGeometry: prims,
-                                       transform: .identity,
-                                       xdata: Self.entityStyleXData(from: entity, globalLineTypeScale: globalLineTypeScale))
-                cadEnt.dimensionMetadata = metadata.map(CADDimensionMetadataBox.init)
+                if let dimension = entity as? DXFDimensionEntity {
+                    var metadata = Self.dimensionMetadata(from: dimension)
+                    if let blockID = blockNameToID[dimension.name],
+                       let block = blockByID[blockID] {
+                        metadata = Self.preservingCachedDimensionText(
+                            metadata,
+                            block: block,
+                            dimensionStyles: dimensionStyles)
+                        var cadEnt = CADEntity(
+                            handle: UUID(),
+                            layerID: layerID(for: entity),
+                            blockID: blockID,
+                            localGeometry: nil,
+                            transform: .identity,
+                            xdata: Self.entityStyleXData(
+                                from: entity,
+                                globalLineTypeScale: globalLineTypeScale),
+                            drawOrder: drawOrder,
+                            localBoundingBox: block.localBoundingBox)
+                        cadEnt.dimensionMetadata = metadata.map(CADDimensionMetadataBox.init)
+                        cadEnt.drawOrder = drawOrder
+                        converted.append(cadEnt)
+                        continue
+                    }
+
+                    let primitives = DXFEntityConverter.convertEntityToPrimitives(
+                        entity,
+                        bylayerColor: nil)
+                    var cadEnt = CADEntity(
+                        handle: UUID(),
+                        layerID: layerID(for: entity),
+                        blockID: nil,
+                        localGeometry: primitives,
+                        transform: .identity,
+                        xdata: Self.entityStyleXData(
+                            from: entity,
+                            globalLineTypeScale: globalLineTypeScale))
+                    cadEnt.dimensionMetadata = metadata.map(CADDimensionMetadataBox.init)
+                    cadEnt.drawOrder = drawOrder
+                    converted.append(cadEnt)
+                    continue
+                }
+
+                let primitives = DXFEntityConverter.convertEntityToPrimitives(
+                    entity,
+                    bylayerColor: nil)
+                guard !primitives.isEmpty || entity.eType == .pOINT else { continue }
+                var cadEnt = CADEntity(
+                    handle: UUID(),
+                    layerID: layerID(for: entity),
+                    blockID: nil,
+                    localGeometry: primitives,
+                    transform: .identity,
+                    xdata: Self.entityStyleXData(
+                        from: entity,
+                        globalLineTypeScale: globalLineTypeScale))
                 cadEnt.drawOrder = drawOrder
-                looseEntities.append(cadEnt)
-                continue
+                converted.append(cadEnt)
             }
 
-            let prims = DXFEntityConverter.convertEntityToPrimitives(entity, bylayerColor: nil)
-            guard !prims.isEmpty || entity.eType == .pOINT else { continue }
-            var cadEnt = CADEntity(handle: UUID(),
-                                   layerID: layerID(for: entity),
-                                   blockID: nil,
-                                   localGeometry: prims,
-                                   transform: .identity,
-                                   xdata: Self.entityStyleXData(from: entity, globalLineTypeScale: globalLineTypeScale))
-            cadEnt.drawOrder = drawOrder
-            looseEntities.append(cadEnt)
+            return converted
+        }
+
+        func entitiesOwned(by ownerHandle: UInt32) -> [DXFEntity] {
+            guard ownerHandle != 0 else { return [] }
+            var acceptedOwners: Set<UInt32> = [ownerHandle]
+            var includedIndices: Set<Int> = []
+            var addedEntity = true
+
+            while addedEntity {
+                addedEntity = false
+                for (index, entity) in reader.entities.enumerated()
+                    where !includedIndices.contains(index)
+                        && acceptedOwners.contains(entity.parentHandle) {
+                    includedIndices.insert(index)
+                    if entity.handle != 0 { acceptedOwners.insert(entity.handle) }
+                    addedEntity = true
+                }
+            }
+
+            return reader.entities.enumerated().compactMap { index, entity in
+                includedIndices.contains(index) ? entity : nil
+            }
+        }
+
+        func sourceEntities(for layout: DXFLayoutEntry) -> [DXFEntity] {
+            let owned = entitiesOwned(by: layout.blockRecordHandle)
+            if !owned.isEmpty { return owned }
+            guard let blockName = blockNameByHandle[layout.blockRecordHandle],
+                  let block = blockByName[blockName] else { return [] }
+            return block.entities
         }
 
         var textStyleFonts: [String: String] = [:]
@@ -284,10 +403,89 @@ public enum DXFImporter {
             }
         }
 
-        return DXFImportResult(layers: layers, blocks: blocks, entities: looseEntities,
-                              textStyleFonts: textStyleFonts, linetypePatterns: linetypePatterns,
-                              dimensionStyles: dimensionStyles,
-                              views: [DXFDrawingView(name: "Model", kind: .model, entities: looseEntities)])
+        let modelEntities: [CADEntity]
+        let views: [DXFDrawingView]
+
+        if reader.layouts.isEmpty {
+            modelEntities = convertEntities(reader.entities)
+            views = [DXFDrawingView(
+                name: "Model",
+                kind: .model,
+                entities: modelEntities)]
+        } else {
+            let orderedLayouts = reader.layouts.sorted { lhs, rhs in
+                if lhs.tabOrder != rhs.tabOrder { return lhs.tabOrder < rhs.tabOrder }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+            let modelLayout = orderedLayouts.first {
+                $0.name.caseInsensitiveCompare("Model") == .orderedSame
+            }
+
+            let modelSource: [DXFEntity]
+            if let modelLayout {
+                let layoutSource = sourceEntities(for: modelLayout)
+                modelSource = layoutSource.isEmpty
+                    ? reader.entities.filter { $0.space == 0 }
+                    : layoutSource
+            } else {
+                modelSource = reader.entities.filter { $0.space == 0 }
+            }
+            modelEntities = convertEntities(modelSource)
+
+            var importedViews: [DXFDrawingView] = [DXFDrawingView(
+                name: modelLayout?.name ?? "Model",
+                kind: .model,
+                entities: modelEntities)]
+
+            for layout in orderedLayouts where
+                layout.name.caseInsensitiveCompare("Model") != .orderedSame {
+                let paperSource = sourceEntities(for: layout)
+                var paperEntities = convertEntities(paperSource)
+                let paperDrawOrderOffset = modelEntities.count + 1
+                for index in paperEntities.indices where paperEntities[index].drawOrder != Int.max {
+                    paperEntities[index].drawOrder += paperDrawOrderOffset
+                }
+
+                var projectedEntities: [CADEntity] = []
+                let viewports = paperSource.compactMap { $0 as? DXFViewportEntity }
+                    .map(SheetViewport.init)
+                    .filter(\.isModelViewport)
+
+                for viewport in viewports {
+                    let projection = viewport.modelToPaperTransform
+                    for modelEntity in modelEntities where viewport.intersects(modelEntity) {
+                        let projectedDrawOrder = modelEntity.drawOrder == Int.max
+                            ? Int.max
+                            : modelEntity.drawOrder + 1
+                        projectedEntities.append(CADEntity(
+                            layerID: modelEntity.layerID,
+                            blockID: modelEntity.blockID,
+                            localGeometry: modelEntity.localGeometry,
+                            dimensionMetadata: modelEntity.dimensionMetadata,
+                            transform: projection.multiplying(by: modelEntity.transform),
+                            xdata: modelEntity.xdata,
+                            drawOrder: projectedDrawOrder,
+                            localBoundingBox: modelEntity.localBoundingBox,
+                            anchorPoints: modelEntity.anchorPoints))
+                    }
+                }
+
+                importedViews.append(DXFDrawingView(
+                    name: layout.name,
+                    kind: .sheet,
+                    entities: projectedEntities + paperEntities))
+            }
+            views = importedViews
+        }
+
+        return DXFImportResult(
+            layers: layers,
+            blocks: blocks,
+            entities: modelEntities,
+            textStyleFonts: textStyleFonts,
+            linetypePatterns: linetypePatterns,
+            dimensionStyles: dimensionStyles,
+            views: views)
     }
 
     private static func entityStyleXData(

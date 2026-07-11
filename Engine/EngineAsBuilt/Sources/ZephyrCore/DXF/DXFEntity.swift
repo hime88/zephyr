@@ -169,6 +169,20 @@ public enum DXFTableType: String, Sendable {
     case imagedef     = "IMAGEDEF"
 }
 
+// MARK: - Layout object
+
+public struct DXFLayoutEntry: Sendable {
+    public var name: String
+    public var tabOrder: Int
+    public var blockRecordHandle: UInt32
+
+    public init(name: String = "", tabOrder: Int = Int.max, blockRecordHandle: UInt32 = 0) {
+        self.name = name
+        self.tabOrder = tabOrder
+        self.blockRecordHandle = blockRecordHandle
+    }
+}
+
 // MARK: - DRW_Coord equivalent
 
 /// 2D vertex with bulge (for LWPolyline)

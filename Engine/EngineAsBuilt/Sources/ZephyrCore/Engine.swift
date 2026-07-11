@@ -166,6 +166,7 @@ public final class PhrostEngine {
     public var _lastStatusUndo: Int = -1
     public var _lastStatusRedo: Int = -1
     public var _lastStatusLayerID: UUID? = nil
+    public var _lastStatusViewName: String = ""
     /// Status bar cache: last polar tracking state.
     public var _lastPolarEnabled: Bool = false
     /// Status bar cache: last OTRACK state.
