@@ -442,58 +442,346 @@ public final class TabManager {
 
     // MARK: - Block Editor Operations
 
+    private enum BlockEditorMetadata {
+        static let hadPrimitiveStyle = "zephyr.blockEditor.hadPrimitiveStyle"
+        static let colorByBlock = "zephyr.blockEditor.colorByBlock"
+        static let lineTypeByBlock = "zephyr.blockEditor.lineTypeByBlock"
+        static let lineWeightByBlock = "zephyr.blockEditor.lineWeightByBlock"
+    }
+
+    private func blockEditorHex(_ color: ColorRGBA) -> String {
+        String(format: "#%02X%02X%02X", color.r, color.g, color.b)
+    }
+
+    private func blockEditorFlag(_ xdata: [String: XDataValue], _ key: String) -> Bool {
+        guard case .int(let value) = xdata[key] else { return false }
+        return value != 0
+    }
+
+    private func makeBlockEditorEntity(
+        primitive: CADPrimitive,
+        primitiveStyle: CADPrimitiveStyle?,
+        primitiveXData: [String: XDataValue],
+        primitiveIndex: Int,
+        layerIDsByName: [String: UUID],
+        fallbackLayerID: UUID
+    ) -> CADEntity {
+        let styleLayerName = primitiveStyle?.layerName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let layerID = styleLayerName.flatMap {
+            layerIDsByName[$0.uppercased()]
+        } ?? fallbackLayerID
+
+        var xdata = primitiveXData
+        xdata[BlockEditorMetadata.hadPrimitiveStyle] = .int(primitiveStyle == nil ? 0 : 1)
+
+        if let style = primitiveStyle {
+            xdata[BlockEditorMetadata.colorByBlock] = .int(style.isColorByBlock ? 1 : 0)
+            xdata[BlockEditorMetadata.lineTypeByBlock] = .int(style.isLineTypeByBlock ? 1 : 0)
+            xdata[BlockEditorMetadata.lineWeightByBlock] = .int(style.isLineWeightByBlock ? 1 : 0)
+
+            if let color = style.color {
+                xdata["dxf.color"] = .string(blockEditorHex(color))
+            }
+            if let opacity = style.opacity {
+                xdata["dxf.opacity"] = .double(opacity)
+            }
+            if let lineType = style.lineType {
+                let normalized = lineType.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                if !normalized.isEmpty && normalized != "BYLAYER" && normalized != "BYBLOCK" {
+                    xdata["dxf.lineType"] = .string(lineType)
+                }
+            }
+            if let lineWeight = style.lineWeight {
+                xdata["dxf.lineWeight"] = .double(lineWeight)
+            }
+            if let lineTypeScale = style.lineTypeScale {
+                xdata["dxf.lineTypeScale"] = .double(lineTypeScale)
+            }
+            if let geomWidth = style.geomWidth {
+                xdata["dxf.polylineWidth"] = .double(geomWidth)
+            }
+            if let plotStyleHandle = style.plotStyleHandle {
+                xdata["dxf.plotStyleHandle"] = .string(plotStyleHandle)
+            }
+            if let backgroundScale = style.textBackgroundScale {
+                xdata["dxf.mtextBackgroundScale"] = .double(backgroundScale)
+            }
+            xdata["dxf.mtextBackgroundUsesViewportColor"] = .int(
+                style.textBackgroundUsesViewportColor ? 1 : 0)
+            if let backgroundColor = style.textBackgroundColor {
+                xdata["dxf.mtextBackgroundColor"] = .string(blockEditorHex(backgroundColor))
+                if backgroundColor.a < 255 {
+                    xdata["dxf.mtextBackgroundOpacity"] = .double(
+                        Double(backgroundColor.a) / 255.0)
+                }
+            }
+        }
+
+        var localGeometry = [primitive]
+        var transform = Transform3D.identity
+
+        if case .text(
+            let position, let text, let height, let rotation, let textStyle,
+            let alignH, let alignV, let mtextWidth, let color
+        ) = primitive {
+            localGeometry = [.text(
+                position: .zero,
+                text: text,
+                height: height,
+                rotation: 0,
+                style: textStyle,
+                alignH: alignH,
+                alignV: alignV,
+                mtextWidth: mtextWidth,
+                color: color)]
+            transform = .translated(by: position)
+            if rotation != 0 {
+                transform = transform.multiplying(by: .rotated(by: rotation))
+            }
+
+            if let color, xdata["dxf.color"] == nil {
+                xdata["dxf.color"] = .string(blockEditorHex(color))
+            }
+            xdata["dxf.text"] = .string(text)
+            xdata["dxf.textHeight"] = .double(height)
+            if let textStyle {
+                xdata["dxf.textStyle"] = .string(textStyle)
+            }
+            xdata["dxf.alignH"] = .int(alignH)
+            xdata["dxf.alignV"] = .int(alignV)
+            if let mtextWidth {
+                xdata["dxf.mtextWidth"] = .double(mtextWidth)
+            }
+        }
+
+        return CADEntity(
+            handle: UUID(),
+            layerID: layerID,
+            blockID: nil,
+            localGeometry: localGeometry,
+            transform: transform,
+            xdata: xdata,
+            drawOrder: primitiveIndex)
+    }
+
+    private func blockPrimitiveStyle(
+        from entity: CADEntity,
+        in document: CADDocument
+    ) -> CADPrimitiveStyle? {
+        let hadPrimitiveStyle = blockEditorFlag(
+            entity.xdata, BlockEditorMetadata.hadPrimitiveStyle)
+        let layerName = document.layer(for: entity.layerID)?.name
+
+        let color: ColorRGBA?
+        if case .string(let hex) = entity.xdata["dxf.color"] {
+            color = ColorRGBA(hex: hex)
+        } else {
+            color = nil
+        }
+
+        let lineType: String?
+        if case .string(let value) = entity.xdata["dxf.lineType"] {
+            lineType = value
+        } else if blockEditorFlag(entity.xdata, BlockEditorMetadata.lineTypeByBlock) {
+            lineType = "BYBLOCK"
+        } else if hadPrimitiveStyle {
+            lineType = "BYLAYER"
+        } else {
+            lineType = nil
+        }
+
+        let lineWeight: Double?
+        if case .double(let value) = entity.xdata["dxf.lineWeight"] {
+            lineWeight = value
+        } else {
+            lineWeight = nil
+        }
+
+        let lineTypeScale: Double?
+        if case .double(let value) = entity.xdata["dxf.lineTypeScale"] {
+            lineTypeScale = value
+        } else {
+            lineTypeScale = nil
+        }
+
+        let geomWidth: Double?
+        if case .double(let value) = entity.xdata["dxf.polylineWidth"] {
+            geomWidth = value
+        } else {
+            geomWidth = nil
+        }
+
+        let opacity: Double?
+        if case .double(let value) = entity.xdata["dxf.opacity"] {
+            opacity = value
+        } else {
+            opacity = nil
+        }
+
+        let plotStyleHandle: String?
+        if case .string(let value) = entity.xdata["dxf.plotStyleHandle"] {
+            plotStyleHandle = value
+        } else {
+            plotStyleHandle = nil
+        }
+
+        let textBackgroundScale: Double?
+        if case .double(let value) = entity.xdata["dxf.mtextBackgroundScale"] {
+            textBackgroundScale = value
+        } else {
+            textBackgroundScale = nil
+        }
+
+        var textBackgroundColor: ColorRGBA?
+        if case .string(let hex) = entity.xdata["dxf.mtextBackgroundColor"],
+           let parsed = ColorRGBA(hex: hex) {
+            if case .double(let value) = entity.xdata["dxf.mtextBackgroundOpacity"] {
+                textBackgroundColor = ColorRGBA(
+                    r: parsed.r,
+                    g: parsed.g,
+                    b: parsed.b,
+                    a: UInt8(min(255.0, max(0.0, value) * 255.0)))
+            } else {
+                textBackgroundColor = parsed
+            }
+        }
+
+        let textBackgroundUsesViewportColor: Bool
+        if case .int(let value) = entity.xdata["dxf.mtextBackgroundUsesViewportColor"] {
+            textBackgroundUsesViewportColor = value != 0
+        } else {
+            textBackgroundUsesViewportColor = false
+        }
+
+        let hasNonZeroLayer = layerName.map {
+            $0.caseInsensitiveCompare("0") != .orderedSame
+        } ?? false
+        let hasStyleData = hadPrimitiveStyle
+            || hasNonZeroLayer
+            || color != nil
+            || blockEditorFlag(entity.xdata, BlockEditorMetadata.colorByBlock)
+            || lineType != nil
+            || lineWeight != nil
+            || blockEditorFlag(entity.xdata, BlockEditorMetadata.lineWeightByBlock)
+            || lineTypeScale != nil
+            || geomWidth != nil
+            || opacity != nil
+            || plotStyleHandle != nil
+            || textBackgroundScale != nil
+            || textBackgroundColor != nil
+            || textBackgroundUsesViewportColor
+
+        guard hasStyleData else { return nil }
+
+        return CADPrimitiveStyle(
+            layerName: layerName,
+            color: color,
+            isColorByBlock: blockEditorFlag(
+                entity.xdata, BlockEditorMetadata.colorByBlock),
+            lineType: lineType,
+            isLineTypeByBlock: blockEditorFlag(
+                entity.xdata, BlockEditorMetadata.lineTypeByBlock),
+            lineWeight: lineWeight,
+            isLineWeightByBlock: blockEditorFlag(
+                entity.xdata, BlockEditorMetadata.lineWeightByBlock),
+            lineTypeScale: lineTypeScale,
+            geomWidth: geomWidth,
+            opacity: opacity,
+            plotStyleHandle: plotStyleHandle,
+            textBackgroundScale: textBackgroundScale,
+            textBackgroundColor: textBackgroundColor,
+            textBackgroundUsesViewportColor: textBackgroundUsesViewportColor)
+    }
+
+    private func blockPrimitiveXData(
+        from entity: CADEntity,
+        primitive: CADPrimitive
+    ) -> [String: XDataValue] {
+        var xdata = entity.xdata
+        xdata.removeValue(forKey: BlockEditorMetadata.hadPrimitiveStyle)
+        xdata.removeValue(forKey: BlockEditorMetadata.colorByBlock)
+        xdata.removeValue(forKey: BlockEditorMetadata.lineTypeByBlock)
+        xdata.removeValue(forKey: BlockEditorMetadata.lineWeightByBlock)
+
+        if entity.transform != .identity {
+            xdata.removeValue(forKey: "dxf.hatchScale")
+            xdata.removeValue(forKey: "dxf.hatchAngle")
+            xdata.removeValue(forKey: "dxf.hatchPatternLines")
+        }
+
+        if case .text(
+            _, let text, let height, _, let style,
+            let alignH, let alignV, let mtextWidth, _
+        ) = primitive {
+            if case .string(let raw) = xdata["dxf.mtextRaw"],
+               DXFEntityConverter.cleanMTextFormatting(raw) != text {
+                xdata.removeValue(forKey: "dxf.mtextRaw")
+            }
+            xdata["dxf.text"] = .string(text)
+            xdata["dxf.textHeight"] = .double(height)
+            if let style {
+                xdata["dxf.textStyle"] = .string(style)
+            } else {
+                xdata.removeValue(forKey: "dxf.textStyle")
+            }
+            xdata["dxf.alignH"] = .int(alignH)
+            xdata["dxf.alignV"] = .int(alignV)
+            if let mtextWidth {
+                xdata["dxf.mtextWidth"] = .double(mtextWidth)
+            } else {
+                xdata.removeValue(forKey: "dxf.mtextWidth")
+            }
+        }
+
+        return xdata
+    }
+
     /// Enters block editor mode for the given block ID.
     public func enterBlockEditor(blockID: UUID) {
         guard var tab = activeTab else { return }
-        guard tab.editingBlockID == nil else { return } // Already editing a block
+        guard tab.editingBlockID == nil else { return }
         guard let block = tab.document.block(for: blockID) else { return }
 
-        // Create a temporary document for the block's content
         let tempDoc = CADDocument()
+        let layers = tab.document.allLayers
+        let layerIDsByName = Dictionary(
+            layers.map { ($0.name.uppercased(), $0.handle) },
+            uniquingKeysWith: { first, _ in first })
+        let fallbackLayerID = layerIDsByName["0"]
+            ?? tab.document.activeLayerID
+            ?? layers.first?.handle
+            ?? UUID()
 
-        // Ensure active layer is the same
-        tempDoc.activeLayerID = tab.document.activeLayerID
+        tempDoc.activeLayerID = tab.document.activeLayerID ?? fallbackLayerID
+        tempDoc.unit = tab.document.unit
+        tempDoc.textStyleFonts = tab.document.textStyleFonts
+        tempDoc.dimensionStyles = tab.document.dimensionStyles
+        tempDoc.linetypePatterns = tab.document.linetypePatterns
+        tempDoc.imageStore = tab.document.imageStore
 
-        // Convert the block's primitives into entities in the temporary document
-        var tempEntities: [CADEntity] = []
-        let layerID = tempDoc.activeLayerID ?? tab.document.layersView.first?.handle ?? UUID()
-        if block.geometry.count > 1000 {
-            let entity = CADEntity(
-                handle: UUID(),
-                layerID: layerID,
-                blockID: nil,
-                localGeometry: block.geometry,
-                transform: .identity
-            )
-            tempEntities.append(entity)
-        } else {
-            for prim in block.geometry {
-                let entity = CADEntity(
-                    handle: UUID(),
-                    layerID: layerID,
-                    blockID: nil,
-                    localGeometry: [prim],
-                    transform: .identity
-                )
-                tempEntities.append(entity)
-            }
+        let tempEntities = block.geometry.enumerated().map { index, primitive in
+            makeBlockEditorEntity(
+                primitive: primitive,
+                primitiveStyle: block.primitiveStyles[index],
+                primitiveXData: block.primitiveXData[index] ?? [:],
+                primitiveIndex: index,
+                layerIDsByName: layerIDsByName,
+                fallbackLayerID: fallbackLayerID)
         }
-        
-        // Copy layers, blocks, and the converted block entities in one bulk call
-        tempDoc.importLayersBlocksEntities(
-            layers: tab.document.allLayers,
-            blocks: tab.document.allBlocks,
-            entities: tempEntities
-        )
 
-        tempDoc.savedRevision = tempDoc.editRevision  // temp doc for block editing
-        
+        tempDoc.importLayersBlocksEntities(
+            layers: layers,
+            blocks: tab.document.allBlocks,
+            entities: tempEntities)
+        tempDoc.savedRevision = tempDoc.editRevision
+
         tab.parentDocument = tab.document
         tab.document = tempDoc
         tab.editingBlockID = blockID
         tabs[activeIndex] = tab
 
-        onActiveTabChanged?() // Forces a refresh of the scene
+        onActiveTabChanged?()
     }
 
     /// Exits block editor mode.
@@ -503,21 +791,44 @@ public final class TabManager {
 
         if saveChanges {
             var newPrimitives: [CADPrimitive] = []
-            // Collect all primitives from the temp document
-            for entity in tab.document.entitiesView {
-                if let geom = entity.resolvedGeometry(in: tab.document) {
-                    // Apply the entity's transform to its primitives
-                    let t = entity.transform
-                    if t == .identity {
-                        newPrimitives.append(contentsOf: geom)
-                    } else {
-                        let transformed = CADGeometryMath.transformPrimitives(geom, by: t)
-                        newPrimitives.append(contentsOf: transformed)
+            var newPrimitiveStyles: [Int: CADPrimitiveStyle] = [:]
+            var newPrimitiveXData: [Int: [String: XDataValue]] = [:]
+            let orderedEntities = tab.document.entitiesView.sorted { lhs, rhs in
+                if lhs.drawOrder != rhs.drawOrder {
+                    return lhs.drawOrder < rhs.drawOrder
+                }
+                return lhs.handle.uuidString < rhs.handle.uuidString
+            }
+
+            for entity in orderedEntities {
+                guard let geometry = entity.resolvedGeometry(in: tab.document) else { continue }
+                let transformedGeometry = entity.transform == .identity
+                    ? geometry
+                    : CADGeometryMath.transformPrimitives(geometry, by: entity.transform)
+                let primitiveStyle = blockPrimitiveStyle(from: entity, in: tab.document)
+
+                for primitive in transformedGeometry {
+                    let index = newPrimitives.count
+                    newPrimitives.append(primitive)
+                    if let primitiveStyle {
+                        newPrimitiveStyles[index] = primitiveStyle
+                    }
+                    let primitiveXData = blockPrimitiveXData(
+                        from: entity,
+                        primitive: primitive)
+                    if !primitiveXData.isEmpty {
+                        newPrimitiveXData[index] = primitiveXData
                     }
                 }
             }
+
             parentDoc.pushUndo()
-            parentDoc.updateBlockGeometryLive(handle: blockID, geometry: newPrimitives)
+            parentDoc.updateBlockGeometryLive(
+                handle: blockID,
+                geometry: newPrimitives,
+                primitiveStyles: newPrimitiveStyles,
+                primitiveXData: newPrimitiveXData)
+            parentDoc.markEdited(regenerate: true)
             parentDoc.invalidateEntityGrid()
         }
 
@@ -526,7 +837,7 @@ public final class TabManager {
         tab.editingBlockID = nil
         tabs[activeIndex] = tab
 
-        onActiveTabChanged?() // Forces a refresh of the scene
+        onActiveTabChanged?()
     }
 
 
@@ -563,7 +874,7 @@ public final class TabManager {
         } else if ext == "dwg" {
             try DWGExporter.export(document: tab.document, to: url)
         } else {
-            try DXFExporter.export(document: tab.document, to: url)
+            try DXFExporter.export(views: tab.drawingViews, to: url)
         }
         tab.fileURL = url
         tab.displayName = url.lastPathComponent
@@ -702,10 +1013,8 @@ public final class TabManager {
                     progress: progressHandler
                 )
             } else {
-                let docSnap = snapshot.drawingViews.first?.docSnapshot
-                    ?? snapshot.drawingViews[0].docSnapshot
                 try DXFExporter.export(
-                    snapshot: docSnap,
+                    snapshots: snapshot.drawingViews,
                     to: targetURL,
                     progress: progressHandler
                 )

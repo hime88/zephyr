@@ -22,8 +22,8 @@ public let EABMagic: UInt32 = 0x00424145  // "EAB\0" in little-endian
 public let EABArchiveMagic: UInt32 = 0x41424145  // "EABA" in little-endian
 
 /// Current file format version.
-/// Bumped from 10 -> 11: Preserves analytic DXF hatch boundary edges.
-public let EABVersion: UInt32 = 11
+/// Bumped from 11 -> 12: Preserves block DXF metadata and hatch loop flags.
+public let EABVersion: UInt32 = 12
 
 /// Section type identifiers in the section table.
 public enum EABSectionType: UInt32, Sendable {

@@ -449,6 +449,7 @@ public enum DimensionPrimitives {
         if let blockID = entity.blockID, var block = document.block(for: blockID) {
             block.geometry = newPrimitives
             block.primitiveStyles.removeAll(keepingCapacity: false)
+            block.primitiveXData.removeAll(keepingCapacity: false)
             block.updateBoundingBox()
             document.addBlock(block)
             entity.localBoundingBox = block.localBoundingBox

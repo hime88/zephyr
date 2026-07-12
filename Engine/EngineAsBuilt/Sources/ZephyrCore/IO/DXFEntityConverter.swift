@@ -138,9 +138,76 @@ public enum DXFEntityConverter {
                 color: color)]
         }
 
-        let pts = ellipsePoints(el, segments: 96, honorIsCCW: false)
-        guard !pts.isEmpty else { return [.point(position: yflip(el.basePoint), color: color)] }
-        return (0..<(pts.count - 1)).map { .line(start: pts[$0], end: pts[$0 + 1], color: color) }
+        guard let spline = ellipseArcSpline(el, normalized: normalized, color: color) else {
+            return [.point(position: yflip(el.basePoint), color: color)]
+        }
+        return [spline]
+    }
+
+
+    private static func ellipseArcSpline(
+        _ ellipse: DXFEllipseEntity,
+        normalized: (major: Vector3, ratio: Double, start: Double, end: Double, isFull: Bool),
+        color: ColorRGBA?
+    ) -> CADPrimitive? {
+        let center = yflip(ellipse.basePoint)
+        let major = normalized.major
+        let majorLength = major.magnitude
+        guard majorLength > 1e-12, normalized.ratio > 1e-12 else { return nil }
+
+        let axisA = Vector3(x: major.x, y: -major.y, z: major.z)
+        let axisB = Vector3(
+            x: -major.y * normalized.ratio,
+            y: -major.x * normalized.ratio,
+            z: 0)
+        let sweep = normalizedHatchArcSweep(
+            start: normalized.start,
+            end: normalized.end,
+            isCCW: true)
+        guard sweep > 1e-12 else { return nil }
+
+        let segmentCount = max(1, Int(ceil(sweep / (.pi / 2.0))))
+        let step = sweep / Double(segmentCount)
+        var controlPoints: [Vector3] = []
+        var weights: [Double] = []
+        controlPoints.reserveCapacity(segmentCount * 2 + 1)
+        weights.reserveCapacity(segmentCount * 2 + 1)
+
+        func point(_ angle: Double, scale: Double = 1.0) -> Vector3 {
+            center
+                + axisA * (cos(angle) * scale)
+                + axisB * (sin(angle) * scale)
+        }
+
+        controlPoints.append(point(normalized.start))
+        weights.append(1.0)
+        for index in 0..<segmentCount {
+            let start = normalized.start + Double(index) * step
+            let end = start + step
+            let half = (end - start) * 0.5
+            let weight = cos(half)
+            guard weight > 1e-12 else { return nil }
+            controlPoints.append(point((start + end) * 0.5, scale: 1.0 / weight))
+            weights.append(weight)
+            controlPoints.append(point(end))
+            weights.append(1.0)
+        }
+
+        var knots = [0.0, 0.0, 0.0]
+        if segmentCount > 1 {
+            for index in 1..<segmentCount {
+                knots.append(Double(index))
+                knots.append(Double(index))
+            }
+        }
+        knots.append(contentsOf: [Double(segmentCount), Double(segmentCount), Double(segmentCount)])
+
+        return .spline(
+            controlPoints: controlPoints,
+            knots: knots,
+            degree: 2,
+            weights: weights,
+            color: color)
     }
 
     // MARK: - Spline
@@ -534,15 +601,18 @@ public enum DXFEntityConverter {
         storedBoundaryTransform: Transform3D
     ) -> CADPolyline? {
         let storedPath = buildHatchPath(from: loop.entities).map {
-            storedBoundaryTransform == .identity
+            var path = storedBoundaryTransform == .identity
                 ? $0
                 : $0.transformed(by: storedBoundaryTransform)
+            path.hatchLoopType = loop.type
+            return path
         }
         guard !loop.sourceBoundaryEntities.isEmpty else { return storedPath }
 
-        guard let sourcePath = buildHatchPath(from: loop.sourceBoundaryEntities) else {
+        guard var sourcePath = buildHatchPath(from: loop.sourceBoundaryEntities) else {
             return storedPath
         }
+        sourcePath.hatchLoopType = loop.type
         guard let storedPath else { return sourcePath }
 
         return hatchPathsAreEquivalent(sourcePath, storedPath) ? sourcePath : storedPath

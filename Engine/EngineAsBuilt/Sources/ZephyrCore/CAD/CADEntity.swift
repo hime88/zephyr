@@ -249,19 +249,22 @@ public struct CADPolyline: Hashable, Sendable, RandomAccessCollection, MutableCo
     public var lineTypeGenerationEnabled: Bool
     public var hatchEdges: [CADHatchEdge]
     public var isHatchBoundaryCarrier: Bool
+    public var hatchLoopType: Int?
 
     public init(
         vertices: [CADPolylineVertex],
         isClosed: Bool = false,
         lineTypeGenerationEnabled: Bool = false,
         hatchEdges: [CADHatchEdge] = [],
-        isHatchBoundaryCarrier: Bool = false
+        isHatchBoundaryCarrier: Bool = false,
+        hatchLoopType: Int? = nil
     ) {
         self.vertices = vertices
         self.isClosed = isClosed
         self.lineTypeGenerationEnabled = lineTypeGenerationEnabled
         self.hatchEdges = hatchEdges
         self.isHatchBoundaryCarrier = isHatchBoundaryCarrier
+        self.hatchLoopType = hatchLoopType
     }
 
     public init(
@@ -269,13 +272,15 @@ public struct CADPolyline: Hashable, Sendable, RandomAccessCollection, MutableCo
         isClosed: Bool = false,
         lineTypeGenerationEnabled: Bool = false,
         hatchEdges: [CADHatchEdge] = [],
-        isHatchBoundaryCarrier: Bool = false
+        isHatchBoundaryCarrier: Bool = false,
+        hatchLoopType: Int? = nil
     ) {
         self.vertices = points.map { CADPolylineVertex(position: $0) }
         self.isClosed = isClosed
         self.lineTypeGenerationEnabled = lineTypeGenerationEnabled
         self.hatchEdges = hatchEdges
         self.isHatchBoundaryCarrier = isHatchBoundaryCarrier
+        self.hatchLoopType = hatchLoopType
     }
 
     public var startIndex: Int { vertices.startIndex }
@@ -637,6 +642,8 @@ public struct CADBlock: Hashable, Sendable {
     public var name: String
     public var geometry: [CADPrimitive]
     public var primitiveStyles: [Int: CADPrimitiveStyle]
+    public var primitiveXData: [Int: [String: XDataValue]]
+    public var dxfFlags: Int
 
     /// True if this block is an AutoCAD internal table display block (e.g. *T4).
     /// Such blocks are preserved for raw DXF passthrough but never rendered or edited.
@@ -650,11 +657,15 @@ public struct CADBlock: Hashable, Sendable {
                 name: String,
                 geometry: [CADPrimitive],
                 primitiveStyles: [Int: CADPrimitiveStyle] = [:],
+                primitiveXData: [Int: [String: XDataValue]] = [:],
+                dxfFlags: Int = 0,
                 isInternalTableDisplayBlock: Bool = false) {
         self.handle = handle
         self.name = name
         self.geometry = geometry
         self.primitiveStyles = primitiveStyles
+        self.primitiveXData = primitiveXData
+        self.dxfFlags = dxfFlags
         self.isInternalTableDisplayBlock = isInternalTableDisplayBlock
         self.localBoundingBox = CADBlock.computeBoundingBox(from: geometry)
     }

@@ -106,8 +106,8 @@ public class DXFTextCodec {
         }
 #endif
         let enc = foundationEncodingFor(codePage)
-        if let data = s.data(using: .utf8),
-           let encoded = String(data: data, encoding: enc) {
+        if let data = s.data(using: enc, allowLossyConversion: false),
+           let encoded = String(data: data, encoding: .isoLatin1) {
             return encoded
         }
         return encode1252Table(s)

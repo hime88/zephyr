@@ -46,6 +46,7 @@ public enum DXFImporter {
     private struct StyledPrimitive {
         var primitive: CADPrimitive
         var style: CADPrimitiveStyle?
+        var xdata: [String: XDataValue]
     }
 
     private struct SheetViewport {
@@ -61,6 +62,7 @@ public enum DXFImporter {
         let viewTargetY: Double
         let viewHeight: Double
         let twistAngle: Double
+        let layerName: String
 
         init(_ source: DXFViewportEntity) {
             paperCenterX = source.basePoint.x
@@ -75,6 +77,7 @@ public enum DXFImporter {
             viewTargetY = source.viewTarget.y
             viewHeight = source.viewHeight
             twistAngle = source.twistAngle * .pi / 180.0
+            layerName = source.layer
         }
 
         var isUsable: Bool {
@@ -97,6 +100,25 @@ public enum DXFImporter {
                 .multiplying(by: .rotated(by: twistAngle))
                 .multiplying(by: .scaled(by: Vector3(x: scale, y: scale, z: 1)))
                 .multiplying(by: .translated(by: Vector3(x: -centerX, y: centerY, z: 0)))
+        }
+
+        func projectedXData(_ source: [String: XDataValue]) -> [String: XDataValue] {
+            var result = source
+            result["dxf.viewport.projected"] = .bool(true)
+            result["dxf.viewport.paperCenterX"] = .double(paperCenterX)
+            result["dxf.viewport.paperCenterY"] = .double(paperCenterY)
+            result["dxf.viewport.paperWidth"] = .double(paperWidth)
+            result["dxf.viewport.paperHeight"] = .double(paperHeight)
+            result["dxf.viewport.status"] = .int(status)
+            result["dxf.viewport.id"] = .int(id)
+            result["dxf.viewport.viewCenterX"] = .double(viewCenterX)
+            result["dxf.viewport.viewCenterY"] = .double(viewCenterY)
+            result["dxf.viewport.viewTargetX"] = .double(viewTargetX)
+            result["dxf.viewport.viewTargetY"] = .double(viewTargetY)
+            result["dxf.viewport.viewHeight"] = .double(viewHeight)
+            result["dxf.viewport.twistDegrees"] = .double(twistAngle * 180.0 / .pi)
+            result["dxf.viewport.layer"] = .string(layerName)
+            return result
         }
 
         func intersects(_ entity: CADEntity) -> Bool {
@@ -189,6 +211,18 @@ public enum DXFImporter {
                 x: -modelCenter.x,
                 y: -modelCenter.y,
                 z: -modelCenter.z)))
+    }
+
+    private static func syntheticViewportXData(
+        _ source: [String: XDataValue],
+        projection: Transform3D
+    ) -> [String: XDataValue] {
+        var result = source
+        result["dxf.viewport.projected"] = .bool(true)
+        result["dxf.viewport.synthetic"] = .bool(true)
+        result["dxf.viewport.projection"] = .string(
+            projection.rawElements.map { String(format: "%.17g", $0) }.joined(separator: ","))
+        return result
     }
 
     public static func importDXF(filePath: String) throws -> (layers: [Layer], blocks: [CADBlock], entities: [CADEntity], textStyleFonts: [String: String], linetypePatterns: [String: [Double]], dimensionStyles: [String: CADDimensionStyle]) {
@@ -324,7 +358,10 @@ public enum DXFImporter {
                             bylayerColor: nil).map {
                                 StyledPrimitive(
                                     primitive: $0,
-                                    style: Self.primitiveStyle(from: attribute))
+                                    style: Self.primitiveStyle(from: attribute),
+                                    xdata: Self.entityStyleXData(
+                                        from: attribute,
+                                        globalLineTypeScale: globalLineTypeScale))
                             }
                         geometry.append(contentsOf: Self.transformStyledPrimitives(
                             values,
@@ -341,9 +378,12 @@ public enum DXFImporter {
                 }
 
                 let style = Self.primitiveStyle(from: entity)
+                let xdata = Self.entityStyleXData(
+                    from: entity,
+                    globalLineTypeScale: globalLineTypeScale)
                 let primitives = DXFEntityConverter.convertEntityToPrimitives(entity, bylayerColor: nil)
                 geometry.append(contentsOf: primitives.map {
-                    StyledPrimitive(primitive: $0, style: style)
+                    StyledPrimitive(primitive: $0, style: style, xdata: xdata)
                 })
             }
 
@@ -365,6 +405,12 @@ public enum DXFImporter {
                         guard let style = item.style else { return nil }
                         return (index, style)
                     }),
+                primitiveXData: Dictionary(uniqueKeysWithValues:
+                    styledGeometry.enumerated().compactMap { index, item in
+                        guard !item.xdata.isEmpty else { return nil }
+                        return (index, item.xdata)
+                    }),
+                dxfFlags: block.flags,
                 isInternalTableDisplayBlock: block.name.hasPrefix("*T"))
             blocks.append(cadBlock)
             blockByID[handle] = cadBlock
@@ -628,7 +674,7 @@ public enum DXFImporter {
                             localGeometry: modelEntity.localGeometry,
                             dimensionMetadata: modelEntity.dimensionMetadata,
                             transform: projection.multiplying(by: modelEntity.transform),
-                            xdata: modelEntity.xdata,
+                            xdata: viewport.projectedXData(modelEntity.xdata),
                             drawOrder: projectedDrawOrder,
                             localBoundingBox: modelEntity.localBoundingBox,
                             anchorPoints: modelEntity.anchorPoints))
@@ -650,7 +696,7 @@ public enum DXFImporter {
                             localGeometry: modelEntity.localGeometry,
                             dimensionMetadata: modelEntity.dimensionMetadata,
                             transform: projection.multiplying(by: modelEntity.transform),
-                            xdata: modelEntity.xdata,
+                            xdata: syntheticViewportXData(modelEntity.xdata, projection: projection),
                             drawOrder: projectedDrawOrder,
                             localBoundingBox: modelEntity.localBoundingBox,
                             anchorPoints: modelEntity.anchorPoints))
@@ -715,6 +761,26 @@ public enum DXFImporter {
         }
         if !entity.colorName.isEmpty {
             xdata["dxf.colorName"] = .string(entity.colorName)
+        }
+
+        if let text = entity as? DXFTextEntity {
+            xdata["dxf.text"] = .string(
+                DXFEntityConverter.cleanMTextFormatting(text.text))
+            xdata["dxf.textEntityType"] = .string(text.eType.rawValue)
+            xdata["dxf.textHeight"] = .double(text.height)
+            xdata["dxf.textStyle"] = .string(text.style)
+            xdata["dxf.alignH"] = .int(text.alignH)
+            xdata["dxf.alignV"] = .int(text.alignV)
+            xdata["dxf.textWidthScale"] = .double(text.widthScale)
+            xdata["dxf.textOblique"] = .double(text.oblique)
+            xdata["dxf.textGenerationFlags"] = .int(text.textGen)
+            if text.eType == .mTEXT {
+                xdata["dxf.mtextRaw"] = .string(text.text)
+                xdata["dxf.mtextWidth"] = .double(text.widthScale)
+                if let mtext = text as? DXFMTextEntity {
+                    xdata["dxf.mtextLineSpacing"] = .double(mtext.interlin)
+                }
+            }
         }
 
         if let text = entity as? DXFTextEntity,
@@ -1373,8 +1439,21 @@ public enum DXFImporter {
             }
             return StyledPrimitive(
                 primitive: transformPrimitive(item.primitive, by: transform),
-                style: style)
+                style: style,
+                xdata: transformedPrimitiveXData(item.xdata, by: transform))
         }
+    }
+
+    private static func transformedPrimitiveXData(
+        _ source: [String: XDataValue],
+        by transform: Transform3D
+    ) -> [String: XDataValue] {
+        guard transform != .identity else { return source }
+        var result = source
+        result.removeValue(forKey: "dxf.hatchScale")
+        result.removeValue(forKey: "dxf.hatchAngle")
+        result.removeValue(forKey: "dxf.hatchPatternLines")
+        return result
     }
 
     private static func transformPrimitive(_ primitive: CADPrimitive, by transform: Transform3D) -> CADPrimitive {

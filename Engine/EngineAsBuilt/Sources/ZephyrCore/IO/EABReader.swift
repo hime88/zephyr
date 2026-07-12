@@ -556,12 +556,32 @@ public enum EABReader {
             // Parse inline primitives (PVA is lossy, so we store originals too)
             let geometry = try parsePrimitives(r, version: version)
             let primitiveStyles = version >= 9 ? parsePrimitiveStyles(r) : [:]
+            let dxfFlags = version >= 12 ? Int(r.readInt32()) : (name.hasPrefix("*") ? 1 : 0)
+            let isInternalTableDisplayBlock = version >= 12
+                ? r.readUInt8() != 0
+                : name.uppercased().hasPrefix("*T")
+            let primitiveXData = version >= 12 ? try parsePrimitiveXData(r) : [:]
             var block = CADBlock(handle: handle, name: name, geometry: geometry,
-                                 primitiveStyles: primitiveStyles)
+                                 primitiveStyles: primitiveStyles,
+                                 primitiveXData: primitiveXData,
+                                 dxfFlags: dxfFlags,
+                                 isInternalTableDisplayBlock: isInternalTableDisplayBlock)
             block.localBoundingBox = bbox
             blocks.append(block)
         }
         return blocks
+    }
+
+    private static func parsePrimitiveXData(
+        _ r: BinaryReader
+    ) throws -> [Int: [String: XDataValue]] {
+        let count = safeCount(r.readUInt32(), limit: maxSafeStyleCount, label: "primitiveXData")
+        var values: [Int: [String: XDataValue]] = [:]
+        values.reserveCapacity(count)
+        for _ in 0..<count {
+            values[Int(r.readUInt32())] = try parseXDataDict(r)
+        }
+        return values
     }
 
     private static func parsePrimitiveStyles(_ r: BinaryReader) -> [Int: CADPrimitiveStyle] {
@@ -974,9 +994,16 @@ public enum EABReader {
                 }
                 return nil
             }
-            let readHatchPathMetadata = { () -> (edges: [CADHatchEdge], carrier: Bool) in
-                guard version >= 11 else { return ([], false) }
+            let readHatchPathMetadata = { () -> (edges: [CADHatchEdge], carrier: Bool, loopType: Int?) in
+                guard version >= 11 else { return ([], false, nil) }
                 let carrier = r.readUInt8() != 0
+                let loopType: Int?
+                if version >= 12 {
+                    let raw = Int(r.readInt32())
+                    loopType = raw >= 0 ? raw : nil
+                } else {
+                    loopType = nil
+                }
                 let edgeCount = safeCount(r.readUInt32(), limit: maxSafeHatchEdgeCount, label: "hatchEdges")
                 var edges: [CADHatchEdge] = []
                 edges.reserveCapacity(edgeCount)
@@ -1028,7 +1055,7 @@ public enum EABReader {
                         break
                     }
                 }
-                return (edges, carrier)
+                return (edges, carrier, loopType)
             }
             switch type {
             case 0: // point
@@ -1091,7 +1118,8 @@ public enum EABReader {
                         isClosed: isClosed,
                         lineTypeGenerationEnabled: lineTypeGenerationEnabled,
                         hatchEdges: metadata.edges,
-                        isHatchBoundaryCarrier: metadata.carrier),
+                        isHatchBoundaryCarrier: metadata.carrier,
+                        hatchLoopType: metadata.loopType),
                     color: color))
             case 7: // fillPolygon
                 let ptCount = safeCount(r.readUInt32(), limit: maxSafeVertexCount, label: "fillPolyVerts")
@@ -1200,7 +1228,8 @@ public enum EABReader {
                                        isClosed: isClosed,
                                        lineTypeGenerationEnabled: lineTypeGenerationEnabled,
                                        hatchEdges: metadata.edges,
-                                       isHatchBoundaryCarrier: metadata.carrier)
+                                       isHatchBoundaryCarrier: metadata.carrier,
+                                       hatchLoopType: metadata.loopType)
                 }
                 let boundary = readPath()
                 let holeCount = safeCount(r.readUInt32(), limit: maxSafeHatchEdgeCount, label: "hatchHoles")

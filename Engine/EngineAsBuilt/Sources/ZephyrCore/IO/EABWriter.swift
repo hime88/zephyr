@@ -554,8 +554,26 @@ public enum EABWriter {
             serializePrimitives(block.geometry, to: w)
             // Per-primitive DXF styles retained for flattened blocks (EAB v9).
             serializePrimitiveStyles(block.primitiveStyles, to: w)
+            w.writeInt32(Int32(clamping: block.dxfFlags))
+            w.writeUInt8(block.isInternalTableDisplayBlock ? 1 : 0)
+            serializePrimitiveXData(block.primitiveXData, geometryCount: block.geometry.count, to: w)
         }
         return w.build()
+    }
+
+    private static func serializePrimitiveXData(
+        _ values: [Int: [String: XDataValue]],
+        geometryCount: Int,
+        to w: BinaryWriter
+    ) {
+        let valid = values.filter {
+            $0.key >= 0 && $0.key < geometryCount && !$0.value.isEmpty
+        }
+        w.writeUInt32(UInt32(valid.count))
+        for (index, xdata) in valid.sorted(by: { $0.key < $1.key }) {
+            w.writeUInt32(UInt32(index))
+            serializeXDataDict(xdata, to: w)
+        }
     }
 
     private static func serializePrimitiveStyles(
@@ -1124,6 +1142,7 @@ public enum EABWriter {
             }
             let writeHatchPathMetadata = { (path: CADPolyline) in
                 w.writeUInt8(path.isHatchBoundaryCarrier ? 1 : 0)
+                w.writeInt32(Int32(path.hatchLoopType ?? -1))
                 w.writeUInt32(UInt32(path.hatchEdges.count))
                 for edge in path.hatchEdges {
                     switch edge {

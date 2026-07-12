@@ -487,6 +487,7 @@ public final class CADDocument {
         guard var block = blockTable[handle] else { return }
         block.geometry = geometry
         block.primitiveStyles.removeAll(keepingCapacity: false)
+        block.primitiveXData.removeAll(keepingCapacity: false)
         block.updateBoundingBox()
         blockTable[handle] = block
         for (entityHandle, var entity) in entityRegistry where entity.blockID == handle {
@@ -1194,10 +1195,20 @@ public final class CADDocument {
     }
 
     /// Update block geometry without pushing undo — for live grip editing.
-    public func updateBlockGeometryLive(handle: UUID, geometry: [CADPrimitive]) {
+    public func updateBlockGeometryLive(
+        handle: UUID,
+        geometry: [CADPrimitive],
+        primitiveStyles: [Int: CADPrimitiveStyle]? = nil,
+        primitiveXData: [Int: [String: XDataValue]]? = nil
+    ) {
         guard var block = blockTable[handle] else { return }
         block.geometry = geometry
-        block.primitiveStyles.removeAll(keepingCapacity: false)
+        block.primitiveStyles = (primitiveStyles ?? block.primitiveStyles).filter {
+            $0.key >= 0 && $0.key < geometry.count
+        }
+        block.primitiveXData = (primitiveXData ?? block.primitiveXData).filter {
+            $0.key >= 0 && $0.key < geometry.count && !$0.value.isEmpty
+        }
         block.updateBoundingBox()
         blockTable[handle] = block
         for (entityHandle, var entity) in entityRegistry where entity.blockID == handle {

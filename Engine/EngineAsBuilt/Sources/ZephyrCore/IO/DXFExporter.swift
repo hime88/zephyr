@@ -16,6 +16,10 @@ public enum DXFExporter {
         try DXFWriterBridge.export(document: document, to: url)
     }
 
+    public static func export(views: [DrawingView], to url: URL) throws {
+        try DXFWriterBridge.export(views: views, to: url)
+    }
+
     /// Background-save: export from a snapshot with progress and cancellation.
     public static func export(snapshot: CADDocumentSnapshot, to url: URL,
                                progress: ((Float) -> Void)? = nil) throws {
@@ -24,6 +28,30 @@ public enum DXFExporter {
         let tempDoc = CADDocument()
         tempDoc.restore(from: snapshot)
         try DXFWriterBridge.export(document: tempDoc, to: url)
+        progress?(1.0)
+    }
+
+    public static func export(snapshots: [SaveDocumentSnapshot], to url: URL,
+                              progress: ((Float) -> Void)? = nil) throws {
+        try Task.checkCancellation()
+        guard !snapshots.isEmpty else {
+            throw DXFWriter.WriterError.invalidEntity("Cannot export a DXF without a drawing view")
+        }
+        var views: [DrawingView] = []
+        views.reserveCapacity(snapshots.count)
+        for (index, snapshot) in snapshots.enumerated() {
+            try Task.checkCancellation()
+            let document = CADDocument()
+            document.restore(from: snapshot.docSnapshot)
+            document.imageStore = snapshot.imageAssets
+            views.append(DrawingView(
+                name: snapshot.viewName,
+                kind: snapshot.viewKind,
+                document: document,
+                cameraState: snapshot.cameraState))
+            progress?(0.1 + 0.4 * Float(index + 1) / Float(snapshots.count))
+        }
+        try DXFWriterBridge.export(views: views, to: url)
         progress?(1.0)
     }
 

@@ -419,9 +419,9 @@ public final class CADRendererBridge {
             let resolved: [CADPrimitive]?
             var primitiveStyles: [Int: CADPrimitiveStyle]
             if let bid = entity.blockID, let block = snapshot.blocks[bid] {
-                // Skip internal table display blocks (*T1, *T4) — these are
-                // rendered by the .table primitive, not as block geometry
-                if block.isInternalTableDisplayBlock { continue }
+                // ACAD_TABLE entities are imported as references to their anonymous
+                // *T display blocks. Render those references so table cell text and
+                // borders survive DXF/EAB/DXF round-trips.
                 resolved = block.geometry
                 primitiveStyles = block.primitiveStyles
             } else {

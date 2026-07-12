@@ -1,5 +1,27 @@
 import Foundation
 
+public struct DXFLayoutDefinition: Sendable {
+    public var name: String
+    public var blockName: String
+    public var tabOrder: Int
+    public var minimumLimits: Vector3
+    public var maximumLimits: Vector3
+
+    public init(
+        name: String,
+        blockName: String,
+        tabOrder: Int,
+        minimumLimits: Vector3 = .zero,
+        maximumLimits: Vector3 = Vector3(x: 12, y: 9, z: 0)
+    ) {
+        self.name = name
+        self.blockName = blockName
+        self.tabOrder = tabOrder
+        self.minimumLimits = minimumLimits
+        self.maximumLimits = maximumLimits
+    }
+}
+
 /// Pure Swift DXF writer. Writes ASCII DXF files with proper section structure.
 public class DXFWriter {
 
@@ -40,21 +62,36 @@ public class DXFWriter {
     public var blockRecords: [DXFBlockRecordEntry] = []
     public var blocks: [DXFBlockEntity] = []
     public var entities: [DXFEntity] = []
+    public var layouts: [DXFLayoutDefinition] = []
 
     // Handle tracking
     private var nextHandle: UInt32 = 1
     private var writingBlock: Bool = false
     private var currentBlockHandle: String = ""
     private var blockNameToHandle: [String: String] = [:]
-    /// Image defs for OBJECTS section reactors
-    private var imageDefs: [DXFImageDefEntry] = []
+    private var blockRecordHandleByName: [String: String] = [:]
+    private var textStyleHandleByName: [String: String] = [:]
+    private var layoutHandleByBlockName: [String: String] = [:]
+    private var entityOwnerBlockNames: [String?] = []
+    private var rootDictionaryHandle: String = ""
+    private var groupDictionaryHandle: String = ""
+    private var layoutDictionaryHandle: String = ""
+    private var imageDefinitionHandleByEntity: [ObjectIdentifier: String] = [:]
+    private var activeViewportHandleByBlockName: [String: String] = [:]
 
     public init() {}
 
     // MARK: - Public API
 
-    public func addEntity(_ entity: DXFEntity) {
+    public func addEntity(_ entity: DXFEntity, ownerBlockName: String? = nil) {
         entities.append(entity)
+        while entityOwnerBlockNames.count < entities.count - 1 {
+            entityOwnerBlockNames.append(nil)
+        }
+        entityOwnerBlockNames.append(
+            ownerBlockName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                ? ownerBlockName
+                : nil)
     }
 
     public func addLayer(_ layer: DXFLayerEntry) {
@@ -89,13 +126,18 @@ public class DXFWriter {
         blocks.append(block)
     }
 
+    public func addLayout(_ layout: DXFLayoutDefinition) {
+        layouts.append(layout)
+    }
+
     /// Write DXF file to path
     public func write(to path: String) throws {
         let content = buildDXF()
-        guard let data = content.data(using: .ascii, allowLossyConversion: true) else {
-            throw WriterError.writeError("Cannot encode DXF as ASCII")
+        let encoding: String.Encoding = textCodec.codePage == "UTF-8" ? .utf8 : .isoLatin1
+        guard let data = content.data(using: encoding, allowLossyConversion: false) else {
+            throw WriterError.writeError("Cannot encode DXF using \(textCodec.codePage)")
         }
-        try data.write(to: URL(fileURLWithPath: path))
+        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 
     /// Write DXF to string
@@ -106,6 +148,20 @@ public class DXFWriter {
     // MARK: - DXF Builder
 
     private func buildDXF() -> String {
+        nextHandle = 1
+        writingBlock = false
+        currentBlockHandle = ""
+        blockNameToHandle.removeAll(keepingCapacity: true)
+        blockRecordHandleByName.removeAll(keepingCapacity: true)
+        textStyleHandleByName.removeAll(keepingCapacity: true)
+        layoutHandleByBlockName.removeAll(keepingCapacity: true)
+        rootDictionaryHandle = ""
+        groupDictionaryHandle = ""
+        layoutDictionaryHandle = ""
+        imageDefinitionHandleByEntity.removeAll(keepingCapacity: true)
+        activeViewportHandleByBlockName.removeAll(keepingCapacity: true)
+        prepareObjectHandles()
+
         var out = ""
         out.reserveCapacity(65536)
 
@@ -135,6 +191,32 @@ public class DXFWriter {
         return h
     }
 
+    private func normalizedName(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    }
+
+    private func prepareObjectHandles() {
+        guard isModern else { return }
+        rootDictionaryHandle = allocHandle()
+        groupDictionaryHandle = allocHandle()
+        if !layouts.isEmpty {
+            layoutDictionaryHandle = allocHandle()
+            for layout in layouts {
+                let key = normalizedName(layout.blockName)
+                guard layoutHandleByBlockName[key] == nil else { continue }
+                layoutHandleByBlockName[key] = allocHandle()
+            }
+        }
+        for entity in entities {
+            guard entity is DXFImageEntity else { continue }
+            imageDefinitionHandleByEntity[ObjectIdentifier(entity)] = allocHandle()
+        }
+    }
+
+    private func blockRecordHandle(for name: String) -> String? {
+        blockRecordHandleByName[normalizedName(name)]
+    }
+
     // MARK: - HEADER
 
     private func writeHeader(_ out: inout String) {
@@ -158,13 +240,20 @@ public class DXFWriter {
         textCodec.setVersion(version)
         textCodec.setCodePage(codePage)
 
+        let insBase = headerVars["$INSBASE"] as? Vector3 ?? .zero
+        let extMin = headerVars["$EXTMIN"] as? Vector3 ?? .zero
+        let extMax = headerVars["$EXTMAX"] as? Vector3 ?? Vector3(x: 1, y: 1, z: 0)
+        let limMin = headerVars["$LIMMIN"] as? Vector3 ?? .zero
+        let limMax = headerVars["$LIMMAX"] as? Vector3 ?? Vector3(x: 420, y: 297, z: 0)
+
         writeHdrStr("$ACADVER", vers, 1, &out)
         writeHdrStr("$DWGCODEPAGE", textCodec.codePage, 3, &out)
-        writeHdrCoord("$INSBASE", 0, 0, 0, &out)
-        writeHdrCoord("$EXTMIN", 0, 0, 0, &out)
-        writeHdrCoord("$EXTMAX", 1, 1, 0, &out)
-        writeHdrCoord("$LIMMIN", 0, 0, nil, &out)
-        writeHdrCoord("$LIMMAX", 420, 297, nil, &out)
+        writeHdrStr("$HANDSEED", "1000000", 5, &out)
+        writeHdrCoord("$INSBASE", insBase.x, insBase.y, insBase.z, &out)
+        writeHdrCoord("$EXTMIN", extMin.x, extMin.y, extMin.z, &out)
+        writeHdrCoord("$EXTMAX", extMax.x, extMax.y, extMax.z, &out)
+        writeHdrCoord("$LIMMIN", limMin.x, limMin.y, nil, &out)
+        writeHdrCoord("$LIMMAX", limMax.x, limMax.y, nil, &out)
         writeHdrInt("$ORTHOMODE", 0, 70, &out)
         writeHdrInt("$REGENMODE", 1, 70, &out)
         writeHdrInt("$FILLMODE", 1, 70, &out)
@@ -247,15 +336,15 @@ public class DXFWriter {
         writeHdrInt("$DIMLWE", -2, 372, &out)
         writeHdrInt("$LUNITS", 2, 70, &out)
         writeHdrInt("$LUPREC", 4, 70, &out)
-        writeHdrInt("$INSUNITS", 4, 70, &out)
-        writeHdrInt("$MEASUREMENT", 1, 70, &out)
+        writeHdrInt("$INSUNITS", headerVars["$INSUNITS"] as? Int ?? 4, 70, &out)
+        writeHdrInt("$MEASUREMENT", headerVars["$MEASUREMENT"] as? Int ?? 1, 70, &out)
         writeHdrInt("$TILEMODE", 1, 70, &out)
         writeHdrInt("$PLINEGEN", 0, 70, &out)
         writeHdrStr("$CMLSTYLE", "Standard", 2, &out)
 
         // Write any custom header vars not already handled
         let written: Set<String> = [
-            "$ACADVER", "$DWGCODEPAGE", "$INSBASE", "$EXTMIN", "$EXTMAX",
+            "$ACADVER", "$DWGCODEPAGE", "$HANDSEED", "$INSBASE", "$EXTMIN", "$EXTMAX",
             "$LIMMIN", "$LIMMAX", "$ORTHOMODE", "$REGENMODE", "$FILLMODE",
             "$QTEXTMODE", "$MIRRTEXT", "$LTSCALE", "$ATTMODE", "$TEXTSIZE",
             "$TRACEWID", "$TEXTSTYLE", "$CLAYER", "$CELTYPE", "$CECOLOR",
@@ -334,8 +423,60 @@ public class DXFWriter {
     // MARK: - CLASSES
 
     private func writeClasses(_ out: inout String) {
-        if !isModern { return }  // No CLASSES in R12
-        out += "  0\r\nSECTION\r\n  2\r\nCLASSES\r\n  0\r\nENDSEC\r\n"
+        if !isModern { return }
+        out += "  0\r\nSECTION\r\n  2\r\nCLASSES\r\n"
+        if entities.contains(where: { $0.eType == .iMAGE }) {
+            writeClass(
+                dxfName: "IMAGEDEF",
+                cppName: "AcDbRasterImageDef",
+                appName: "ISM",
+                proxyFlags: 0,
+                instanceCount: 0,
+                wasProxy: 0,
+                isEntity: 0,
+                &out)
+            writeClass(
+                dxfName: "IMAGE",
+                cppName: "AcDbRasterImage",
+                appName: "ISM",
+                proxyFlags: 2175,
+                instanceCount: entities.filter { $0.eType == .iMAGE }.count,
+                wasProxy: 0,
+                isEntity: 1,
+                &out)
+        }
+        if entities.contains(where: { $0.eType == .tABLE }) {
+            writeClass(
+                dxfName: "ACAD_TABLE",
+                cppName: "AcDbTable",
+                appName: "ObjectDBX Classes",
+                proxyFlags: 1025,
+                instanceCount: entities.filter { $0.eType == .tABLE }.count,
+                wasProxy: 0,
+                isEntity: 1,
+                &out)
+        }
+        out += "  0\r\nENDSEC\r\n"
+    }
+
+    private func writeClass(
+        dxfName: String,
+        cppName: String,
+        appName: String,
+        proxyFlags: Int,
+        instanceCount: Int,
+        wasProxy: Int,
+        isEntity: Int,
+        _ out: inout String
+    ) {
+        out += "  0\r\nCLASS\r\n"
+        writeStr(1, dxfName, &out)
+        writeStr(2, cppName, &out)
+        writeStr(3, appName, &out)
+        writeInt(90, proxyFlags, &out)
+        writeInt(91, instanceCount, &out)
+        writeInt(280, wasProxy, &out)
+        writeInt(281, isEntity, &out)
     }
 
     // MARK: - TABLES
@@ -357,19 +498,19 @@ public class DXFWriter {
     }
 
     private func writeVPortTable(_ out: inout String) {
+        let tableHandle = allocHandle()
         out += "  0\r\nTABLE\r\n  2\r\nVPORT\r\n"
-        out += "  5\r\n\(allocHandle())\r\n"
+        out += "  5\r\n\(tableHandle)\r\n"
         out += "330\r\n0\r\n"
         out += "100\r\nAcDbSymbolTable\r\n"
         let vpCount = max(vports.count, 1)
         out += " 70\r\n\(vpCount)\r\n"
 
         if vports.isEmpty {
-            // Default *ACTIVE viewport
             let h = allocHandle()
             out += "  0\r\nVPORT\r\n"
             out += "  5\r\n\(h)\r\n"
-            out += "330\r\n0\r\n"
+            out += "330\r\n\(tableHandle)\r\n"
             out += "100\r\nAcDbSymbolTableRecord\r\n"
             out += "100\r\nAcDbViewportTableRecord\r\n"
             out += "  2\r\n*ACTIVE\r\n"
@@ -397,15 +538,15 @@ public class DXFWriter {
             out += " 63\r\n250\r\n421\r\n3358443\r\n"
         } else {
             for vp in vports {
-                writeOneVPort(vp, &out)
+                writeOneVPort(vp, ownerHandle: tableHandle, &out)
             }
         }
 
         out += "  0\r\nENDTAB\r\n"
     }
 
-    private func writeOneVPort(_ vp: DXFVportEntry, _ out: inout String) {
-        out += "  0\r\nVPORT\r\n  5\r\n\(allocHandle())\r\n330\r\n0\r\n"
+    private func writeOneVPort(_ vp: DXFVportEntry, ownerHandle: String, _ out: inout String) {
+        out += "  0\r\nVPORT\r\n  5\r\n\(allocHandle())\r\n330\r\n\(ownerHandle)\r\n"
         out += "100\r\nAcDbSymbolTableRecord\r\n100\r\nAcDbViewportTableRecord\r\n"
         writeStr(2, vp.name, &out)
         writeInt(70, vp.flags, &out)
@@ -437,41 +578,44 @@ public class DXFWriter {
 
     private func writeLTypeTable(_ out: inout String) {
         var entries: [DXFLTypeEntry] = []
-        // Ensure standard linetypes exist
-        let standardNames = ["ByBlock", "ByLayer", "Continuous"]
-        for name in standardNames {
-            if !ltypes.contains(where: { $0.name == name }) {
-                let lt = DXFLTypeEntry()
-                lt.name = name
-                lt.desc = name == "Continuous" ? "Solid line" : ""
-                entries.append(lt)
+        var names = Set<String>()
+
+        func append(_ entry: DXFLTypeEntry) {
+            let key = normalizedName(entry.name)
+            guard !key.isEmpty, names.insert(key).inserted else { return }
+            entries.append(entry)
+        }
+
+        for name in ["ByBlock", "ByLayer", "Continuous"] {
+            if let existing = ltypes.first(where: { normalizedName($0.name) == normalizedName(name) }) {
+                append(existing)
+            } else {
+                let entry = DXFLTypeEntry()
+                entry.name = name
+                entry.desc = name == "Continuous" ? "Solid line" : ""
+                append(entry)
             }
         }
-        entries.append(contentsOf: ltypes.filter { !standardNames.contains($0.name) })
+        for entry in ltypes { append(entry) }
 
+        let tableHandle = allocHandle()
         out += "  0\r\nTABLE\r\n  2\r\nLTYPE\r\n"
-        out += "  5\r\n\(allocHandle())\r\n330\r\n0\r\n"
+        out += "  5\r\n\(tableHandle)\r\n330\r\n0\r\n"
         out += "100\r\nAcDbSymbolTable\r\n"
         out += " 70\r\n\(entries.count)\r\n"
 
         for lt in entries {
             out += "  0\r\nLTYPE\r\n  5\r\n\(allocHandle())\r\n"
-            out += "330\r\n0\r\n"
+            out += "330\r\n\(tableHandle)\r\n"
             out += "100\r\nAcDbSymbolTableRecord\r\n"
             out += "100\r\nAcDbLinetypeTableRecord\r\n"
             writeStr(2, lt.name, &out)
             writeInt(70, lt.flags, &out)
             writeStr(3, lt.desc, &out)
-            writeInt(72, 65, &out)  // alignment code 'A'
-            writeInt(73, lt.size, &out)
-            writeDbl(40, lt.length, &out)
-            for p in lt.path {
-                writeDbl(49, p, &out)
-            }
-            // Standard linetypes have no dashes
-            if lt.name == "Continuous" && lt.path.isEmpty {
-                writeInt(73, 0, &out)
-            }
+            writeInt(72, 65, &out)
+            writeInt(73, lt.path.count, &out)
+            writeDbl(40, lt.path.reduce(0) { $0 + abs($1) }, &out)
+            for p in lt.path { writeDbl(49, p, &out) }
         }
 
         out += "  0\r\nENDTAB\r\n"
@@ -479,40 +623,43 @@ public class DXFWriter {
 
     private func writeLayerTable(_ out: inout String) {
         var entries: [DXFLayerEntry] = []
-        // Ensure layer 0 exists
-        if !layers.contains(where: { $0.name == "0" }) {
-            let l0 = DXFLayerEntry()
-            l0.name = "0"
-            l0.color = 7
-            entries.append(l0)
-        }
-        entries.append(contentsOf: layers)
+        var names = Set<String>()
 
+        func append(_ entry: DXFLayerEntry) {
+            let key = normalizedName(entry.name)
+            guard !key.isEmpty, names.insert(key).inserted else { return }
+            entries.append(entry)
+        }
+
+        if let existing = layers.first(where: { normalizedName($0.name) == "0" }) {
+            append(existing)
+        } else {
+            let layer0 = DXFLayerEntry()
+            layer0.name = "0"
+            layer0.color = 7
+            append(layer0)
+        }
+        for layer in layers { append(layer) }
+
+        let tableHandle = allocHandle()
         out += "  0\r\nTABLE\r\n  2\r\nLAYER\r\n"
-        out += "  5\r\n\(allocHandle())\r\n330\r\n0\r\n"
+        out += "  5\r\n\(tableHandle)\r\n330\r\n0\r\n"
         out += "100\r\nAcDbSymbolTable\r\n"
         out += " 70\r\n\(entries.count)\r\n"
 
         for layer in entries {
             out += "  0\r\nLAYER\r\n  5\r\n\(allocHandle())\r\n"
-            out += "330\r\n0\r\n"
+            out += "330\r\n\(tableHandle)\r\n"
             out += "100\r\nAcDbSymbolTableRecord\r\n"
             out += "100\r\nAcDbLayerTableRecord\r\n"
             writeStr(2, layer.name, &out)
             writeInt(70, layer.flags, &out)
             writeInt(62, Int(layer.color), &out)
-            if layer.color24 >= 0 {
-                writeInt(420, Int(layer.color24), &out)
-            }
+            if layer.color24 >= 0 { writeInt(420, Int(layer.color24), &out) }
             writeStr(6, layer.lineType, &out)
             writeInt(370, layer.lWeight.dxfInt, &out)
             writeBool(290, layer.plotFlag, &out)
-            if layer.plotStyleHandle != 0 {
-                writeStr(390, String(format: "%X", layer.plotStyleHandle), &out)
-            }
-            if layer.transparency >= 0 {
-                writeInt(440, Int(layer.transparency), &out)
-            }
+            if layer.transparency >= 0 { writeInt(440, Int(layer.transparency), &out) }
         }
 
         out += "  0\r\nENDTAB\r\n"
@@ -520,21 +667,34 @@ public class DXFWriter {
 
     private func writeStyleTable(_ out: inout String) {
         var entries: [DXFStyleEntry] = []
-        if !textstyles.contains(where: { $0.name == "Standard" }) {
-            let s = DXFStyleEntry()
-            s.name = "Standard"
-            entries.append(s)
-        }
-        entries.append(contentsOf: textstyles)
+        var names = Set<String>()
 
+        func append(_ entry: DXFStyleEntry) {
+            let key = normalizedName(entry.name)
+            guard !key.isEmpty, names.insert(key).inserted else { return }
+            entries.append(entry)
+        }
+
+        if let existing = textstyles.first(where: { normalizedName($0.name) == "STANDARD" }) {
+            append(existing)
+        } else {
+            let standard = DXFStyleEntry()
+            standard.name = "Standard"
+            append(standard)
+        }
+        for style in textstyles { append(style) }
+
+        let tableHandle = allocHandle()
         out += "  0\r\nTABLE\r\n  2\r\nSTYLE\r\n"
-        out += "  5\r\n\(allocHandle())\r\n330\r\n0\r\n"
+        out += "  5\r\n\(tableHandle)\r\n330\r\n0\r\n"
         out += "100\r\nAcDbSymbolTable\r\n"
         out += " 70\r\n\(entries.count)\r\n"
 
         for style in entries {
-            out += "  0\r\nSTYLE\r\n  5\r\n\(allocHandle())\r\n"
-            out += "330\r\n0\r\n"
+            let handle = allocHandle()
+            textStyleHandleByName[normalizedName(style.name)] = handle
+            out += "  0\r\nSTYLE\r\n  5\r\n\(handle)\r\n"
+            out += "330\r\n\(tableHandle)\r\n"
             out += "100\r\nAcDbSymbolTableRecord\r\n"
             out += "100\r\nAcDbTextStyleTableRecord\r\n"
             writeStr(2, style.name, &out)
@@ -569,21 +729,32 @@ public class DXFWriter {
 
     private func writeAppIdTable(_ out: inout String) {
         var entries: [DXFAppIdEntry] = []
-        if !appids.contains(where: { $0.name == "ACAD" }) {
-            let app = DXFAppIdEntry()
-            app.name = "ACAD"
-            entries.append(app)
-        }
-        entries.append(contentsOf: appids)
+        var names = Set<String>()
 
+        func append(_ entry: DXFAppIdEntry) {
+            let key = normalizedName(entry.name)
+            guard !key.isEmpty, names.insert(key).inserted else { return }
+            entries.append(entry)
+        }
+
+        if let existing = appids.first(where: { normalizedName($0.name) == "ACAD" }) {
+            append(existing)
+        } else {
+            let acad = DXFAppIdEntry()
+            acad.name = "ACAD"
+            append(acad)
+        }
+        for app in appids { append(app) }
+
+        let tableHandle = allocHandle()
         out += "  0\r\nTABLE\r\n  2\r\nAPPID\r\n"
-        out += "  5\r\n\(allocHandle())\r\n330\r\n0\r\n"
+        out += "  5\r\n\(tableHandle)\r\n330\r\n0\r\n"
         out += "100\r\nAcDbSymbolTable\r\n"
         out += " 70\r\n\(entries.count)\r\n"
 
         for app in entries {
             out += "  0\r\nAPPID\r\n  5\r\n\(allocHandle())\r\n"
-            out += "330\r\n0\r\n"
+            out += "330\r\n\(tableHandle)\r\n"
             out += "100\r\nAcDbSymbolTableRecord\r\n"
             out += "100\r\nAcDbRegAppTableRecord\r\n"
             writeStr(2, app.name, &out)
@@ -595,15 +766,24 @@ public class DXFWriter {
 
     private func writeDimStyleTable(_ out: inout String) {
         var entries: [DXFDimstyleEntry] = []
-        if !dimstyles.contains(where: { $0.name == "Standard" }) {
-            let ds = DXFDimstyleEntry()
-            ds.name = "Standard"
-            entries.append(ds)
+        var names = Set<String>()
+        func append(_ entry: DXFDimstyleEntry) {
+            let key = normalizedName(entry.name)
+            guard !key.isEmpty, names.insert(key).inserted else { return }
+            entries.append(entry)
         }
-        entries.append(contentsOf: dimstyles)
+        if let existing = dimstyles.first(where: { normalizedName($0.name) == "STANDARD" }) {
+            append(existing)
+        } else {
+            let standard = DXFDimstyleEntry()
+            standard.name = "Standard"
+            append(standard)
+        }
+        for style in dimstyles { append(style) }
 
+        let tableHandle = allocHandle()
         out += "  0\r\nTABLE\r\n  2\r\nDIMSTYLE\r\n"
-        out += "  5\r\n\(allocHandle())\r\n330\r\n0\r\n"
+        out += "  5\r\n\(tableHandle)\r\n330\r\n0\r\n"
         out += "100\r\nAcDbSymbolTable\r\n"
         out += "100\r\nAcDbDimStyleTable\r\n"
         out += " 70\r\n\(entries.count)\r\n"
@@ -611,7 +791,7 @@ public class DXFWriter {
 
         for ds in entries {
             out += "  0\r\nDIMSTYLE\r\n105\r\n\(allocHandle())\r\n"
-            out += "330\r\n0\r\n"
+            out += "330\r\n\(tableHandle)\r\n"
             out += "100\r\nAcDbSymbolTableRecord\r\n"
             out += "100\r\nAcDbDimStyleTableRecord\r\n"
             writeStr(2, ds.name, &out)
@@ -674,8 +854,14 @@ public class DXFWriter {
             writeInt(288, ds.dimupt, &out)
             writeInt(289, ds.dimatfit, &out)
             writeInt(290, ds.dimfxlon, &out)
-            writeStr(340, ds.dimtxsty, &out)
-            writeStr(341, ds.dimldrblk, &out)
+            let styleName = ds.dimtxsty.isEmpty ? "Standard" : ds.dimtxsty
+            if let styleHandle = textStyleHandleByName[normalizedName(styleName)]
+                ?? textStyleHandleByName["STANDARD"] {
+                writeStr(340, styleHandle, &out)
+            }
+            if let leaderHandle = blockRecordHandle(for: ds.dimldrblk) {
+                writeStr(341, leaderHandle, &out)
+            }
             writeInt(371, ds.dimlwd, &out)
             writeInt(372, ds.dimlwe, &out)
         }
@@ -685,33 +871,51 @@ public class DXFWriter {
 
     private func writeBlockRecordTable(_ out: inout String) {
         var entries: [DXFBlockRecordEntry] = []
-        // Ensure *Model_Space and *Paper_Space exist
-        if !blockRecords.contains(where: { $0.name == "*Model_Space" }) {
-            let ms = DXFBlockRecordEntry()
-            ms.name = "*Model_Space"
-            entries.append(ms)
-        }
-        if !blockRecords.contains(where: { $0.name == "*Paper_Space" }) {
-            let ps = DXFBlockRecordEntry()
-            ps.name = "*Paper_Space"
-            entries.append(ps)
-        }
-        entries.append(contentsOf: blockRecords)
+        var names = Set<String>()
 
+        func appendRecord(name: String, flags: Int = 0) {
+            let key = normalizedName(name)
+            guard !key.isEmpty, names.insert(key).inserted else { return }
+            let record = DXFBlockRecordEntry()
+            record.name = name
+            record.flags = flags
+            entries.append(record)
+        }
+
+        appendRecord(name: "*Model_Space")
+        if layouts.isEmpty {
+            appendRecord(name: "*Paper_Space")
+        } else {
+            for layout in layouts { appendRecord(name: layout.blockName) }
+        }
+        for record in blockRecords {
+            let key = normalizedName(record.name)
+            guard !key.isEmpty, names.insert(key).inserted else { continue }
+            entries.append(record)
+        }
+        for block in blocks { appendRecord(name: block.name, flags: block.flags) }
+
+        let tableHandle = allocHandle()
         out += "  0\r\nTABLE\r\n  2\r\nBLOCK_RECORD\r\n"
-        out += "  5\r\n\(allocHandle())\r\n330\r\n0\r\n"
+        out += "  5\r\n\(tableHandle)\r\n330\r\n0\r\n"
         out += "100\r\nAcDbSymbolTable\r\n"
         out += " 70\r\n\(entries.count)\r\n"
 
-        for br in entries {
-            out += "  0\r\nBLOCK_RECORD\r\n  5\r\n\(allocHandle())\r\n"
-            out += "330\r\n0\r\n"
+        for record in entries {
+            let handle = allocHandle()
+            let key = normalizedName(record.name)
+            blockRecordHandleByName[key] = handle
+            out += "  0\r\nBLOCK_RECORD\r\n  5\r\n\(handle)\r\n"
+            out += "330\r\n\(tableHandle)\r\n"
             out += "100\r\nAcDbSymbolTableRecord\r\n"
             out += "100\r\nAcDbBlockTableRecord\r\n"
-            writeStr(2, br.name, &out)
-            writeInt(70, br.flags, &out)
+            writeStr(2, record.name, &out)
+            writeInt(70, record.flags, &out)
             writeInt(280, 1, &out)
             writeInt(281, 0, &out)
+            if let layoutHandle = layoutHandleByBlockName[key] {
+                writeStr(340, layoutHandle, &out)
+            }
         }
 
         out += "  0\r\nENDTAB\r\n"
@@ -723,47 +927,61 @@ public class DXFWriter {
         out += "  0\r\nSECTION\r\n  2\r\nBLOCKS\r\n"
         writingBlock = false
 
-        // Helper: write ENDBLK for previous block
         func closeBlock() {
-            if writingBlock {
-                let eh = allocHandle()
-                out += "  0\r\nENDBLK\r\n  5\r\n\(eh)\r\n"
-                if isModern {
-                    out += "330\r\n\(currentBlockHandle)\r\n100\r\nAcDbEntity\r\n"
-                }
-                out += "  8\r\n0\r\n"
-                if isModern { out += "100\r\nAcDbBlockEnd\r\n" }
-                writingBlock = false
+            guard writingBlock else { return }
+            let endHandle = allocHandle()
+            out += "  0\r\nENDBLK\r\n  5\r\n\(endHandle)\r\n"
+            if isModern {
+                out += "330\r\n\(currentBlockHandle)\r\n100\r\nAcDbEntity\r\n"
             }
+            out += "  8\r\n0\r\n"
+            if isModern { out += "100\r\nAcDbBlockEnd\r\n" }
+            writingBlock = false
         }
 
-        // Helper: write BLOCK header
-        func openBlock(_ name: String, _ bp: Vector3) {
+        func openBlock(_ name: String, _ basePoint: Vector3, flags: Int = 0) {
             closeBlock()
-            currentBlockHandle = allocHandle()
-            let blockH = currentBlockHandle
-            blockNameToHandle[name] = blockH
-            out += "  0\r\nBLOCK\r\n  5\r\n\(blockH)\r\n"
-            if isModern { out += "330\r\n0\r\n100\r\nAcDbEntity\r\n" }
+            let blockHandle = allocHandle()
+            let recordHandle = blockRecordHandle(for: name) ?? "0"
+            currentBlockHandle = recordHandle
+            blockNameToHandle[normalizedName(name)] = blockHandle
+            out += "  0\r\nBLOCK\r\n  5\r\n\(blockHandle)\r\n"
+            if isModern {
+                out += "330\r\n\(recordHandle)\r\n100\r\nAcDbEntity\r\n"
+            }
             out += "  8\r\n0\r\n"
             if isModern { out += "100\r\nAcDbBlockBegin\r\n" }
             writeStr(2, name, &out)
-            writeInt(70, 0, &out)
-            writePoint3(10, bp, &out)
+            writeInt(70, flags, &out)
+            writePoint3(10, basePoint, &out)
             writeStr(3, name, &out)
-            writeStr(1, "", &out)
             writingBlock = true
         }
 
-        openBlock("*Model_Space", .zero)
-        openBlock("*Paper_Space", .zero)
-
-        // User blocks
-        for block in blocks {
-            openBlock(block.name, block.basePoint)
+        var spaceNames = ["*Model_Space"]
+        if layouts.isEmpty {
+            spaceNames.append("*Paper_Space")
+        } else {
+            for layout in layouts where normalizedName(layout.blockName) != "*MODEL_SPACE" {
+                if !spaceNames.contains(where: { normalizedName($0) == normalizedName(layout.blockName) }) {
+                    spaceNames.append(layout.blockName)
+                }
+            }
+        }
+        for name in spaceNames {
+            openBlock(name, .zero)
+            closeBlock()
         }
 
-        closeBlock()
+        let spaceKeys = Set(spaceNames.map(normalizedName))
+        for block in blocks where !spaceKeys.contains(normalizedName(block.name)) {
+            openBlock(block.name, block.basePoint, flags: block.flags)
+            for entity in block.entities {
+                writeEntity(entity, &out, ownerHandle: currentBlockHandle)
+            }
+            closeBlock()
+        }
+
         out += "  0\r\nENDSEC\r\n"
     }
 
@@ -772,31 +990,43 @@ public class DXFWriter {
     private func writeEntities(_ out: inout String) {
         out += "  0\r\nSECTION\r\n  2\r\nENTITIES\r\n"
 
-        for entity in entities {
-            writeEntity(entity, &out)
+        for (index, entity) in entities.enumerated() {
+            let explicitOwner = index < entityOwnerBlockNames.count ? entityOwnerBlockNames[index] : nil
+            let blockName = explicitOwner ?? (entity.space == 0 ? "*Model_Space" : "*Paper_Space")
+            writeEntity(
+                entity,
+                &out,
+                ownerHandle: blockRecordHandle(for: blockName),
+                ownerBlockName: blockName)
         }
 
         out += "  0\r\nENDSEC\r\n"
     }
 
-    private func writeEntity(_ e: DXFEntity, _ out: inout String) {
+    private func writeEntity(
+        _ e: DXFEntity,
+        _ out: inout String,
+        ownerHandle: String? = nil,
+        ownerBlockName: String? = nil
+    ) {
         let h = allocHandle()
+        if let viewport = e as? DXFViewportEntity,
+           let ownerBlockName,
+           viewport.vpID > 1 || activeViewportHandleByBlockName[normalizedName(ownerBlockName)] == nil {
+            activeViewportHandleByBlockName[normalizedName(ownerBlockName)] = h
+        }
 
         switch e.eType {
         case .pOINT:
             guard let pt = e as? DXFPointEntity else { return }
-            out += "  0\r\nPOINT\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: pt.layer))\r\n"
-            writeCommonEntityData(pt, &out)
+            writeEntityHeader("POINT", entity: pt, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbPoint\r\n"
             writePoint3(10, pt.basePoint, &out)
             writeDbl(39, pt.thickness_p, &out)
 
         case .lINE:
             guard let ln = e as? DXFLineEntity else { return }
-            out += "  0\r\nLINE\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: ln.layer))\r\n"
-            writeCommonEntityData(ln, &out)
+            writeEntityHeader("LINE", entity: ln, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbLine\r\n"
             writePoint3(10, ln.basePoint, &out)
             writePoint3(11, ln.secPoint, &out)
@@ -804,9 +1034,7 @@ public class DXFWriter {
 
         case .cIRCLE:
             guard let ci = e as? DXFCircleEntity else { return }
-            out += "  0\r\nCIRCLE\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: ci.layer))\r\n"
-            writeCommonEntityData(ci, &out)
+            writeEntityHeader("CIRCLE", entity: ci, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbCircle\r\n"
             writePoint3(10, ci.basePoint, &out)
             writeDbl(40, ci.radius, &out)
@@ -814,9 +1042,7 @@ public class DXFWriter {
 
         case .aRC:
             guard let arc = e as? DXFArcEntity else { return }
-            out += "  0\r\nARC\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: arc.layer))\r\n"
-            writeCommonEntityData(arc, &out)
+            writeEntityHeader("ARC", entity: arc, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbArc\r\n"
             writePoint3(10, arc.basePoint, &out)
             writeDbl(40, arc.radius, &out)
@@ -826,9 +1052,7 @@ public class DXFWriter {
         case .eLLIPSE:
             guard let el = e as? DXFEllipseEntity else { return }
             el.correctAxis()
-            out += "  0\r\nELLIPSE\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: el.layer))\r\n"
-            writeCommonEntityData(el, &out)
+            writeEntityHeader("ELLIPSE", entity: el, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbEllipse\r\n"
             writePoint3(10, el.basePoint, &out)
             writePoint3(11, el.secPoint, &out)
@@ -838,9 +1062,7 @@ public class DXFWriter {
 
         case .lWPOLYLINE:
             guard let lw = e as? DXFLWPolylineEntity else { return }
-            out += "  0\r\nLWPOLYLINE\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: lw.layer))\r\n"
-            writeCommonEntityData(lw, &out)
+            writeEntityHeader("LWPOLYLINE", entity: lw, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbPolyline\r\n"
             writeInt(90, lw.vertices.count, &out)
             writeInt(70, lw.flags, &out)
@@ -858,9 +1080,7 @@ public class DXFWriter {
 
         case .pOLYLINE:
             guard let pl = e as? DXFPolylineEntity else { return }
-            out += "  0\r\nPOLYLINE\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: pl.layer))\r\n"
-            writeCommonEntityData(pl, &out)
+            writeEntityHeader("POLYLINE", entity: pl, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDb2dPolyline\r\n"
             writePoint3(10, pl.basePoint, &out)
             writeDbl(40, pl.defStartWidth, &out)
@@ -871,25 +1091,25 @@ public class DXFWriter {
             writeInt(73, pl.smoothM, &out)
             writeInt(74, pl.smoothN, &out)
             writeInt(75, pl.curveType, &out)
-            // Write VERTEX entities
+            writeInt(66, 1, &out)
             for v in pl.vertices {
-                writeVertex(v, &out)
+                writeVertex(v, ownerHandle: h, layer: pl.layer, &out)
             }
-            out += "  0\r\nSEQEND\r\n  5\r\n\(allocHandle())\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: pl.layer))\r\n"
+            let seqendHandle = allocHandle()
+            out += "  0\r\nSEQEND\r\n  5\r\n\(seqendHandle)\r\n"
+            if isModern { out += "330\r\n\(h)\r\n100\r\nAcDbEntity\r\n" }
+            writeStr(8, esc(layer: pl.layer), &out)
 
         case .sPLINE:
             guard let sp = e as? DXFSplineEntity else { return }
-            out += "  0\r\nSPLINE\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: sp.layer))\r\n"
-            writeCommonEntityData(sp, &out)
+            writeEntityHeader("SPLINE", entity: sp, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbSpline\r\n"
             writeCoord3(210, sp.normalVec, &out)
             writeInt(70, sp.flags, &out)
             writeInt(71, sp.degree, &out)
-            writeInt(72, Int(sp.nKnots), &out)
-            writeInt(73, Int(sp.nControl), &out)
-            writeInt(74, Int(sp.nFit), &out)
+            writeInt(72, sp.knots.count, &out)
+            writeInt(73, sp.controlPoints.count, &out)
+            writeInt(74, sp.fitPoints.count, &out)
             writeDbl(42, sp.tolKnot, &out)
             writeDbl(43, sp.tolControl, &out)
             writeDbl(44, sp.tolFit, &out)
@@ -897,14 +1117,14 @@ public class DXFWriter {
             for w in sp.weights { writeDbl(41, w, &out) }
             for cp in sp.controlPoints { writePoint3(10, cp, &out) }
             for fp in sp.fitPoints { writePoint3(11, fp, &out) }
-            writePoint3(12, sp.tgStart, &out)
-            writePoint3(13, sp.tgEnd, &out)
+            if !sp.fitPoints.isEmpty {
+                writePoint3(12, sp.tgStart, &out)
+                writePoint3(13, sp.tgEnd, &out)
+            }
 
         case .tEXT:
             guard let tx = e as? DXFTextEntity else { return }
-            out += "  0\r\nTEXT\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: tx.layer))\r\n"
-            writeCommonEntityData(tx, &out)
+            writeEntityHeader("TEXT", entity: tx, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbText\r\n"
             writePoint3(10, tx.basePoint, &out)
             writeDbl(40, tx.height, &out)
@@ -915,17 +1135,15 @@ public class DXFWriter {
             writeStr(7, tx.style, &out)
             writeInt(71, tx.textGen, &out)
             writeInt(72, tx.alignH, &out)
-            writeInt(73, tx.alignV, &out)
-            if tx.alignH != 0 || tx.alignV != 0 {
-                writePoint3(11, tx.secPoint, &out)  // alignment point
-            }
             out += "100\r\nAcDbText\r\n"
+            if tx.alignH != 0 || tx.alignV != 0 {
+                writePoint3(11, tx.secPoint, &out)
+            }
+            writeInt(73, tx.alignV, &out)
 
         case .mTEXT:
             guard let mt = e as? DXFMTextEntity else { return }
-            out += "  0\r\nMTEXT\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: mt.layer))\r\n"
-            writeCommonEntityData(mt, &out)
+            writeEntityHeader("MTEXT", entity: mt, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbMText\r\n"
             writePoint3(10, mt.basePoint, &out)
             writeDbl(40, mt.height, &out)
@@ -939,9 +1157,7 @@ public class DXFWriter {
 
         case .iNSERT:
             guard let ins = e as? DXFInsertEntity else { return }
-            out += "  0\r\nINSERT\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: ins.layer))\r\n"
-            writeCommonEntityData(ins, &out)
+            writeEntityHeader("INSERT", entity: ins, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbBlockReference\r\n"
             writeStr(2, ins.name, &out)
             writePoint3(10, ins.basePoint, &out)
@@ -956,9 +1172,7 @@ public class DXFWriter {
 
         case .sOLID:
             guard let sd = e as? DXFSolidEntity else { return }
-            out += "  0\r\nSOLID\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: sd.layer))\r\n"
-            writeCommonEntityData(sd, &out)
+            writeEntityHeader("SOLID", entity: sd, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbTrace\r\n"
             writePoint3(10, sd.basePoint, &out)
             writePoint3(11, sd.secPoint, &out)
@@ -967,9 +1181,7 @@ public class DXFWriter {
 
         case .tRACE:
             guard let tr = e as? DXFTraceEntity else { return }
-            out += "  0\r\nTRACE\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: tr.layer))\r\n"
-            writeCommonEntityData(tr, &out)
+            writeEntityHeader("TRACE", entity: tr, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbTrace\r\n"
             writePoint3(10, tr.basePoint, &out)
             writePoint3(11, tr.secPoint, &out)
@@ -978,9 +1190,7 @@ public class DXFWriter {
 
         case .e3DFACE:
             guard let f3 = e as? DXF3DFaceEntity else { return }
-            out += "  0\r\n3DFACE\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: f3.layer))\r\n"
-            writeCommonEntityData(f3, &out)
+            writeEntityHeader("3DFACE", entity: f3, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbFace\r\n"
             writePoint3(10, f3.basePoint, &out)
             writePoint3(11, f3.secPoint, &out)
@@ -990,9 +1200,7 @@ public class DXFWriter {
 
         case .xLINE:
             guard let xl = e as? DXFXLineEntity else { return }
-            out += "  0\r\nXLINE\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: xl.layer))\r\n"
-            writeCommonEntityData(xl, &out)
+            writeEntityHeader("XLINE", entity: xl, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbXline\r\n"
             writePoint3(10, xl.basePoint, &out)
             let xlDir = unitize(xl.secPoint)
@@ -1000,9 +1208,7 @@ public class DXFWriter {
 
         case .rAY:
             guard let ry = e as? DXFRayEntity else { return }
-            out += "  0\r\nRAY\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: ry.layer))\r\n"
-            writeCommonEntityData(ry, &out)
+            writeEntityHeader("RAY", entity: ry, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbRay\r\n"
             writePoint3(10, ry.basePoint, &out)
             let ryDir = unitize(ry.secPoint)
@@ -1010,9 +1216,7 @@ public class DXFWriter {
 
         case .dIMENSION:
             guard let dm = e as? DXFDimensionEntity else { return }
-            out += "  0\r\nDIMENSION\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: dm.layer))\r\n"
-            writeCommonEntityData(dm, &out)
+            writeEntityHeader("DIMENSION", entity: dm, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbDimension\r\n"
             writeStr(2, dm.name, &out)
             writeStr(3, dm.style, &out)
@@ -1028,9 +1232,7 @@ public class DXFWriter {
 
         case .lEADER:
             guard let ld = e as? DXFLeaderEntity else { return }
-            out += "  0\r\nLEADER\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: ld.layer))\r\n"
-            writeCommonEntityData(ld, &out)
+            writeEntityHeader("LEADER", entity: ld, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbLeader\r\n"
             writeStr(3, ld.style, &out)
             writeInt(71, ld.arrow, &out)
@@ -1047,15 +1249,13 @@ public class DXFWriter {
 
         case .hATCH:
             guard let ht = e as? DXFHatchEntity else { return }
-            out += "  0\r\nHATCH\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: ht.layer))\r\n"
-            writeCommonEntityData(ht, &out)
+            writeEntityHeader("HATCH", entity: ht, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbHatch\r\n"
             writePoint3(10, ht.basePoint, &out)
             writeCoord3(210, ht.extrusion, &out)
             writeStr(2, ht.name, &out)
             writeInt(70, ht.solid, &out)
-            writeInt(71, ht.associative, &out)
+            writeInt(71, 0, &out)
             writeInt(91, ht.loops.count, &out)
 
             for loop in ht.loops {
@@ -1072,6 +1272,7 @@ public class DXFWriter {
                         writeDbl(20, vertex.y, &out)
                         if hasBulge { writeDbl(42, vertex.bulge, &out) }
                     }
+                    writeInt(97, 0, &out)
                     continue
                 }
 
@@ -1104,10 +1305,13 @@ public class DXFWriter {
                         writeInt(95, spline.knots.count, &out)
                         writeInt(96, spline.controlPoints.count, &out)
                         for knot in spline.knots { writeDbl(40, knot, &out) }
-                        if (spline.flags & 4) != 0 {
-                            for weight in spline.weights { writeDbl(42, weight, &out) }
+                        for (index, point) in spline.controlPoints.enumerated() {
+                            writePoint(10, point, &out)
+                            if (spline.flags & 4) != 0 {
+                                let weight = index < spline.weights.count ? spline.weights[index] : 1.0
+                                writeDbl(42, weight, &out)
+                            }
                         }
-                        for point in spline.controlPoints { writePoint(10, point, &out) }
                         writeInt(97, spline.fitPoints.count, &out)
                         for point in spline.fitPoints { writePoint(11, point, &out) }
                         if !spline.fitPoints.isEmpty {
@@ -1116,15 +1320,16 @@ public class DXFWriter {
                         }
                     }
                 }
+                writeInt(97, 0, &out)
             }
 
             writeInt(75, ht.hStyle, &out)
             writeInt(76, ht.hPattern, &out)
-            writeInt(77, ht.doubleFlag, &out)
 
             if ht.solid == 0 {
                 writeDbl(52, ht.angle_p, &out)
                 writeDbl(41, ht.scale, &out)
+                writeInt(77, ht.doubleFlag, &out)
                 let patternLines = ht.patternLines
                 writeInt(78, patternLines.count, &out)
                 for line in patternLines {
@@ -1141,11 +1346,10 @@ public class DXFWriter {
             if ht.isGradient == 0, ht.bgColor >= 0 {
                 writeInt(63, Int(ht.bgColor), &out)
             }
-            writeDbl(47, 1.0, &out)
             writeInt(98, 0, &out)
 
-            writeInt(450, ht.isGradient, &out)
             if ht.isGradient != 0 {
+                writeInt(450, 1, &out)
                 writeInt(451, 0, &out)
                 writeDbl(460, ht.gradientAngle * .pi / 180.0, &out)
                 writeDbl(461, ht.gradientShift, &out)
@@ -1162,11 +1366,11 @@ public class DXFWriter {
 
         case .iMAGE:
             guard let im = e as? DXFImageEntity else { return }
-            out += "  0\r\nIMAGE\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: im.layer))\r\n"
-            writeCommonEntityData(im, &out)
+            writeEntityHeader("IMAGE", entity: im, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbRasterImage\r\n"
-            writeInt(340, Int(im.ref), &out)
+            if let imageDefinitionHandle = imageDefinitionHandleByEntity[ObjectIdentifier(im)] {
+                writeStr(340, imageDefinitionHandle, &out)
+            }
             writePoint3(10, im.basePoint, &out)
             writePoint3(11, im.secPoint, &out)     // U-vector
             writePoint3(12, im.vVector, &out)       // V-vector
@@ -1180,22 +1384,51 @@ public class DXFWriter {
 
         case .vIEWPORT:
             guard let vp = e as? DXFViewportEntity else { return }
-            out += "  0\r\nVIEWPORT\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n\(esc(layer: vp.layer))\r\n"
-            writeCommonEntityData(vp, &out)
+            writeEntityHeader("VIEWPORT", entity: vp, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbViewport\r\n"
             writePoint3(10, vp.basePoint, &out)
-            writeDbl(40, vp.psHeight, &out)
-            writeDbl(41, vp.psWidth, &out)
+            writeDbl(40, vp.psWidth, &out)
+            writeDbl(41, vp.psHeight, &out)
             writeInt(68, vp.vpStatus, &out)
             writeInt(69, vp.vpID, &out)
             writeDbl(12, vp.centerPX, &out)
             writeDbl(22, vp.centerPY, &out)
+            writeDbl(13, 0, &out)
+            writeDbl(23, 0, &out)
+            writeDbl(14, 10, &out)
+            writeDbl(24, 10, &out)
+            writeDbl(15, 10, &out)
+            writeDbl(25, 10, &out)
+            writePoint3(16, Vector3(x: 0, y: 0, z: 1), &out)
+            writePoint3(17, vp.viewTarget, &out)
+            writeDbl(42, 50, &out)
+            writeDbl(43, 0, &out)
+            writeDbl(44, 0, &out)
+            writeDbl(45, vp.viewHeight, &out)
+            writeDbl(50, 0, &out)
+            writeDbl(51, vp.twistAngle, &out)
+            writeInt(72, 100, &out)
+            writeInt(90, 32800, &out)
+            writeStrAllowEmpty(1, "", &out)
+            writeInt(281, 0, &out)
+            writeInt(71, 1, &out)
+            writeInt(74, 0, &out)
+            writePoint3(110, .zero, &out)
+            writePoint3(111, Vector3(x: 1, y: 0, z: 0), &out)
+            writePoint3(112, Vector3(x: 0, y: 1, z: 0), &out)
+            writeInt(79, 0, &out)
+            writeDbl(146, 0, &out)
+            writeInt(170, 0, &out)
+            writeInt(61, 5, &out)
+            writeInt(292, 1, &out)
+            writeInt(282, 1, &out)
+            writeDbl(141, 0, &out)
+            writeDbl(142, 0, &out)
+            writeInt(63, 250, &out)
+            writeInt(421, 3355443, &out)
 
         case .tABLE:
-            out += "  0\r\nACAD_TABLE\r\n  5\r\n\(h)\r\n"
-            out += "100\r\nAcDbEntity\r\n  8\r\n0\r\n"
-            writeCommonEntityData(e, &out)
+            writeEntityHeader("ACAD_TABLE", entity: e, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbTable\r\n"
 
         default:
@@ -1203,9 +1436,31 @@ public class DXFWriter {
         }
     }
 
-    private func writeVertex(_ v: DXFVertexEntity, _ out: inout String) {
+    private func writeEntityHeader(
+        _ type: String,
+        entity: DXFEntity,
+        handle: String,
+        ownerHandle: String?,
+        _ out: inout String
+    ) {
+        out += "  0\r\n\(type)\r\n  5\r\n\(handle)\r\n"
+        if isModern, let ownerHandle, !ownerHandle.isEmpty {
+            out += "330\r\n\(ownerHandle)\r\n"
+        }
+        if hasSubclassMarkers { out += "100\r\nAcDbEntity\r\n" }
+        writeStr(8, esc(layer: entity.layer), &out)
+        writeCommonEntityData(entity, &out)
+    }
+
+    private func writeVertex(
+        _ v: DXFVertexEntity,
+        ownerHandle: String,
+        layer: String,
+        _ out: inout String
+    ) {
         out += "  0\r\nVERTEX\r\n  5\r\n\(allocHandle())\r\n"
-        out += "100\r\nAcDbEntity\r\n  8\r\n0\r\n"
+        if isModern { out += "330\r\n\(ownerHandle)\r\n100\r\nAcDbEntity\r\n" }
+        writeStr(8, esc(layer: layer), &out)
         out += "100\r\nAcDbVertex\r\n"
         out += "100\r\nAcDb2dVertex\r\n"
         writePoint3(10, v.basePoint, &out)
@@ -1229,120 +1484,171 @@ public class DXFWriter {
         if !e.visible { writeInt(60, 0, &out) }
         if e.space != 0 { writeInt(67, e.space, &out) }
         if e.lWeight != .byLayer { writeInt(370, e.lWeight.dxfInt, &out) }
-        if e.plotStyleHandle != 0 {
-            writeStr(390, String(format: "%X", e.plotStyleHandle), &out)
-        }
         if !e.colorName.isEmpty { writeStr(430, e.colorName, &out) }
         if e.transparency >= 0 { writeInt(440, Int(e.transparency), &out) }
         if e.haveExtrusion || e.extrusion != Vector3(x: 0, y: 0, z: 1) {
             writeCoord3(210, e.extrusion, &out)
         }
-        if e.handle != 0 { writeStr(5, String(format: "%X", e.handle), &out) }
-        if e.parentHandle != 0 { writeStr(330, String(format: "%X", e.parentHandle), &out) }
     }
 
     // MARK: - OBJECTS
 
-        private func writeObjects(_ out: inout String) {
-        if !isModern { return }
+    private func writeObjects(_ out: inout String) {
+        guard isModern else { return }
 
-        // Collect image defs from IMAGE entities
-        var imageDefs: [DXFImageDefEntry] = []
-        for entity in entities {
-            if let img = entity as? DXFImageEntity {
-                let defName = img.handle != 0 ? String(format: "Img_%X", img.handle) : "Image_0"
-                if !imageDefs.contains(where: { $0.name == defName }) {
-                    let def = DXFImageDefEntry()
-                    def.name = defName
-                    def.handle = img.ref != 0 ? img.ref : allocHandleU32()
-                    def.u = img.sizeU
-                    def.v = img.sizeV
-                    def.up = 1.0
-                    def.vp = 1.0
-                    imageDefs.append(def)
-                }
-            }
-        }
+        let imageEntities = entities.compactMap { $0 as? DXFImageEntity }
+        let imageDictionaryHandle = imageEntities.isEmpty ? nil : allocHandle()
 
         out += "  0\r\nSECTION\r\n  2\r\nOBJECTS\r\n"
 
-        // Root DICTIONARY (fixed handle C)
-        var imgDictH = ""
-        out += "  0\r\nDICTIONARY\r\n  5\r\nC\r\n"
-        out += "330\r\n0\r\n100\r\nAcDbDictionary\r\n"
-        out += "281\r\n1\r\n"
-        out += "  3\r\nACAD_GROUP\r\n350\r\nD\r\n"
-        if !imageDefs.isEmpty {
-            imgDictH = allocHandle()
-            out += "  3\r\nACAD_IMAGE_DICT\r\n350\r\n\(imgDictH)\r\n"
+        out += "  0\r\nDICTIONARY\r\n  5\r\n\(rootDictionaryHandle)\r\n"
+        out += "330\r\n0\r\n100\r\nAcDbDictionary\r\n281\r\n1\r\n"
+        out += "  3\r\nACAD_GROUP\r\n350\r\n\(groupDictionaryHandle)\r\n"
+        if !layoutDictionaryHandle.isEmpty {
+            out += "  3\r\nACAD_LAYOUT\r\n350\r\n\(layoutDictionaryHandle)\r\n"
+        }
+        if let imageDictionaryHandle {
+            out += "  3\r\nACAD_IMAGE_DICT\r\n350\r\n\(imageDictionaryHandle)\r\n"
         }
 
-        // ACAD_GROUP DICTIONARY (fixed handle D)
-        out += "  0\r\nDICTIONARY\r\n  5\r\nD\r\n"
-        out += "330\r\nC\r\n100\r\nAcDbDictionary\r\n"
-        out += "281\r\n1\r\n"
+        out += "  0\r\nDICTIONARY\r\n  5\r\n\(groupDictionaryHandle)\r\n"
+        out += "330\r\n\(rootDictionaryHandle)\r\n100\r\nAcDbDictionary\r\n281\r\n1\r\n"
 
-        if !imageDefs.isEmpty {
-            // IMAGEDEF_REACTOR for each image def
-            for def in imageDefs {
-                if def.reactors.isEmpty {
-                    let reactorH = allocHandle()
-                    let entityH = String(format: "%X", def.handle)
-                    def.reactors[reactorH] = entityH
-                }
-                for (reactorH, entityH) in def.reactors {
-                    out += "  0\r\nIMAGEDEF_REACTOR\r\n"
-                    out += "  5\r\n\(reactorH)\r\n"
-                    out += "330\r\n\(entityH)\r\n"
-                    out += "100\r\nAcDbRasterImageDefReactor\r\n"
-                    out += " 90\r\n2\r\n"
-                    out += "330\r\n\(entityH)\r\n"
-                }
+        if !layoutDictionaryHandle.isEmpty {
+            out += "  0\r\nDICTIONARY\r\n  5\r\n\(layoutDictionaryHandle)\r\n"
+            out += "330\r\n\(rootDictionaryHandle)\r\n100\r\nAcDbDictionary\r\n281\r\n1\r\n"
+            for layout in layouts {
+                guard let layoutHandle = layoutHandleByBlockName[normalizedName(layout.blockName)] else { continue }
+                writeStr(3, layout.name, &out)
+                writeStr(350, layoutHandle, &out)
             }
 
-            // IMAGE_DICT dictionary
-            out += "  0\r\nDICTIONARY\r\n  5\r\n\(imgDictH)\r\n"
-            out += "330\r\nC\r\n100\r\nAcDbDictionary\r\n"
-            out += "281\r\n1\r\n"
-            for def in imageDefs {
-                let dictName = (def.name as NSString).lastPathComponent
-                let nameNoExt = (dictName as NSString).deletingPathExtension
-                let entryName = nameNoExt.isEmpty ? def.name : nameNoExt
-                out += "  3\r\n\(entryName)\r\n"
-                out += "350\r\n\(String(format: "%X", def.handle))\r\n"
+            var writtenLayoutHandles = Set<String>()
+            for layout in layouts {
+                let blockKey = normalizedName(layout.blockName)
+                guard let layoutHandle = layoutHandleByBlockName[blockKey],
+                      writtenLayoutHandles.insert(layoutHandle).inserted,
+                      let blockHandle = blockRecordHandle(for: layout.blockName) else { continue }
+                writeLayoutObject(
+                    layout,
+                    handle: layoutHandle,
+                    ownerHandle: layoutDictionaryHandle,
+                    blockRecordHandle: blockHandle,
+                    &out)
+            }
+        }
+
+        if let imageDictionaryHandle {
+            out += "  0\r\nDICTIONARY\r\n  5\r\n\(imageDictionaryHandle)\r\n"
+            out += "330\r\n\(rootDictionaryHandle)\r\n100\r\nAcDbDictionary\r\n281\r\n1\r\n"
+            for (index, image) in imageEntities.enumerated() {
+                guard let definitionHandle = imageDefinitionHandleByEntity[ObjectIdentifier(image)] else { continue }
+                let filename = image.imageFilePath.isEmpty ? "Image_\(index + 1)" : image.imageFilePath
+                let dictionaryName = (filename as NSString).deletingPathExtension
+                writeStr(3, dictionaryName.isEmpty ? "Image_\(index + 1)" : dictionaryName, &out)
+                writeStr(350, definitionHandle, &out)
             }
 
-            // IMAGEDEF entries
-            for def in imageDefs {
-                out += "  0\r\nIMAGEDEF\r\n"
-                out += "  5\r\n\(String(format: "%X", def.handle))\r\n"
-                out += "102\r\n{ACAD_REACTORS\r\n"
-                for (reactorH, _) in def.reactors {
-                    out += "330\r\n\(reactorH)\r\n"
-                }
-                out += "102\r\n}\r\n"
-                out += "100\r\nAcDbRasterImageDef\r\n"
-                out += " 90\r\n\(def.imgVersion)\r\n"
-                writeStr(1, def.name_p.isEmpty ? def.name : def.name_p, &out)
-                writeDbl(10, def.u, &out)
-                writeDbl(20, def.v, &out)
-                writeDbl(11, def.up, &out)
-                writeDbl(21, def.vp, &out)
-                writeInt(280, def.loaded, &out)
-                writeInt(281, def.resolution, &out)
+            for image in imageEntities {
+                guard let definitionHandle = imageDefinitionHandleByEntity[ObjectIdentifier(image)] else { continue }
+                out += "  0\r\nIMAGEDEF\r\n  5\r\n\(definitionHandle)\r\n"
+                out += "330\r\n\(imageDictionaryHandle)\r\n100\r\nAcDbRasterImageDef\r\n"
+                writeInt(90, 0, &out)
+                writeStr(1, image.imageFilePath, &out)
+                writeDbl(10, image.sizeU, &out)
+                writeDbl(20, image.sizeV, &out)
+                writeDbl(11, 1.0, &out)
+                writeDbl(21, 1.0, &out)
+                writeInt(280, 1, &out)
+                writeInt(281, 0, &out)
             }
         }
 
         out += "  0\r\nENDSEC\r\n"
     }
 
+    private func writeLayoutObject(
+        _ layout: DXFLayoutDefinition,
+        handle: String,
+        ownerHandle: String,
+        blockRecordHandle: String,
+        _ out: inout String
+    ) {
+        let isModel = normalizedName(layout.blockName) == "*MODEL_SPACE"
+        out += "  0\r\nLAYOUT\r\n  5\r\n\(handle)\r\n"
+        out += "330\r\n\(ownerHandle)\r\n100\r\nAcDbPlotSettings\r\n"
+        writeStrAllowEmpty(1, "", &out)
+        writeStrAllowEmpty(2, "", &out)
+        writeStrAllowEmpty(4, "", &out)
+        writeStrAllowEmpty(6, "", &out)
+        for code in 40...49 { writeDbl(code, 0, &out) }
+        writeDbl(140, 0, &out)
+        writeDbl(141, 0, &out)
+        writeDbl(142, 1, &out)
+        writeDbl(143, 1, &out)
+        writeInt(70, 0, &out)
+        writeInt(72, 0, &out)
+        writeInt(73, 0, &out)
+        writeInt(74, 5, &out)
+        writeStrAllowEmpty(7, "", &out)
+        writeInt(75, 0, &out)
+        writeDbl(147, 1, &out)
+        writeInt(76, 0, &out)
+        writeInt(77, 2, &out)
+        writeInt(78, 300, &out)
+        writeDbl(148, 0, &out)
+        writeDbl(149, 0, &out)
+
+        out += "100\r\nAcDbLayout\r\n"
+        writeStr(1, layout.name, &out)
+        writeInt(70, isModel ? 1 : 0, &out)
+        writeInt(71, layout.tabOrder, &out)
+        writePoint(10, layout.minimumLimits, &out)
+        writePoint(11, layout.maximumLimits, &out)
+        writePoint3(12, .zero, &out)
+        writePoint3(14, .zero, &out)
+        writePoint3(15, .zero, &out)
+        writeDbl(146, 0, &out)
+        writePoint3(13, .zero, &out)
+        writePoint3(16, Vector3(x: 1, y: 0, z: 0), &out)
+        writePoint3(17, Vector3(x: 0, y: 1, z: 0), &out)
+        writeInt(76, 0, &out)
+        writeStr(330, blockRecordHandle, &out)
+        if let viewportHandle = activeViewportHandleByBlockName[normalizedName(layout.blockName)] {
+            writeStr(331, viewportHandle, &out)
+        }
+    }
+
     // MARK: - Write Helpers
 
-    private func writeStr(_ code: Int, _ val: String, _ out: inout String) {
-        if val.isEmpty { return }
-        let encoded = textCodec.fromUtf8(val)
+    private var outputStringEncoding: String.Encoding {
+        textCodec.codePage == "UTF-8" ? .utf8 : .isoLatin1
+    }
+
+    private func normalizedDXFString(_ value: String, mtext: Bool) -> String {
+        value
+            .replacingOccurrences(of: "\0", with: "")
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\n", with: mtext ? "\\P" : " ")
+    }
+
+    private func writeEncodedStr(_ code: Int, _ encoded: String, _ out: inout String) {
+        guard !encoded.isEmpty else { return }
         out += String(format: "%3d\r\n", code)
         out += encoded + "\r\n"
+    }
+
+    private func writeStr(_ code: Int, _ val: String, _ out: inout String) {
+        let normalized = normalizedDXFString(val, mtext: false)
+        guard !normalized.isEmpty else { return }
+        writeEncodedStr(code, textCodec.fromUtf8(normalized), &out)
+    }
+
+    private func writeStrAllowEmpty(_ code: Int, _ val: String, _ out: inout String) {
+        let normalized = normalizedDXFString(val, mtext: false)
+        out += String(format: "%3d\r\n", code)
+        out += textCodec.fromUtf8(normalized) + "\r\n"
     }
 
     private func writeInt(_ code: Int, _ val: Int, _ out: inout String) {
@@ -1358,17 +1664,34 @@ public class DXFWriter {
         writeInt(code, val ? 1 : 0, &out)
     }
 
-    /// Write MText string, chunking >250 chars into code 3 segments
-    private func writeMTextString(_ text: String, _ out: inout String) {
-        let maxChunk = 250
-        var remaining = text
-        while remaining.utf8.count > maxChunk {
-            let byteView = Data(remaining.utf8)
-            let chunk = String(data: byteView[0..<maxChunk], encoding: .utf8) ?? String(remaining.prefix(maxChunk))
-            writeStr(3, chunk, &out)
-            remaining = String(remaining.dropFirst(chunk.count))
+    private func splitEncodedString(_ value: String, maxBytes: Int) -> (String, String) {
+        var byteCount = 0
+        var end = value.startIndex
+        for character in value {
+            let text = String(character)
+            let characterBytes = text.data(
+                using: outputStringEncoding,
+                allowLossyConversion: false)?.count ?? text.utf8.count
+            if byteCount > 0, byteCount + characterBytes > maxBytes { break }
+            byteCount += characterBytes
+            end = value.index(end, offsetBy: 1)
         }
-        writeStr(1, remaining, &out)
+        if end == value.startIndex, !value.isEmpty {
+            end = value.index(after: value.startIndex)
+        }
+        return (String(value[..<end]), String(value[end...]))
+    }
+
+    /// Write MText string, chunking >250 encoded bytes into code 3 segments.
+    private func writeMTextString(_ text: String, _ out: inout String) {
+        let normalized = normalizedDXFString(text, mtext: true)
+        var remaining = textCodec.fromUtf8(normalized)
+        while (remaining.data(using: outputStringEncoding)?.count ?? remaining.utf8.count) > 250 {
+            let (chunk, rest) = splitEncodedString(remaining, maxBytes: 250)
+            writeEncodedStr(3, chunk, &out)
+            remaining = rest
+        }
+        writeEncodedStr(1, remaining, &out)
     }
 
     /// Unitize a direction vector
@@ -1402,14 +1725,14 @@ public class DXFWriter {
     /// Format double for DXF: trim trailing zeros, use '.0' for integers
     private func dxfFmt(_ val: Double) -> String {
         if val.isNaN || val.isInfinite { return "0.0" }
-        // Use 6 decimal places max, trim trailing zeros
-        let s = String(format: "%.6f", val)
-        if s.contains(".") {
-            var trimmed = s
-            while trimmed.hasSuffix("0") { trimmed = String(trimmed.dropLast()) }
-            if trimmed.hasSuffix(".") { trimmed = String(trimmed.dropLast()) + ".0" }
-            return trimmed
+        if abs(val) < 1e-15 { return "0.0" }
+        let value = String(
+            format: "%.17g",
+            locale: Locale(identifier: "en_US_POSIX"),
+            val)
+        if value.contains(".") || value.contains("e") || value.contains("E") {
+            return value
         }
-        return s
+        return value + ".0"
     }
 }
