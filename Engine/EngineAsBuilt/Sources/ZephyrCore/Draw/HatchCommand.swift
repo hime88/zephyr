@@ -173,20 +173,14 @@ public final class HatchCommand: FeatureCommand {
             prims.append(.fillComplexPolygon(
                 outer: boundary, holes: holes, color: effectiveColor))
         } else {
-            if let bg = effectiveBgColor {
-                prims.append(.fillComplexPolygon(
-                    outer: boundary, holes: holes, color: bg))
-            }
-            let patternBoundary = holes.isEmpty
-                ? boundary
-                : DXFHatchGenerator.connectHoles(outer: boundary, holes: holes)
-            prims.append(.hatch(
-                boundary: patternBoundary,
+            prims.append(.hatchPath(
+                boundary: CADPolyline(points: boundary, isClosed: true),
+                holes: holes.map { CADPolyline(points: $0, isClosed: true) },
                 pattern: effectivePattern,
                 scale: scale,
                 angle: angle,
                 color: effectiveColor,
-                backgroundColor: nil))
+                backgroundColor: effectiveBgColor))
         }
         return prims
     }

@@ -3,7 +3,7 @@ import Foundation
 // =========================================================================
 // MARK: - DXFExporter
 //
-// Exports a Zephyr CAD document to AutoCAD DXF format (AC1021 / R2007).
+// Exports a Zephyr CAD document to AutoCAD DXF format (AC1032 / R2018).
 // Produces a fully-structured DXF with subclass markers, handles, owner
 // pointers, BLOCKS, and OBJECTS sections that AutoCAD can parse correctly.
 
@@ -173,7 +173,7 @@ public enum DXFExporter {
         output += "  0\r\nSECTION\r\n"
         output += "  2\r\nHEADER\r\n"
         output += "  9\r\n$ACADVER\r\n"
-        output += "  1\r\nAC1021\r\n"
+        output += "  1\r\nAC1032\r\n"
         output += "  9\r\n$DWGCODEPAGE\r\n"
         output += "  3\r\nANSI_1252\r\n"
         output += "  9\r\n$INSBASE\r\n"

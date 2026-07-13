@@ -32,7 +32,7 @@ public class DXFWriter {
 
     // MARK: - Configuration
 
-    public var version: DXFVersion = .r2000
+    public var version: DXFVersion = .r2018
     public var codePage: String = "ANSI_1252"
     public var textCodec = DXFTextCodec()
     /// Header variables to write (populated by caller or defaults are used)
@@ -306,7 +306,7 @@ public class DXFWriter {
             case .r2010: return "AC1024"
             case .r2013: return "AC1027"
             case .r2018: return "AC1032"
-            default: return "AC1021"
+            default: return "AC1032"
             }
         }()
         textCodec.setVersion(version)

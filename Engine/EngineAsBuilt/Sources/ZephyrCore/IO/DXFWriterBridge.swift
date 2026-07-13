@@ -3,6 +3,8 @@ import Foundation
 /// Converts Zephyr CAD types to DXF format using pure Swift DXFWriter.
 public enum DXFWriterBridge {
 
+    public static let defaultExportVersion: DXFVersion = .r2018
+
     private struct ExportViewData {
         var name: String
         var kind: DXFDrawingViewKind
@@ -44,7 +46,7 @@ public enum DXFWriterBridge {
             textStyleFonts: document.textStyleFonts,
             linetypePatterns: document.linetypePatterns,
             unit: document.unit)
-        try exportToDXF(views: [view], filePath: url.path)
+        try exportToDXF(views: [view], filePath: url.path, dxfVersion: defaultExportVersion)
     }
 
     public static func export(views: [DrawingView], to url: URL) throws {
@@ -59,7 +61,7 @@ public enum DXFWriterBridge {
                 linetypePatterns: $0.document.linetypePatterns,
                 unit: $0.document.unit)
         }
-        try exportToDXF(views: exportViews, filePath: url.path)
+        try exportToDXF(views: exportViews, filePath: url.path, dxfVersion: defaultExportVersion)
     }
 
     public static func exportToDXF(
@@ -69,7 +71,7 @@ public enum DXFWriterBridge {
         textStyleFonts: [String: String] = [:],
         linetypePatterns: [String: [Double]] = [:],
         filePath: String,
-        dxfVersion: DXFVersion = .r2007
+        dxfVersion: DXFVersion = .r2018
     ) throws {
         let view = ExportViewData(
             name: "Model",
@@ -86,7 +88,7 @@ public enum DXFWriterBridge {
     private static func exportToDXF(
         views sourceViews: [ExportViewData],
         filePath: String,
-        dxfVersion: DXFVersion = .r2007
+        dxfVersion: DXFVersion = .r2018
     ) throws {
         guard !sourceViews.isEmpty else {
             throw DXFWriter.WriterError.invalidEntity("Cannot export a DXF without a drawing view")
@@ -99,7 +101,7 @@ public enum DXFWriterBridge {
         }
 
         let writer = DXFWriter()
-        writer.version = dxfVersion
+        writer.version = defaultExportVersion
         writer.codePage = "ANSI_1252"
         writer.headerVars["$INSUNITS"] = modelView.unit.dxfINSUNITS
 
@@ -813,7 +815,7 @@ public enum DXFWriterBridge {
                 return nil
             }
             return (
-                HatchRegion(outer: CADPolyline(points: boundary, isClosed: true), holes: []),
+                splitConnectedHatchBoundary(boundary),
                 pattern, scale, angle, color, background)
         }
 
@@ -915,6 +917,18 @@ public enum DXFWriterBridge {
             }
         } else {
             return nil
+        }
+
+        if hatch.solid == 0, hatch.patternLines.isEmpty,
+           let definition = DXFHatchGenerator.patternDefinition(for: hatch.name),
+           !definition.lines.isEmpty {
+            hatch.patternLines = definition.lines.map {
+                DXFHatchPatternLineData(
+                    angle: $0.angleDegrees,
+                    base: $0.base,
+                    offset: $0.offset,
+                    dashes: $0.dashes)
+            }
         }
 
         for region in regions {
@@ -1213,6 +1227,43 @@ public enum DXFWriterBridge {
         case .bool(let value): return value ? 1 : 0
         default: return nil
         }
+    }
+
+    private static func splitConnectedHatchBoundary(_ boundary: [Vector3]) -> HatchRegion {
+        var outer = cleanLoop(boundary)
+        var holes: [CADPolyline] = []
+
+        while outer.count >= 7 {
+            var bridge: (start: Int, close: Int)?
+
+            for start in 1..<(outer.count - 2) {
+                let minimumClose = start + 3
+                guard minimumClose < outer.count - 1 else { continue }
+
+                for close in minimumClose..<(outer.count - 1) {
+                    guard outer[start].distance(to: outer[close]) <= 1e-9,
+                          outer[start - 1].distance(to: outer[close + 1]) <= 1e-9 else {
+                        continue
+                    }
+                    bridge = (start, close)
+                    break
+                }
+                if bridge != nil { break }
+            }
+
+            guard let bridge else { break }
+
+            let hole = cleanLoop(Array(outer[bridge.start..<bridge.close]))
+            if hole.count >= 3 {
+                holes.append(CADPolyline(points: hole, isClosed: true))
+            }
+            outer.removeSubrange(bridge.start...(bridge.close + 1))
+            outer = cleanLoop(outer)
+        }
+
+        return HatchRegion(
+            outer: CADPolyline(points: cleanLoop(outer), isClosed: true),
+            holes: holes)
     }
 
     private static func cleanLoop(_ points: [Vector3]) -> [Vector3] {
