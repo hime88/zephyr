@@ -1383,8 +1383,14 @@ public class DXFWriter {
                     continue
                 }
 
-                writeInt(93, loop.entities.count, &out)
-                for boundary in loop.entities {
+                let boundaries = loop.entities.filter { boundary in
+                    boundary is DXFLineEntity
+                        || boundary is DXFArcEntity
+                        || boundary is DXFEllipseEntity
+                        || boundary is DXFSplineEntity
+                }
+                writeInt(93, boundaries.count, &out)
+                for boundary in boundaries {
                     if let line = boundary as? DXFLineEntity {
                         writeInt(72, 1, &out)
                         writePoint(10, line.basePoint, &out)
@@ -1456,7 +1462,7 @@ public class DXFWriter {
             writeInt(98, 0, &out)
 
             if ht.isGradient != 0 {
-                writeInt(450, 1, &out)
+                writeInt(450, ht.isGradient, &out)
                 writeInt(451, 0, &out)
                 writeDbl(460, ht.gradientAngle * .pi / 180.0, &out)
                 writeDbl(461, ht.gradientShift, &out)
@@ -1468,7 +1474,7 @@ public class DXFWriter {
                     writeInt(63, Int(stop.aci), &out)
                     if stop.rgb >= 0 { writeInt(421, Int(stop.rgb), &out) }
                 }
-                writeStr(470, ht.gradientName, &out)
+                writeStr(470, ht.gradientName.isEmpty ? "LINEAR" : ht.gradientName, &out)
             }
 
         case .iMAGE:

@@ -853,6 +853,7 @@ public enum DXFWriterBridge {
 
         var regions: [HatchRegion] = []
         var primaryColor: ColorRGBA?
+        var patternDefinitionName: String?
 
         if let firstGradient = gradients.first {
             hatch.name = "SOLID"
@@ -896,6 +897,7 @@ public enum DXFWriterBridge {
                 hatch.bgColor = DXFColorTable.rgbaToACI(background)
             }
             primaryColor = first.color
+            patternDefinitionName = first.pattern
             regions = hatchPaths.map(\.region)
         } else if let first = legacyHatches.first {
             hatch.name = xdataString(xdata, "dxf.hatchPatternName")
@@ -909,6 +911,7 @@ public enum DXFWriterBridge {
             }
             if let background = first.background { hatch.bgColor = DXFColorTable.rgbaToACI(background) }
             primaryColor = first.color
+            patternDefinitionName = first.pattern
             regions = legacyHatches.map(\.region)
         } else if !solidRegions.isEmpty {
             hatch.name = "SOLID"
@@ -927,16 +930,14 @@ public enum DXFWriterBridge {
             return nil
         }
 
-        if hatch.solid == 0, hatch.patternLines.isEmpty,
-           let definition = DXFHatchGenerator.patternDefinition(for: hatch.name),
+        if hatch.solid == 0,
+           let definition = DXFHatchGenerator.patternDefinition(
+                for: patternDefinitionName ?? hatch.name),
            !definition.lines.isEmpty {
-            hatch.patternLines = definition.lines.map {
-                DXFHatchPatternLineData(
-                    angle: $0.angleDegrees,
-                    base: $0.base,
-                    offset: $0.offset,
-                    dashes: $0.dashes)
-            }
+            hatch.patternLines = serializedPatternLines(
+                definition.lines,
+                scale: hatch.scale,
+                hatchAngleDegrees: hatch.angle_p)
         }
 
         for region in regions {
@@ -1156,6 +1157,35 @@ public enum DXFWriterBridge {
                     .map { candidates[$0].path }
                 return HatchRegion(outer: candidates[outerIndex].path, holes: holes)
             }
+    }
+
+    private static func serializedPatternLines(
+        _ lines: [DXFHatchPatternLine],
+        scale: Double,
+        hatchAngleDegrees: Double
+    ) -> [DXFHatchPatternLineData] {
+        let safeScale = scale > 0.0 ? scale : 1.0
+        let hatchAngle = -hatchAngleDegrees * .pi / 180.0
+
+        return lines.map { line in
+            let lineAngle = hatchAngle + line.angleDegrees * .pi / 180.0
+            let cosA = cos(lineAngle)
+            let sinA = sin(lineAngle)
+
+            func toDXFPatternSpace(_ value: Vector3) -> Vector3 {
+                let x = value.x * safeScale
+                let y = value.y * safeScale
+                let cadX = x * cosA - y * sinA
+                let cadY = x * sinA + y * cosA
+                return Vector3(x: cadX, y: -cadY, z: value.z * safeScale)
+            }
+
+            return DXFHatchPatternLineData(
+                angle: -lineAngle * 180.0 / .pi,
+                base: toDXFPatternSpace(line.base),
+                offset: toDXFPatternSpace(line.offset),
+                dashes: line.dashes.map { $0 * safeScale })
+        }
     }
 
     private static func patternLines(from xdata: [String: XDataValue]) -> [DXFHatchPatternLineData] {

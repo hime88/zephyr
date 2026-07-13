@@ -772,6 +772,135 @@ public enum DXFExporter {
         output += "100\r\n\(subclass)\r\n"
     }
 
+    // MARK: - HATCH helpers
+
+    private static func writeHatchPolylineLoop(
+        points: [Vector3],
+        isOuter: Bool,
+        into output: inout String
+    ) {
+        let loopType = (isOuter ? 1 : 0) | 2
+        output += " 92\r\n\(loopType)\r\n"
+        output += " 72\r\n0\r\n"
+        output += " 73\r\n1\r\n"
+        output += " 93\r\n\(points.count)\r\n"
+        for point in points {
+            output += " 10\r\n\(dxfDouble(point.x))\r\n"
+            output += " 20\r\n\(dxfDouble(-point.y))\r\n"
+        }
+        output += " 97\r\n0\r\n"
+    }
+
+    private static func writeHatchPolylineLoop(
+        path: CADPolyline,
+        transform: Transform3D,
+        isOuter: Bool,
+        into output: inout String
+    ) {
+        let loopType = (path.hatchLoopType ?? (isOuter ? 1 : 0)) | 2
+        let hasBulge = path.vertices.contains { abs($0.bulge) > 1e-12 }
+        output += " 92\r\n\(loopType)\r\n"
+        output += " 72\r\n\(hasBulge ? 1 : 0)\r\n"
+        output += " 73\r\n\(path.isClosed ? 1 : 0)\r\n"
+        output += " 93\r\n\(path.vertices.count)\r\n"
+        for vertex in path.vertices {
+            let point = transform.transformPoint(vertex.position)
+            output += " 10\r\n\(dxfDouble(point.x))\r\n"
+            output += " 20\r\n\(dxfDouble(-point.y))\r\n"
+            if hasBulge {
+                output += " 42\r\n\(dxfDouble(-vertex.bulge))\r\n"
+            }
+        }
+        output += " 97\r\n0\r\n"
+    }
+
+    private static func writeHatchPatternData(
+        pattern: String,
+        scale: Double,
+        angle: Double,
+        into output: inout String
+    ) {
+        let patternName = pattern.isEmpty ? "SOLID" : pattern
+        let isSolid = patternName.uppercased() == "SOLID"
+        let definition = DXFHatchGenerator.patternDefinition(for: patternName)
+
+        output += " 75\r\n0\r\n"
+        let patternType: Int
+        switch definition?.kind {
+        case .userDefined: patternType = 0
+        case .custom: patternType = 2
+        default: patternType = 1
+        }
+        output += " 76\r\n\(patternType)\r\n"
+
+        guard !isSolid else { return }
+        let safeScale = scale > 0.0 ? scale : 1.0
+        output += " 52\r\n\(dxfDouble(-angle * 180.0 / .pi))\r\n"
+        output += " 41\r\n\(dxfDouble(safeScale))\r\n"
+        output += " 77\r\n0\r\n"
+
+        let lines = definition?.lines ?? []
+        output += " 78\r\n\(lines.count)\r\n"
+        for line in lines {
+            let lineAngle = angle + line.angleDegrees * .pi / 180.0
+            let cosA = cos(lineAngle)
+            let sinA = sin(lineAngle)
+
+            func toDXFPatternSpace(_ value: Vector3) -> Vector3 {
+                let x = value.x * safeScale
+                let y = value.y * safeScale
+                let cadX = x * cosA - y * sinA
+                let cadY = x * sinA + y * cosA
+                return Vector3(x: cadX, y: -cadY, z: value.z * safeScale)
+            }
+
+            let base = toDXFPatternSpace(line.base)
+            let offset = toDXFPatternSpace(line.offset)
+            output += " 53\r\n\(dxfDouble(-lineAngle * 180.0 / .pi))\r\n"
+            output += " 43\r\n\(dxfDouble(base.x))\r\n"
+            output += " 44\r\n\(dxfDouble(base.y))\r\n"
+            output += " 45\r\n\(dxfDouble(offset.x))\r\n"
+            output += " 46\r\n\(dxfDouble(offset.y))\r\n"
+            output += " 79\r\n\(line.dashes.count)\r\n"
+            for dash in line.dashes {
+                output += " 49\r\n\(dxfDouble(dash * safeScale))\r\n"
+            }
+        }
+    }
+
+    private static func writeHatchBackgroundColor(
+        _ color: ColorRGBA?,
+        into output: inout String
+    ) {
+        guard let color else { return }
+        output += " 63\r\n\(rgbaToACI(color))\r\n"
+    }
+
+    private static func writeGradientData(
+        name: String,
+        angle: Double,
+        color1: ColorRGBA,
+        color2: ColorRGBA,
+        into output: inout String
+    ) {
+        output += "450\r\n1\r\n"
+        output += "451\r\n0\r\n"
+        output += "460\r\n\(dxfDouble(-angle))\r\n"
+        output += "461\r\n0.0\r\n"
+        output += "452\r\n0\r\n"
+        output += "462\r\n0.0\r\n"
+        output += "453\r\n2\r\n"
+
+        for (position, color) in [(0.0, color1), (1.0, color2)] {
+            output += "463\r\n\(dxfDouble(position))\r\n"
+            output += " 63\r\n\(rgbaToACI(color))\r\n"
+            if let trueColor = rgbaToTrueColor(color) {
+                output += "421\r\n\(trueColor)\r\n"
+            }
+        }
+        output += "470\r\n\(name.isEmpty ? "LINEAR" : name)\r\n"
+    }
+
     // MARK: - Primitive Writers
 
     private static func writePrimitive(_ p: CADPrimitive, ctx: ExportContext,
@@ -970,74 +1099,50 @@ public enum DXFExporter {
             output += " 33\r\n0.0\r\n"
 
         case .fillComplexPolygon(let outer, let holes, _):
-            let wOuter = outer.map { t.transformPoint($0) }
-            guard wOuter.count >= 3 else { break }
+            let worldOuter = outer.map { t.transformPoint($0) }
+            guard worldOuter.count >= 3 else { break }
+            let worldHoles = holes
+                .map { $0.map { t.transformPoint($0) } }
+                .filter { $0.count >= 3 }
             writeEntityHeaderWithColor(entityType: "HATCH", subclass: "AcDbHatch",
                                         handle: handle, layerName: layer, color: primColor,
                                         into: &output)
+            output += " 10\r\n0.0\r\n 20\r\n0.0\r\n 30\r\n0.0\r\n"
+            output += "210\r\n0.0\r\n220\r\n0.0\r\n230\r\n1.0\r\n"
             output += "  2\r\nSOLID\r\n"
             output += " 70\r\n1\r\n"
             output += " 71\r\n0\r\n"
-            output += " 91\r\n\(1 + holes.count)\r\n"
-            output += " 92\r\n1\r\n"
-            output += " 93\r\n\(wOuter.count)\r\n"
-            for pt in wOuter {
-                output += " 10\r\n\(dxfDouble(pt.x))\r\n"
-                output += " 20\r\n\(dxfDouble(-pt.y))\r\n"
+            output += " 91\r\n\(1 + worldHoles.count)\r\n"
+            writeHatchPolylineLoop(points: worldOuter, isOuter: true, into: &output)
+            for hole in worldHoles {
+                writeHatchPolylineLoop(points: hole, isOuter: false, into: &output)
             }
-            for hole in holes {
-                let wHole = hole.map { t.transformPoint($0) }
-                output += " 92\r\n0\r\n"
-                output += " 93\r\n\(wHole.count)\r\n"
-                for pt in wHole {
-                    output += " 10\r\n\(dxfDouble(pt.x))\r\n"
-                    output += " 20\r\n\(dxfDouble(-pt.y))\r\n"
-                }
-            }
-            output += " 75\r\n0\r\n"
-            output += " 76\r\n1\r\n"
-            output += " 47\r\n1.0\r\n"
+            writeHatchPatternData(pattern: "SOLID", scale: 1.0, angle: 0.0, into: &output)
             output += " 98\r\n0\r\n"
 
         case .gradient(let outer, let holes, let name, let angle, let color1, let color2):
-            let wOuter = outer.map { t.transformPoint($0) }
-            guard wOuter.count >= 3 else { break }
+            let worldOuter = outer.map { t.transformPoint($0) }
+            guard worldOuter.count >= 3 else { break }
+            let worldHoles = holes
+                .map { $0.map { t.transformPoint($0) } }
+                .filter { $0.count >= 3 }
             writeEntityHeaderWithColor(entityType: "HATCH", subclass: "AcDbHatch",
                                         handle: handle, layerName: layer, color: color1,
                                         into: &output)
+            output += " 10\r\n0.0\r\n 20\r\n0.0\r\n 30\r\n0.0\r\n"
+            output += "210\r\n0.0\r\n220\r\n0.0\r\n230\r\n1.0\r\n"
             output += "  2\r\nSOLID\r\n"
             output += " 70\r\n1\r\n"
             output += " 71\r\n0\r\n"
-            output += "450\r\n1\r\n"
-            output += "452\r\n\(dxfDouble(angle * 180.0 / .pi))\r\n"
-            output += "453\r\n0.0\r\n"
-            output += "460\r\n0\r\n"
-            output += "462\r\n0.0\r\n"
-            output += "470\r\n\(name)\r\n"
-            output += " 63\r\n\(rgbaToACI(color2))\r\n"
-            if let tc2 = rgbaToTrueColor(color2) {
-                output += "421\r\n\(tc2)\r\n"
+            output += " 91\r\n\(1 + worldHoles.count)\r\n"
+            writeHatchPolylineLoop(points: worldOuter, isOuter: true, into: &output)
+            for hole in worldHoles {
+                writeHatchPolylineLoop(points: hole, isOuter: false, into: &output)
             }
-            output += " 91\r\n\(1 + holes.count)\r\n"
-            output += " 92\r\n1\r\n"
-            output += " 93\r\n\(wOuter.count)\r\n"
-            for pt in wOuter {
-                output += " 10\r\n\(dxfDouble(pt.x))\r\n"
-                output += " 20\r\n\(dxfDouble(-pt.y))\r\n"
-            }
-            for hole in holes {
-                let wHole = hole.map { t.transformPoint($0) }
-                output += " 92\r\n0\r\n"
-                output += " 93\r\n\(wHole.count)\r\n"
-                for pt in wHole {
-                    output += " 10\r\n\(dxfDouble(pt.x))\r\n"
-                    output += " 20\r\n\(dxfDouble(-pt.y))\r\n"
-                }
-            }
-            output += " 75\r\n0\r\n"
-            output += " 76\r\n1\r\n"
-            output += " 47\r\n1.0\r\n"
+            writeHatchPatternData(pattern: "SOLID", scale: 1.0, angle: 0.0, into: &output)
             output += " 98\r\n0\r\n"
+            writeGradientData(
+                name: name, angle: angle, color1: color1, color2: color2, into: &output)
 
         case .circle(let center, let radius, _):
             let wc = t.transformPoint(center)
@@ -1144,82 +1249,48 @@ public enum DXFExporter {
             output += " 42\r\n\(dxfDouble(2.0 * .pi))\r\n"
 
         case .hatch(let boundary, let pattern, let hatchScale, let hatchAngle, _, let backgroundColor):
-            let wBoundary = boundary.map { t.transformPoint($0) }
-            guard wBoundary.count >= 3 else { break }
+            let worldBoundary = boundary.map { t.transformPoint($0) }
+            guard worldBoundary.count >= 3 else { break }
+            let patternName = pattern.isEmpty ? "SOLID" : pattern
+            let isSolid = patternName.uppercased() == "SOLID"
             writeEntityHeaderWithColor(entityType: "HATCH", subclass: "AcDbHatch",
                                         handle: handle, layerName: layer, color: primColor,
                                         into: &output)
-            if pattern.uppercased() == "SOLID" || pattern.isEmpty {
-                output += "  2\r\nSOLID\r\n"
-                output += " 70\r\n1\r\n"
-            } else {
-                output += "  2\r\n\(pattern)\r\n"
-                output += " 70\r\n0\r\n"
-            }
+            output += " 10\r\n0.0\r\n 20\r\n0.0\r\n 30\r\n0.0\r\n"
+            output += "210\r\n0.0\r\n220\r\n0.0\r\n230\r\n1.0\r\n"
+            output += "  2\r\n\(dxfEscape(patternName))\r\n"
+            output += " 70\r\n\(isSolid ? 1 : 0)\r\n"
             output += " 71\r\n0\r\n"
             output += " 91\r\n1\r\n"
-            output += " 92\r\n1\r\n"
-            output += " 93\r\n\(wBoundary.count)\r\n"
-            for pt in wBoundary {
-                output += " 10\r\n\(dxfDouble(pt.x))\r\n"
-                output += " 20\r\n\(dxfDouble(-pt.y))\r\n"
-            }
-            output += " 75\r\n0\r\n"
-            let hatchPatternType = DXFHatchGenerator.predefinedPatterns[pattern.uppercased()] == nil ? 0 : 1
-            output += " 76\r\n\(hatchPatternType)\r\n"
-            if hatchScale > 0 {
-                output += " 41\r\n\(dxfDouble(hatchScale))\r\n"
-            }
-            if hatchAngle != 0 {
-                output += " 52\r\n\(dxfDouble(hatchAngle * 180.0 / .pi))\r\n"
-            }
-            if let bg = backgroundColor {
-                let rgb24 = Int32((Int32(bg.r) << 16) | (Int32(bg.g) << 8) | Int32(bg.b))
-                output += " 63\r\n\(-rgb24)\r\n"
-            }
+            writeHatchPolylineLoop(points: worldBoundary, isOuter: true, into: &output)
+            writeHatchPatternData(
+                pattern: patternName, scale: hatchScale, angle: hatchAngle, into: &output)
+            writeHatchBackgroundColor(backgroundColor, into: &output)
             output += " 98\r\n0\r\n"
 
         case .hatchPath(let boundaryPath, let holePaths, let pattern, let hatchScale, let hatchAngle, _, let backgroundColor):
-            let loops = [boundaryPath] + holePaths
-            guard loops.first?.vertices.count ?? 0 >= 3 else { break }
+            guard boundaryPath.vertices.count >= 3 else { break }
+            let validHoles = holePaths.filter { $0.vertices.count >= 3 }
+            let patternName = pattern.isEmpty ? "SOLID" : pattern
+            let isSolid = patternName.uppercased() == "SOLID"
             writeEntityHeaderWithColor(entityType: "HATCH", subclass: "AcDbHatch",
                                         handle: handle, layerName: layer, color: primColor,
                                         into: &output)
-            if pattern.uppercased() == "SOLID" || pattern.isEmpty {
-                output += "  2\r\nSOLID\r\n"
-                output += " 70\r\n1\r\n"
-            } else {
-                output += "  2\r\n\(pattern)\r\n"
-                output += " 70\r\n0\r\n"
-            }
+            output += " 10\r\n0.0\r\n 20\r\n0.0\r\n 30\r\n0.0\r\n"
+            output += "210\r\n0.0\r\n220\r\n0.0\r\n230\r\n1.0\r\n"
+            output += "  2\r\n\(dxfEscape(patternName))\r\n"
+            output += " 70\r\n\(isSolid ? 1 : 0)\r\n"
             output += " 71\r\n0\r\n"
-            output += " 91\r\n\(loops.count)\r\n"
-            for loop in loops {
-                output += " 92\r\n2\r\n"
-                let hasBulge = loop.vertices.contains { abs($0.bulge) > 1e-12 }
-                output += " 72\r\n\(hasBulge ? 1 : 0)\r\n"
-                output += " 73\r\n\(loop.isClosed ? 1 : 0)\r\n"
-                output += " 93\r\n\(loop.vertices.count)\r\n"
-                for vertex in loop.vertices {
-                    let wp = t.transformPoint(vertex.position)
-                    output += " 10\r\n\(dxfDouble(wp.x))\r\n"
-                    output += " 20\r\n\(dxfDouble(-wp.y))\r\n"
-                    if hasBulge { output += " 42\r\n\(dxfDouble(vertex.bulge))\r\n" }
-                }
+            output += " 91\r\n\(1 + validHoles.count)\r\n"
+            writeHatchPolylineLoop(
+                path: boundaryPath, transform: t, isOuter: true, into: &output)
+            for hole in validHoles {
+                writeHatchPolylineLoop(
+                    path: hole, transform: t, isOuter: false, into: &output)
             }
-            output += " 75\r\n0\r\n"
-            let hatchPatternType = DXFHatchGenerator.predefinedPatterns[pattern.uppercased()] == nil ? 0 : 1
-            output += " 76\r\n\(hatchPatternType)\r\n"
-            if hatchScale > 0 {
-                output += " 41\r\n\(dxfDouble(hatchScale))\r\n"
-            }
-            if hatchAngle != 0 {
-                output += " 52\r\n\(dxfDouble(hatchAngle * 180.0 / .pi))\r\n"
-            }
-            if let bg = backgroundColor {
-                let rgb24 = Int32((Int32(bg.r) << 16) | (Int32(bg.g) << 8) | Int32(bg.b))
-                output += " 63\r\n\(-rgb24)\r\n"
-            }
+            writeHatchPatternData(
+                pattern: patternName, scale: hatchScale, angle: hatchAngle, into: &output)
+            writeHatchBackgroundColor(backgroundColor, into: &output)
             output += " 98\r\n0\r\n"
 
         case .ray(let start, let direction, _):
