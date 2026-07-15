@@ -38,6 +38,16 @@ struct AppCommandRegistration {
             factory: { TrimCommand() }
         )
         engine.commandProcessor.registerFeatureCommand(
+            name: "FILLET",
+            aliases: ["F"],
+            factory: { FilletCommand() }
+        )
+        engine.commandProcessor.registerFeatureCommand(
+            name: "CHAMFER",
+            aliases: ["CHA", "BEVEL"],
+            factory: { ChamferCommand() }
+        )
+        engine.commandProcessor.registerFeatureCommand(
             name: "MATCHPROP",
             aliases: ["MA", "MATCH"],
             factory: { MatchPropCommand() }
@@ -191,6 +201,13 @@ struct AppCommandRegistration {
             name: "DIMJOGGED",
             aliases: ["DJO", "DIMJOG"],
             factory: { DimJoggedCommand() }
+        )
+
+        // ODA FileConverter installation (for DWG support).
+        engine.commandProcessor.registerFeatureCommand(
+            name: "INSTALLODA",
+            aliases: ["ODAINSTALL"],
+            factory: { InstallODACommand() }
         )
 
         // Note: tool-mode commands (SELECT, MOVE, ROTATE, SCALE, PAN, ZOOM)

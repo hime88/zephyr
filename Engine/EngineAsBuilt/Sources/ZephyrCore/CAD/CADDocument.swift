@@ -1678,20 +1678,16 @@ public final class CADDocument {
 
     @MainActor
     public func importDWG(url: URL) throws {
-        let (layers, blocks, entities, textStyleFonts, linetypePatterns) = try DWGImporter.importDWG(filePath: url.path)
-
-        for font in Set(textStyleFonts.values) {
-            CADFontManager.debugFontLookup(font)
+        // Convert DWG → DXF via ODA FileConverter, then import DXF.
+        guard ODADWGConverter.isAvailable else {
+            throw ODADWGConvertError.converterNotFound
         }
+        let tempDXF = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dwg-import-\(UUID().uuidString).dxf")
+        defer { try? FileManager.default.removeItem(at: tempDXF) }
 
-        self.textStyleFonts = textStyleFonts
-        self.linetypePatterns = linetypePatterns
-        for layer in layers { layerTable[layer.handle] = layer }
-        if activeLayerID == nil, let first = layers.first { activeLayerID = first.handle }
-        for block in blocks { blockTable[block.handle] = block }
-        for entity in entities { entityRegistry[entity.handle] = entity }
-        markEdited(regenerate: true)
-        rebuildEntityGrid()
+        try ODADWGConverter.convertSync(input: url, output: tempDXF, toFormat: "DXF")
+        try importDXF(url: tempDXF)
     }
 
     @MainActor

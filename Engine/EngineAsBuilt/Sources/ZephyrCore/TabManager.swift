@@ -269,22 +269,48 @@ public final class TabManager {
             return try openEAB(url: url)
         }
         if ext == "dwg" {
-            let (layers, blocks, entities, textStyleFonts, linetypePatterns) = try DWGImporter.importDWG(filePath: url.path)
-            for font in Set(textStyleFonts.values) {
+            // Convert DWG → DXF via ODA FileConverter, then import the DXF.
+            guard ODADWGConverter.isAvailable else {
+                throw ODADWGConvertError.converterNotFound
+            }
+            let tempDXF = FileManager.default.temporaryDirectory
+                .appendingPathComponent("dwg-import-\(UUID().uuidString).dxf")
+            defer { try? FileManager.default.removeItem(at: tempDXF) }
+
+            try ODADWGConverter.convertSync(input: url, output: tempDXF, toFormat: "DXF")
+            print("[TabManager] DWG converted to DXF, importing...")
+
+            let imported = try DXFImporter.importDXFViews(filePath: tempDXF.path)
+            print("[TabManager] DWG import: \(imported.layers.count) layers, \(imported.blocks.count) blocks, \(imported.entities.count) entities")
+
+            for font in Set(imported.textStyleFonts.values) {
                 CADFontManager.debugFontLookup(font)
             }
-            let doc = CADDocument()
-            doc.importLayersBlocksEntities(layers: layers, blocks: blocks, entities: entities)
-            doc.textStyleFonts = textStyleFonts
-            doc.linetypePatterns = linetypePatterns
-            doc.savedRevision = doc.editRevision
-            let view = DrawingView(name: "Model", kind: .model, document: doc)
+
+            let drawingViews = imported.views.map { view -> DrawingView in
+                let doc = CADDocument()
+                doc.importLayersBlocksEntities(
+                    layers: imported.layers,
+                    blocks: imported.blocks,
+                    entities: view.entities
+                )
+                doc.textStyleFonts = imported.textStyleFonts
+                doc.linetypePatterns = imported.linetypePatterns
+                doc.dimensionStyles = imported.dimensionStyles
+                doc.savedRevision = doc.editRevision
+                return DrawingView(
+                    name: view.name,
+                    kind: view.kind,
+                    document: doc,
+                    backgroundColor: view.backgroundColor
+                )
+            }
             let displayName = url.lastPathComponent
             let tab = DocumentTab(
-                document: doc,
+                document: drawingViews[0].document,
                 fileURL: url,
                 displayName: displayName,
-                drawingViews: [view]
+                drawingViews: drawingViews
             )
             tabs.append(tab)
             let idx = tabs.count - 1
@@ -876,7 +902,16 @@ public final class TabManager {
             let bg = getBackgroundColor?()
             try PDFExporter.export(document: tab.document, to: url, backgroundColor: bg)
         } else if ext == "dwg" {
-            try DWGExporter.export(document: tab.document, to: url)
+            // Save as DXF to temp, then convert to DWG via ODA FileConverter.
+            guard ODADWGConverter.isAvailable else {
+                throw ODADWGConvertError.converterNotFound
+            }
+            let tempDXF = FileManager.default.temporaryDirectory
+                .appendingPathComponent("dwg-export-\(UUID().uuidString).dxf")
+            defer { try? FileManager.default.removeItem(at: tempDXF) }
+
+            try DXFExporter.export(views: tab.drawingViews, to: tempDXF, dxfVersion: dxfVersion)
+            try ODADWGConverter.convertSync(input: tempDXF, output: url, toFormat: "DWG")
         } else {
             try DXFExporter.export(views: tab.drawingViews, to: url, dxfVersion: dxfVersion)
         }
@@ -1024,6 +1059,24 @@ public final class TabManager {
                     backgroundColor: bgColor,
                     progress: progressHandler
                 )
+            } else if ext == "dwg" {
+                // Save DXF to temp, then convert to DWG via ODA FileConverter.
+                guard ODADWGConverter.isAvailable else {
+                    throw ODADWGConvertError.converterNotFound
+                }
+                let tempDXF = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("dwg-async-\(UUID().uuidString).dxf")
+                defer { try? FileManager.default.removeItem(at: tempDXF) }
+
+                try DXFExporter.export(
+                    snapshots: snapshot.drawingViews,
+                    to: tempDXF,
+                    dxfVersion: dxfVersion,
+                    progress: progressHandler
+                )
+                progressHandler?(0.9)
+                try await ODADWGConverter.convert(input: tempDXF, output: targetURL, toFormat: "DWG")
+                progressHandler?(1.0)
             } else {
                 try DXFExporter.export(
                     snapshots: snapshot.drawingViews,
