@@ -62,7 +62,7 @@ public enum ODADWGConverter {
 
         // 1. UserDefaults override
         if let savedPath = UserDefaults.standard.string(forKey: pathDefaultsKey),
-           fm.isExecutableFile(atPath: savedPath) {
+           isRunnableFile(atPath: savedPath) {
             return savedPath
         }
 
@@ -75,15 +75,22 @@ public enum ODADWGConverter {
             #else
                 .appendingPathComponent("ODAFileConverter.app/Contents/MacOS/ODAFileConverter")
             #endif
-            if fm.isExecutableFile(atPath: bundledPath.path) {
+            if isRunnableFile(atPath: bundledPath.path) {
                 return bundledPath.path
             }
+
+            #if os(Windows)
+            let installRoot = appSupport.appendingPathComponent("ODAFileConverter")
+            if let discovered = findWindowsConverter(in: installRoot) {
+                return discovered
+            }
+            #endif
         }
 
         // 3. macOS: well-known /Applications path (binary inside .app bundle)
         #if os(macOS)
         let systemAppPath = "/Applications/ODAFileConverter.app/Contents/MacOS/ODAFileConverter"
-        if fm.isExecutableFile(atPath: systemAppPath) {
+        if isRunnableFile(atPath: systemAppPath) {
             return systemAppPath
         }
         #endif
@@ -96,7 +103,7 @@ public enum ODADWGConverter {
                 for dir in contents.sorted().reversed() {  // newest first
                     if dir.lowercased().hasPrefix("odafileconverter") {
                         let exePath = "\(programFilesODA)\\\(dir)\\ODAFileConverter.exe"
-                        if fm.isExecutableFile(atPath: exePath) {
+                        if isRunnableFile(atPath: exePath) {
                             return exePath
                         }
                     }
@@ -107,6 +114,38 @@ public enum ODADWGConverter {
 
         return nil
     }
+
+    private static func isRunnableFile(atPath path: String) -> Bool {
+        #if os(Windows)
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && !isDirectory.boolValue
+        #else
+        return FileManager.default.isExecutableFile(atPath: path)
+        #endif
+    }
+
+    #if os(Windows)
+    private static func findWindowsConverter(in root: URL) -> String? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: root.path),
+              let enumerator = fm.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+              ) else {
+            return nil
+        }
+
+        var matches: [URL] = []
+        for case let candidate as URL in enumerator {
+            if candidate.lastPathComponent.caseInsensitiveCompare("ODAFileConverter.exe") == .orderedSame,
+               isRunnableFile(atPath: candidate.path) {
+                matches.append(candidate)
+            }
+        }
+        return matches.min { $0.path.count < $1.path.count }?.path
+    }
+    #endif
 
     /// Whether the ODA FileConverter is installed and locatable.
     public static var isAvailable: Bool {
