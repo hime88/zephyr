@@ -1457,6 +1457,86 @@ public final class CADDocument {
         }
     }
 
+    // MARK: - ALIGN Command Support
+
+    /// Apply a combined similarity transform (translate + rotate + optionally scale)
+    /// to all selected entities in one undo step.
+    ///
+    /// Computes the 2D similarity transform from two source/destination point pairs
+    /// and applies it to each entity's `Transform3D` via `multiplying(by:)`.
+    ///
+    /// - Parameters:
+    ///   - handles: The set of entity handles to transform.
+    ///   - s1: First source point (before transform).
+    ///   - s2: Second source point (before transform).
+    ///   - d1: First destination point (after transform).
+    ///   - d2: Second destination point (after transform).
+    ///   - scaleObjects: If `true`, scale proportionally based on source/dest length ratio.
+    ///                   If `false`, only rotate (scale factor = 1).
+    public func alignEntities(
+        handles: Set<UUID>,
+        sourcePoint1 s1: Vector3,
+        sourcePoint2 s2: Vector3,
+        destPoint1 d1: Vector3,
+        destPoint2 d2: Vector3,
+        scaleObjects: Bool
+    ) {
+        pushUndo()
+
+        let sv = Vector3(x: s2.x - s1.x, y: s2.y - s1.y, z: 0)
+        let dv = Vector3(x: d2.x - d1.x, y: d2.y - d1.y, z: 0)
+        let ls = sqrt(sv.x * sv.x + sv.y * sv.y)
+        let ld = sqrt(dv.x * dv.x + dv.y * dv.y)
+
+        // Handle edge cases
+        if ls < 1e-9 {
+            // Source points coincident — cannot compute rotation or scale.
+            // Fall back to pure translation from S1→D1.
+            let translation = Transform3D.translated(by: Vector3(x: d1.x - s1.x, y: d1.y - s1.y, z: 0))
+            for handle in handles {
+                guard var entity = entityRegistry[handle] else { continue }
+                entity.transform = translation.multiplying(by: entity.transform)
+                entityRegistry[handle] = entity
+            }
+            markEdited(regenerate: true)
+            invalidateEntityGrid()
+            return
+        }
+
+        if ld < 1e-9 {
+            // Destination points coincident — pure move only.
+            let translation = Transform3D.translated(by: Vector3(x: d1.x - s1.x, y: d1.y - s1.y, z: 0))
+            for handle in handles {
+                guard var entity = entityRegistry[handle] else { continue }
+                entity.transform = translation.multiplying(by: entity.transform)
+                entityRegistry[handle] = entity
+            }
+            markEdited(regenerate: true)
+            invalidateEntityGrid()
+            return
+        }
+
+        // Compute the combined transform: T = Translation(D1) × Scale × Rotation × Translation(-S1)
+        let alpha = atan2(sv.y, sv.x)
+        let beta = atan2(dv.y, dv.x)
+        let theta = beta - alpha
+        let sf = scaleObjects ? ld / ls : 1.0
+
+        let s1ToOrigin = Transform3D.translated(by: Vector3(x: -s1.x, y: -s1.y, z: 0))
+        let rotation = Transform3D.rotated(by: theta)
+        let scaleMatrix = Transform3D.scaled(by: Vector3(x: sf, y: sf, z: 1))
+        let originToD1 = Transform3D.translated(by: Vector3(x: d1.x, y: d1.y, z: 0))
+        let finalTransform = originToD1.multiplying(by: scaleMatrix.multiplying(by: rotation.multiplying(by: s1ToOrigin)))
+
+        for handle in handles {
+            guard var entity = entityRegistry[handle] else { continue }
+            entity.transform = finalTransform.multiplying(by: entity.transform)
+            entityRegistry[handle] = entity
+        }
+        markEdited(regenerate: true)
+        invalidateEntityGrid()
+    }
+
     /// Atomically remove a set of entities and insert replacements in one undo step.
     /// Used by JOIN and similar commands that merge multiple entities into one.
     public func replaceEntities(remove handles: Set<UUID>, add newEntities: [CADEntity]) {

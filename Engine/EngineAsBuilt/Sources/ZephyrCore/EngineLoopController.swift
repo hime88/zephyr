@@ -532,15 +532,15 @@ public final class EngineLoopController {
                let box = entity.dimensionMetadata,
                let bid = entity.blockID {
                 var metadata = box.value
-                let newPos: Vector3
+                let worldPos: Vector3
                 if engine.snap.currentSnapResult != nil {
-                    newPos = Vector3(x: snapWX, y: snapWY, z: 0)
+                    worldPos = Vector3(x: snapWX, y: snapWY, z: 0)
                 } else {
-                    // Accumulate from last known grip position
-                    newPos = Vector3(
+                    worldPos = Vector3(
                         x: interaction.dragLastWorldX,
                         y: interaction.dragLastWorldY, z: 0)
                 }
+                let newPos = entity.transform.inverse().transformPoint(worldPos)
                 switch index {
                 case 1000: metadata.defPoint = newPos       // dimension line position
                 case 1001: metadata.defPoint2 = newPos       // first extension line origin
@@ -620,7 +620,8 @@ public final class EngineLoopController {
                let box = entity.dimensionMetadata,
                let bid = entity.blockID {
                 var metadata = box.value
-                let cursor = Vector3(x: snapWX, y: snapWY, z: 0)
+                let worldCursor = Vector3(x: snapWX, y: snapWY, z: 0)
+                let cursor = entity.transform.inverse().transformPoint(worldCursor)
                 // Project cursor onto the dimension line axis so text stays on the line
                 var constrainedTextMid = metadata.textMidpoint
                 if case .linearOrRotated = metadata.type, let p2 = metadata.defPoint3 {

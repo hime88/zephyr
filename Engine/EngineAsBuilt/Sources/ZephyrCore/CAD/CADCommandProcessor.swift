@@ -178,6 +178,7 @@ public struct CommandDescriptor: Sendable {
         CommandDescriptor(canonicalName: "MOVE",       aliases: ["M"],             category: .modify,  syntax: "", description: "Move selected entities by picking two points"),
         CommandDescriptor(canonicalName: "ROTATE",     aliases: ["R"],             category: .modify,  syntax: "", description: "Rotate selected entities around their collective center"),
         CommandDescriptor(canonicalName: "SCALE",      aliases: ["S"],             category: .modify,  syntax: "", description: "Scale selected entities around their collective center"),
+        CommandDescriptor(canonicalName: "ALIGN",      aliases: ["AL"],             category: .modify,  syntax: "", description: "Align objects by matching two pairs of points (move, rotate, optionally scale)"),
         CommandDescriptor(canonicalName: "ERASE",      aliases: ["E"],             category: .modify,  syntax: "", description: "Delete all currently selected entities"),
         CommandDescriptor(canonicalName: "COPY",       aliases: ["CO", "CP"],      category: .modify,  syntax: "", description: "Duplicate selected entities within the drawing"),
         CommandDescriptor(canonicalName: "COPYCLIP",   aliases: [],                category: .modify,  syntax: "", description: "Copy selected entities to clipboard"),
@@ -515,6 +516,11 @@ public final class CADCommandProcessor {
                 return
             }
             startCommand("SCALE", prompt: "Pick scale factor or drag")
+        case "AL", "ALIGN":
+            guard let engine = engine else { clearCommand(); return }
+            let cmd = AlignCommand()
+            activeFeatureCommand = cmd
+            cmd.start(engine: engine, processor: self)
         case "E", "ERASE":
             engine?.deleteSelected()
 

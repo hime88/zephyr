@@ -457,33 +457,33 @@ public enum CADGripSystem {
     ) -> [CADSelectionManager.CadGripInfo] {
         var grips: [CADSelectionManager.CadGripInfo] = []
 
-        func addGrip(_ type: CADSelectionManager.GripType, worldPos: Vector3) {
+        func addGrip(_ type: CADSelectionManager.GripType, localPos: Vector3) {
+            let worldPos = entity.transform.transformPoint(localPos)
             let sp = EngineCameraManager.worldToScreen(
                 worldX: worldPos.x, worldY: worldPos.y, cam: cam)
             grips.append(CADSelectionManager.CadGripInfo(
                 handle: handle, grip: type, screenPos: sp, worldPos: worldPos))
         }
 
-        // Text midpoint grip — reposition text along the dimension line
-        addGrip(.center, worldPos: metadata.textMidpoint)
+        addGrip(.center, localPos: metadata.textMidpoint)
 
         // For radius: defPoint = center (fixed), defPoint2 = arcPoint (movable along circle)
         // For diameter: defPoint & defPoint2 = endpoints of diameter line
         // For linear/aligned: defPoint = dim line position, defPoint2/3 = extension origins
         if metadata.type == .radius {
             // Only arcPoint grip (center is fixed to the arc/circle)
-            addGrip(.vertex(entity: handle, index: 1001), worldPos: metadata.defPoint2)
+            addGrip(.vertex(entity: handle, index: 1001), localPos: metadata.defPoint2)
         } else if metadata.type == .arcLength {
             // Only dimPos grip to move the dimension arc in/out
-            addGrip(.vertex(entity: handle, index: 1000), worldPos: metadata.defPoint)
+            addGrip(.vertex(entity: handle, index: 1000), localPos: metadata.defPoint)
         } else {
             // Dimension line position / first point grip
-            addGrip(.vertex(entity: handle, index: 1000), worldPos: metadata.defPoint)
+            addGrip(.vertex(entity: handle, index: 1000), localPos: metadata.defPoint)
             // Second point grip
-            addGrip(.vertex(entity: handle, index: 1001), worldPos: metadata.defPoint2)
+            addGrip(.vertex(entity: handle, index: 1001), localPos: metadata.defPoint2)
             // Third point grip (if present, for linear/aligned/angular)
             if let p3 = metadata.defPoint3 {
-                addGrip(.vertex(entity: handle, index: 1002), worldPos: p3)
+                addGrip(.vertex(entity: handle, index: 1002), localPos: p3)
             }
         }
 

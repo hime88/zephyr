@@ -210,6 +210,13 @@ struct AppCommandRegistration {
             factory: { InstallODACommand() }
         )
 
+        // --- ALIGN (Move + Rotate + optional Scale) ---
+        engine.commandProcessor.registerFeatureCommand(
+            name: "ALIGN",
+            aliases: ["AL"],
+            factory: { AlignCommand() }
+        )
+
         // Note: tool-mode commands (SELECT, MOVE, ROTATE, SCALE, PAN, ZOOM)
         // are registered inside PhrostEngine itself.
     }
