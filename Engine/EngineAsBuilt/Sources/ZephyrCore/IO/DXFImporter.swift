@@ -28,16 +28,35 @@ public struct DXFDrawingView: Sendable {
 
 public struct DXFImportResult: Sendable {
     public let layers: [Layer]; public let blocks: [CADBlock]; public let entities: [CADEntity]
-    public let textStyleFonts: [String: String]; public let linetypePatterns: [String: [Double]]
+    public let textStyles: [String: CADTextStyle]; public let linetypePatterns: [String: [Double]]
+    public var textStyleFonts: [String: String] {
+        Dictionary(textStyles.values.map { ($0.name, $0.fontFile) }, uniquingKeysWith: { first, _ in first })
+    }
     public let dimensionStyles: [String: CADDimensionStyle]
     public let views: [DXFDrawingView]
     public init(layers: [Layer], blocks: [CADBlock], entities: [CADEntity],
-                textStyleFonts: [String: String], linetypePatterns: [String: [Double]],
+                textStyles: [String: CADTextStyle], linetypePatterns: [String: [Double]],
                 dimensionStyles: [String: CADDimensionStyle], views: [DXFDrawingView]) {
         self.layers = layers; self.blocks = blocks; self.entities = entities
-        self.textStyleFonts = textStyleFonts; self.linetypePatterns = linetypePatterns
+        self.textStyles = textStyles; self.linetypePatterns = linetypePatterns
         self.dimensionStyles = dimensionStyles
         self.views = views
+    }
+
+    public init(layers: [Layer], blocks: [CADBlock], entities: [CADEntity],
+                textStyleFonts: [String: String], linetypePatterns: [String: [Double]],
+                dimensionStyles: [String: CADDimensionStyle], views: [DXFDrawingView]) {
+        let styles = Dictionary(uniqueKeysWithValues: textStyleFonts.map { name, font in
+            (name, CADTextStyle(name: name, fontFile: font).normalized)
+        })
+        self.init(
+            layers: layers,
+            blocks: blocks,
+            entities: entities,
+            textStyles: styles.isEmpty ? ["Standard": .standard] : styles,
+            linetypePatterns: linetypePatterns,
+            dimensionStyles: dimensionStyles,
+            views: views)
     }
 }
 
@@ -245,7 +264,7 @@ public enum DXFImporter {
         // Guard against pathological data
         guard entityCount < 10_000_000 else {
             print("[DXFImporter] ERROR: \(entityCount) entities exceeds safety limit")
-            return DXFImportResult(layers: [], blocks: [], entities: [], textStyleFonts: [:], linetypePatterns: [:], dimensionStyles: [:], views: [])
+            return DXFImportResult(layers: [], blocks: [], entities: [], textStyles: ["Standard": .standard], linetypePatterns: [:], dimensionStyles: [:], views: [])
         }
 
         let globalLineTypeScale = reader.header.ltScale > 0 ? reader.header.ltScale : 1.0
@@ -597,9 +616,17 @@ public enum DXFImporter {
             return result
         }
 
-        var textStyleFonts: [String: String] = [:]
-        for style in reader.textstyles where !style.name.isEmpty {
-            if !style.font.isEmpty { textStyleFonts[style.name] = style.font }
+        var textStyles: [String: CADTextStyle] = ["Standard": .standard]
+        for entry in reader.textstyles where !entry.name.isEmpty {
+            let style = CADTextStyle(
+                name: entry.name,
+                fontFile: entry.font.isEmpty ? "simplex.shx" : entry.font,
+                fixedHeight: entry.height,
+                widthFactor: entry.width == 0 ? 1 : entry.width,
+                obliqueAngle: entry.oblique,
+                isAnnotative: false
+            ).normalized
+            textStyles[style.name] = style
         }
 
         var linetypePatterns: [String: [Double]] = [:]
@@ -718,7 +745,7 @@ public enum DXFImporter {
             layers: layers,
             blocks: blocks,
             entities: modelEntities,
-            textStyleFonts: textStyleFonts,
+            textStyles: textStyles,
             linetypePatterns: linetypePatterns,
             dimensionStyles: dimensionStyles,
             views: views)

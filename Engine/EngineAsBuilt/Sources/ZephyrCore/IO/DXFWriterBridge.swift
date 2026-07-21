@@ -11,7 +11,7 @@ public enum DXFWriterBridge {
         var layers: [Layer]
         var blocks: [CADBlock]
         var entities: [CADEntity]
-        var textStyleFonts: [String: String]
+        var textStyles: [String: CADTextStyle]
         var linetypePatterns: [String: [Double]]
         var unit: CADUnit
     }
@@ -47,7 +47,7 @@ public enum DXFWriterBridge {
             layers: document.allLayers,
             blocks: document.allBlocks,
             entities: document.allEntities,
-            textStyleFonts: document.textStyleFonts,
+            textStyles: document.textStyles,
             linetypePatterns: document.linetypePatterns,
             unit: document.unit)
         try exportToDXF(views: [view], filePath: url.path, dxfVersion: dxfVersion)
@@ -65,7 +65,7 @@ public enum DXFWriterBridge {
                 layers: $0.document.allLayers,
                 blocks: $0.document.allBlocks,
                 entities: $0.document.allEntities,
-                textStyleFonts: $0.document.textStyleFonts,
+                textStyles: $0.document.textStyles,
                 linetypePatterns: $0.document.linetypePatterns,
                 unit: $0.document.unit)
         }
@@ -87,7 +87,9 @@ public enum DXFWriterBridge {
             layers: layers,
             blocks: blocks,
             entities: entities,
-            textStyleFonts: textStyleFonts,
+            textStyles: Dictionary(uniqueKeysWithValues: textStyleFonts.map { name, font in
+                (name, CADTextStyle(name: name, fontFile: font))
+            }),
             linetypePatterns: linetypePatterns,
             unit: .millimeter)
         try exportToDXF(views: [view], filePath: filePath, dxfVersion: dxfVersion)
@@ -117,17 +119,20 @@ public enum DXFWriterBridge {
 
         var linetypes: [String: [Double]] = [:]
         var linetypeNames = Set<String>()
-        var textStyles: [String: String] = [:]
+        var textStyles: [String: CADTextStyle] = [:]
         var textStyleNames = Set<String>()
         for view in orderedViews {
             for (name, pattern) in view.linetypePatterns {
                 let key = name.uppercased()
                 if linetypeNames.insert(key).inserted { linetypes[name] = pattern }
             }
-            for (name, font) in view.textStyleFonts {
-                let key = name.uppercased()
-                if textStyleNames.insert(key).inserted { textStyles[name] = font }
+            for style in view.textStyles.values {
+                let key = style.name.uppercased()
+                if textStyleNames.insert(key).inserted { textStyles[style.name] = style }
             }
+        }
+        if textStyleNames.contains("STANDARD") == false {
+            textStyles["Standard"] = .standard
         }
         addLinetypes(linetypes, to: writer)
         addTextStyles(textStyles, to: writer)
@@ -695,11 +700,16 @@ public enum DXFWriterBridge {
         }
     }
 
-    private static func addTextStyles(_ styles: [String: String], to writer: DXFWriter) {
-        for (name, font) in styles where !name.isEmpty {
+    private static func addTextStyles(_ styles: [String: CADTextStyle], to writer: DXFWriter) {
+        for style in styles.values.sorted(by: { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) where !style.name.isEmpty {
+            let normalized = style.normalized
             let entry = DXFStyleEntry()
-            entry.name = name
-            entry.font = font.isEmpty ? "txt" : font
+            entry.name = normalized.name
+            entry.font = normalized.fontFile
+            entry.height = normalized.fixedHeight
+            entry.width = normalized.widthFactor
+            entry.oblique = normalized.obliqueAngle
+            entry.lastHeight = normalized.fixedHeight > 0 ? normalized.fixedHeight : 2.5
             writer.addTextStyle(entry)
         }
     }

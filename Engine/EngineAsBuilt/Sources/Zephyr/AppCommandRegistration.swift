@@ -132,6 +132,11 @@ struct AppCommandRegistration {
             factory: { DDEditCommand() }
         )
         engine.commandProcessor.registerFeatureCommand(
+            name: "STYLE",
+            aliases: ["ST"],
+            factory: { StyleCommand() }
+        )
+        engine.commandProcessor.registerFeatureCommand(
             name: "TABLE",
             aliases: ["DT", "DATATABLE"],
             factory: { DataTableCommand() }

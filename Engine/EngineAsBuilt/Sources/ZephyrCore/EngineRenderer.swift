@@ -1844,10 +1844,18 @@ public final class EngineRenderer {
         let px = sprite.position.0 + hw
         let py = sprite.position.1 + hh
 
-        let p1 = engine.camera.transformWorldToScreen(worldX: px + (-hw * c - -hh * s), worldY: py + (-hw * s + -hh * c), cam: cam)
-        let p2 = engine.camera.transformWorldToScreen(worldX: px + (hw * c - -hh * s), worldY: py + (hw * s + -hh * c), cam: cam)
-        let p3 = engine.camera.transformWorldToScreen(worldX: px + (hw * c - hh * s), worldY: py + (hw * s + hh * c), cam: cam)
-        let p4 = engine.camera.transformWorldToScreen(worldX: px + (-hw * c - hh * s), worldY: py + (-hw * s + hh * c), cam: cam)
+        let topShift = sprite.shearX * h
+        func transformedCorner(_ localX: Double, _ localY: Double) -> SDL_FPoint {
+            let shiftedX = localX + (localY > 0 ? topShift : 0)
+            return engine.camera.transformWorldToScreen(
+                worldX: px + shiftedX * c - localY * s,
+                worldY: py + shiftedX * s + localY * c,
+                cam: cam)
+        }
+        let p1 = transformedCorner(-hw, -hh)
+        let p2 = transformedCorner(hw, -hh)
+        let p3 = transformedCorner(hw, hh)
+        let p4 = transformedCorner(-hw, hh)
 
         // AABB culling: only skip if the entire quad is off-screen
         let margin: Float = 0

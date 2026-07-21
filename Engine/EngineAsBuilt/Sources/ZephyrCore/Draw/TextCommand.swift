@@ -34,7 +34,7 @@ public final class TextCommand: FeatureCommand {
         currentMouseWorldY = 0
 
         // Initialize editor state with defaults
-        engine.textManager.editorState = TextEditorState()
+        engine.textManager.editorState = defaultEditorState(engine: engine)
         engine.textManager.isEditorActive = false
         engine.textManager.editorResult = .active
 
@@ -57,7 +57,7 @@ public final class TextCommand: FeatureCommand {
             insertWorldY = worldY
 
             // Open text editor
-            engine.textManager.editorState = TextEditorState()
+            engine.textManager.editorState = defaultEditorState(engine: engine)
             engine.textManager.isEditorActive = true
             engine.textManager.editorResult = .active
             state = .editorOpen
@@ -143,6 +143,15 @@ public final class TextCommand: FeatureCommand {
         }
     }
 
+    private func defaultEditorState(engine: PhrostEngine) -> TextEditorState {
+        let style = engine.document.textStyle(named: "Standard") ?? .standard
+        return TextEditorState(
+            styleName: style.name,
+            fontName: style.fontFile,
+            height: style.fixedHeight > 0 ? style.fixedHeight : 2.5
+        )
+    }
+
     private func createTextEntity(
         from editorState: TextEditorState,
         engine: PhrostEngine,
@@ -154,9 +163,11 @@ public final class TextCommand: FeatureCommand {
             return
         }
 
-        let height = editorState.height
+        let styleName = engine.document.resolvedTextStyleName(editorState.styleName)
+        let style = engine.document.textStyle(named: styleName) ?? .standard
+        let height = engine.document.effectiveTextHeight(styleName: styleName, localHeight: editorState.height)
         let rotation = editorState.rotation
-        let fontName = editorState.fontName.isEmpty ? "simplex.shx" : editorState.fontName
+        let fontName = style.fontFile
         let alignH = editorState.alignH
         let alignV = editorState.alignV
         let mtextWidth = editorState.mtextWidth
@@ -167,7 +178,7 @@ public final class TextCommand: FeatureCommand {
             text: text,
             height: height,
             rotation: 0.0,
-            style: fontName,
+            style: styleName,
             alignH: alignH,
             alignV: alignV,
             mtextWidth: mtextWidth > 0 ? mtextWidth : nil
@@ -189,7 +200,7 @@ public final class TextCommand: FeatureCommand {
 
         // Store text metadata in xdata
         entity.xdata["dxf.text"] = .string(text)
-        entity.xdata["dxf.textStyle"] = .string(fontName)
+        entity.xdata["dxf.textStyle"] = .string(styleName)
         entity.xdata["dxf.textHeight"] = .double(height)
         entity.xdata["dxf.alignH"] = .int(alignH)
         entity.xdata["dxf.alignV"] = .int(alignV)
@@ -198,7 +209,7 @@ public final class TextCommand: FeatureCommand {
         }
 
         // Store formatted text (even for plain text, so DDEDIT has structured data)
-        let formatted = FormattedText.plain(text, font: fontName, height: height)
+        let formatted = FormattedText.plain(text, styleName: styleName, font: fontName, height: height)
         if let jsonData = try? JSONEncoder().encode(formatted),
            let jsonStr = String(data: jsonData, encoding: .utf8) {
             entity.xdata["dxf.formattedText"] = .string(jsonStr)

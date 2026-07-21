@@ -15,6 +15,72 @@ import CryptoKit
 //   - CADStyle: Per-entity rendering style overrides
 
 // =========================================================================
+// MARK: - CADTextStyle
+// =========================================================================
+
+public struct CADTextStyle: Hashable, Sendable, Codable {
+    public var name: String
+    public var fontFile: String
+    public var fixedHeight: Double
+    public var widthFactor: Double
+    public var obliqueAngle: Double
+    public var isAnnotative: Bool
+
+    public init(
+        name: String,
+        fontFile: String = "simplex.shx",
+        fixedHeight: Double = 0,
+        widthFactor: Double = 1,
+        obliqueAngle: Double = 0,
+        isAnnotative: Bool = false
+    ) {
+        self.name = name
+        self.fontFile = fontFile
+        self.fixedHeight = fixedHeight
+        self.widthFactor = widthFactor
+        self.obliqueAngle = obliqueAngle
+        self.isAnnotative = isAnnotative
+    }
+
+    public static let standard = CADTextStyle(name: "Standard")
+
+    public static func resolve(_ name: String?, in styles: [String: CADTextStyle]) -> CADTextStyle {
+        if let name {
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let exact = styles[trimmed] { return exact.normalized }
+            if let match = styles.values.first(where: { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+                return match.normalized
+            }
+            let lower = trimmed.lowercased()
+            if [".shx", ".ttf", ".otf", ".ttc"].contains(where: lower.hasSuffix)
+                || trimmed.contains("/")
+                || trimmed.contains("\\") {
+                return CADTextStyle(name: trimmed, fontFile: trimmed)
+            }
+        }
+        if let standard = styles.values.first(where: { $0.name.caseInsensitiveCompare("Standard") == .orderedSame }) {
+            return standard.normalized
+        }
+        return .standard
+    }
+
+    public var normalized: CADTextStyle {
+        CADTextStyle(
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Standard") == .orderedSame
+                ? "Standard"
+                : name.trimmingCharacters(in: .whitespacesAndNewlines),
+            fontFile: fontFile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "simplex.shx"
+                : fontFile.trimmingCharacters(in: .whitespacesAndNewlines),
+            fixedHeight: fixedHeight.isFinite ? max(0, fixedHeight) : 0,
+            widthFactor: widthFactor.isFinite ? min(max(widthFactor, 0.01), 100) : 1,
+            obliqueAngle: obliqueAngle.isFinite ? min(max(obliqueAngle, -85), 85) : 0,
+            isAnnotative: isAnnotative
+        )
+    }
+}
+
+// =========================================================================
 // MARK: - Vector3
 // =========================================================================
 

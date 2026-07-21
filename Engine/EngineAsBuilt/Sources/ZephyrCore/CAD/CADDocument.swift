@@ -29,7 +29,10 @@ public struct CADDocumentSnapshot: Sendable {
     public let solvedTransforms: [UUID: Transform3D]
     public let activeLayerID: UUID?
     public let unit: CADUnit
-    public let textStyleFonts: [String: String]
+    public let textStyles: [String: CADTextStyle]
+    public var textStyleFonts: [String: String] {
+        Dictionary(textStyles.values.map { ($0.name, $0.fontFile) }, uniquingKeysWith: { first, _ in first })
+    }
     public let dimensionStyles: [String: CADDimensionStyle]
     public let linetypePatterns: [String: [Double]]
     /// Names of image assets currently referenced by entities (not the raw Data blobs).
@@ -44,7 +47,7 @@ public struct CADDocumentSnapshot: Sendable {
         solvedTransforms: [UUID: Transform3D],
         activeLayerID: UUID?,
         unit: CADUnit,
-        textStyleFonts: [String: String],
+        textStyles: [String: CADTextStyle],
         dimensionStyles: [String: CADDimensionStyle] = [:],
         linetypePatterns: [String: [Double]] = [:],
         imageAssetNames: Set<String> = []
@@ -56,10 +59,40 @@ public struct CADDocumentSnapshot: Sendable {
         self.solvedTransforms = solvedTransforms
         self.activeLayerID = activeLayerID
         self.unit = unit
-        self.textStyleFonts = textStyleFonts
+        self.textStyles = textStyles
         self.dimensionStyles = dimensionStyles
         self.linetypePatterns = linetypePatterns
         self.imageAssetNames = imageAssetNames
+    }
+
+    public init(
+        layers: [UUID: Layer],
+        blocks: [UUID: CADBlock],
+        entities: [UUID: CADEntity],
+        constraints: [UUID: CADConstraint],
+        solvedTransforms: [UUID: Transform3D],
+        activeLayerID: UUID?,
+        unit: CADUnit,
+        textStyleFonts: [String: String],
+        dimensionStyles: [String: CADDimensionStyle] = [:],
+        linetypePatterns: [String: [Double]] = [:],
+        imageAssetNames: Set<String> = []
+    ) {
+        let styles = Dictionary(uniqueKeysWithValues: textStyleFonts.map { name, font in
+            (name, CADTextStyle(name: name, fontFile: font).normalized)
+        })
+        self.init(
+            layers: layers,
+            blocks: blocks,
+            entities: entities,
+            constraints: constraints,
+            solvedTransforms: solvedTransforms,
+            activeLayerID: activeLayerID,
+            unit: unit,
+            textStyles: styles.isEmpty ? ["Standard": .standard] : styles,
+            dimensionStyles: dimensionStyles,
+            linetypePatterns: linetypePatterns,
+            imageAssetNames: imageAssetNames)
     }
 }
 
@@ -207,8 +240,30 @@ public final class CADDocument {
     /// Keyed by entity handle. These are world-space transforms produced by the solver.
     public var solvedTransforms: [UUID: Transform3D] = [:]
 
-    /// Maps DXF text style names to their primary font file names (e.g. "Standard" -> "txt.shx").
-    public var textStyleFonts: [String: String] = [:]
+    /// Text styles keyed by their drawing-visible names.
+    public var textStyles: [String: CADTextStyle] = ["Standard": .standard]
+
+    /// Compatibility bridge for existing font-resolution and export code.
+    public var textStyleFonts: [String: String] {
+        get {
+            Dictionary(textStyles.values.map { ($0.name, $0.fontFile) }, uniquingKeysWith: { first, _ in first })
+        }
+        set {
+            var rebuilt: [String: CADTextStyle] = [:]
+            for (name, font) in newValue {
+                let existing = textStyle(named: name)
+                var style = existing ?? CADTextStyle(name: name)
+                style.name = name
+                style.fontFile = font
+                let normalized = style.normalized
+                if !normalized.name.isEmpty { rebuilt[normalized.name] = normalized }
+            }
+            if rebuilt.keys.contains(where: { $0.caseInsensitiveCompare("Standard") == .orderedSame }) == false {
+                rebuilt["Standard"] = .standard
+            }
+            textStyles = rebuilt
+        }
+    }
     
     /// Map of dimension style name -> CADDimensionStyle
     public var dimensionStyles: [String: CADDimensionStyle] = [:]
@@ -363,7 +418,92 @@ public final class CADDocument {
         savedRevision = revision
     }
 
-    public init() {}
+    public init() {
+        textStyles = ["Standard": .standard]
+    }
+
+    // MARK: - Text Style Operations
+
+    public func textStyle(named name: String?) -> CADTextStyle? {
+        guard let name else { return nil }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let exact = textStyles[trimmed] { return exact }
+        return textStyles.values.first { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }
+    }
+
+    public func resolvedTextStyleName(_ name: String?) -> String {
+        if let style = textStyle(named: name) { return style.name }
+        return textStyle(named: "Standard")?.name ?? "Standard"
+    }
+
+    public func effectiveTextHeight(styleName: String?, localHeight: Double) -> Double {
+        let style = textStyle(named: styleName) ?? textStyle(named: "Standard") ?? .standard
+        return style.fixedHeight > 0 ? style.fixedHeight : localHeight
+    }
+
+    public func applyTextStyle(_ style: CADTextStyle, replacing oldName: String? = nil) -> Bool {
+        let normalized = style.normalized
+        guard !normalized.name.isEmpty else { return false }
+        if let oldName,
+           oldName.caseInsensitiveCompare("Standard") == .orderedSame,
+           normalized.name.caseInsensitiveCompare("Standard") != .orderedSame {
+            return false
+        }
+        if textStyles.values.contains(where: {
+            $0.name.caseInsensitiveCompare(normalized.name) == .orderedSame
+                && $0.name.caseInsensitiveCompare(oldName ?? normalized.name) != .orderedSame
+        }) {
+            return false
+        }
+
+        let previousName = oldName.flatMap { textStyle(named: $0)?.name }
+        pushUndo()
+        if let previousName, previousName.caseInsensitiveCompare(normalized.name) != .orderedSame {
+            textStyles.removeValue(forKey: previousName)
+            rewriteTextStyleReferences(from: previousName, to: normalized.name)
+        }
+        textStyles[normalized.name] = normalized
+        markEdited(regenerate: true)
+        invalidateEntityGrid()
+        return true
+    }
+
+    public func deleteTextStyle(named name: String) -> Bool {
+        guard let existing = textStyle(named: name),
+              existing.name.caseInsensitiveCompare("Standard") != .orderedSame else { return false }
+        pushUndo()
+        textStyles.removeValue(forKey: existing.name)
+        rewriteTextStyleReferences(from: existing.name, to: resolvedTextStyleName("Standard"))
+        markEdited(regenerate: true)
+        invalidateEntityGrid()
+        return true
+    }
+
+    private func rewriteTextStyleReferences(from oldName: String, to newName: String) {
+        for handle in Array(entityRegistry.keys) {
+            guard var entity = entityRegistry[handle] else { continue }
+            if case .string(let value) = entity.xdata["dxf.textStyle"],
+               value.caseInsensitiveCompare(oldName) == .orderedSame {
+                entity.xdata["dxf.textStyle"] = .string(newName)
+            }
+            if let geometry = entity.localGeometry {
+                entity.localGeometry = geometry.map { replacingTextStyle(in: $0, from: oldName, to: newName) }
+            }
+            entityRegistry[handle] = entity
+        }
+        for handle in Array(blockTable.keys) {
+            guard var block = blockTable[handle] else { continue }
+            block.geometry = block.geometry.map { replacingTextStyle(in: $0, from: oldName, to: newName) }
+            blockTable[handle] = block
+        }
+    }
+
+    private func replacingTextStyle(in primitive: CADPrimitive, from oldName: String, to newName: String) -> CADPrimitive {
+        guard case .text(let position, let text, let height, let rotation, let style, let alignH, let alignV, let mtextWidth, let color) = primitive,
+              let style, style.caseInsensitiveCompare(oldName) == .orderedSame else { return primitive }
+        return .text(position: position, text: text, height: height, rotation: rotation, style: newName, alignH: alignH, alignV: alignV, mtextWidth: mtextWidth, color: color)
+    }
 
     // MARK: - Layer Operations
 
@@ -1002,14 +1142,16 @@ public final class CADDocument {
         hasVisibleBackground: Bool,
         into bounds: inout CADRenderBoundsAccumulator
     ) {
-        guard !text.isEmpty, height.isFinite, height > 0, rotation.isFinite else { return }
+        let textStyle = CADTextStyle.resolve(style, in: textStyles)
+        let effectiveHeight = textStyle.fixedHeight > 0 ? textStyle.fixedHeight : height
+        guard !text.isEmpty, effectiveHeight.isFinite, effectiveHeight > 0, rotation.isFinite else { return }
 
         let origin = transform.transformPoint(position)
         let localX = Vector3(x: cos(rotation), y: sin(rotation), z: 0)
         let localY = Vector3(x: -sin(rotation), y: cos(rotation), z: 0)
         let worldX = transform.transformPoint(position + localX) - origin
         let worldY = transform.transformPoint(position + localY) - origin
-        let worldHeight = height * max(worldY.magnitude, 1e-12)
+        let worldHeight = effectiveHeight * max(worldY.magnitude, 1e-12)
         let worldWidth = mtextWidth.map { $0 * max(worldX.magnitude, 1e-12) }
         let worldRotation = atan2(worldX.y, worldX.x)
         let fontFile = CADFontManager.resolveTextStyleFont(
@@ -1024,6 +1166,8 @@ public final class CADDocument {
                 rotation: worldRotation,
                 alignH: alignH,
                 alignV: alignV,
+                widthFactor: textStyle.widthFactor,
+                obliqueAngle: textStyle.obliqueAngle,
                 maxWidth: worldWidth)
             for primitive in primitives {
                 if case .line(let start, let end, _) = primitive {
@@ -1732,19 +1876,19 @@ public final class CADDocument {
 
     @MainActor
     public func importDXF(url: URL) throws {
-        let (layers, blocks, entities, textStyleFonts, linetypePatterns, dimensionStyles) = try DXFImporter.importDXF(filePath: url.path)
+        let imported = try DXFImporter.importDXFViews(filePath: url.path)
 
-        for font in Set(textStyleFonts.values) {
+        for font in Set(imported.textStyles.values.map(\.fontFile)) {
             CADFontManager.debugFontLookup(font)
         }
 
-        self.textStyleFonts = textStyleFonts
-        self.linetypePatterns = linetypePatterns
-        self.dimensionStyles = dimensionStyles
-        for layer in layers { layerTable[layer.handle] = layer }
-        if activeLayerID == nil, let first = layers.first { activeLayerID = first.handle }
-        for block in blocks { blockTable[block.handle] = block }
-        for entity in entities { entityRegistry[entity.handle] = entity }
+        self.textStyles = imported.textStyles.isEmpty ? ["Standard": .standard] : imported.textStyles
+        self.linetypePatterns = imported.linetypePatterns
+        self.dimensionStyles = imported.dimensionStyles
+        for layer in imported.layers { layerTable[layer.handle] = layer }
+        if activeLayerID == nil, let first = imported.layers.first { activeLayerID = first.handle }
+        for block in imported.blocks { blockTable[block.handle] = block }
+        for entity in imported.entities { entityRegistry[entity.handle] = entity }
         markEdited(regenerate: true)
         rebuildEntityGrid()
     }
@@ -1788,14 +1932,14 @@ public final class CADDocument {
         constraints: [CADConstraint] = [],
         solvedTransforms: [UUID: Transform3D] = [:],
         unit: CADUnit = .millimeter,
-        textStyleFonts: [String: String] = [:],
+        textStyles: [String: CADTextStyle] = ["Standard": .standard],
         dimensionStyles: [String: CADDimensionStyle] = [:],
         linetypePatterns: [String: [Double]] = [:],
         activeLayerID: UUID? = nil,
         imageStore: [String: CADImageAsset] = [:]
     ) {
         self.unit = unit
-        self.textStyleFonts = textStyleFonts
+        self.textStyles = textStyles.isEmpty ? ["Standard": .standard] : textStyles
         self.dimensionStyles = dimensionStyles
         self.linetypePatterns = linetypePatterns
         self.imageStore = imageStore
@@ -1821,6 +1965,34 @@ public final class CADDocument {
         rebuildEntityGrid()
     }
 
+    public func importEAB(
+        layers: [Layer], blocks: [CADBlock], entities: [CADEntity],
+        constraints: [CADConstraint] = [],
+        solvedTransforms: [UUID: Transform3D] = [:],
+        unit: CADUnit = .millimeter,
+        textStyleFonts: [String: String],
+        dimensionStyles: [String: CADDimensionStyle] = [:],
+        linetypePatterns: [String: [Double]] = [:],
+        activeLayerID: UUID? = nil,
+        imageStore: [String: CADImageAsset] = [:]
+    ) {
+        let styles = Dictionary(uniqueKeysWithValues: textStyleFonts.map { name, font in
+            (name, CADTextStyle(name: name, fontFile: font).normalized)
+        })
+        importEAB(
+            layers: layers,
+            blocks: blocks,
+            entities: entities,
+            constraints: constraints,
+            solvedTransforms: solvedTransforms,
+            unit: unit,
+            textStyles: styles.isEmpty ? ["Standard": .standard] : styles,
+            dimensionStyles: dimensionStyles,
+            linetypePatterns: linetypePatterns,
+            activeLayerID: activeLayerID,
+            imageStore: imageStore)
+    }
+
     // MARK: - Snapshot / Restore
 
     public func snapshot() -> CADDocumentSnapshot {
@@ -1833,7 +2005,7 @@ public final class CADDocument {
             return CADDocumentSnapshot(
                 layers: [:], blocks: [:], entities: [:], constraints: [:],
                 solvedTransforms: [:], activeLayerID: nil, unit: unit,
-                textStyleFonts: [:], dimensionStyles: [:], linetypePatterns: [:],
+                textStyles: ["Standard": .standard], dimensionStyles: [:], linetypePatterns: [:],
                 imageAssetNames: [])
         }
         guard layerCount < 100_000 else {
@@ -1841,7 +2013,7 @@ public final class CADDocument {
             return CADDocumentSnapshot(
                 layers: [:], blocks: [:], entities: [:], constraints: [:],
                 solvedTransforms: [:], activeLayerID: nil, unit: unit,
-                textStyleFonts: [:], dimensionStyles: [:], linetypePatterns: [:],
+                textStyles: ["Standard": .standard], dimensionStyles: [:], linetypePatterns: [:],
                 imageAssetNames: [])
         }
 
@@ -1868,7 +2040,7 @@ public final class CADDocument {
             entities: entityRegistry, constraints: constraintTable,
             solvedTransforms: solvedTransforms,
             activeLayerID: activeLayerID, unit: unit,
-            textStyleFonts: textStyleFonts,
+            textStyles: textStyles,
             dimensionStyles: dimensionStyles,
             linetypePatterns: linetypePatterns,
             imageAssetNames: names
@@ -1903,7 +2075,7 @@ public final class CADDocument {
         solvedTransforms = snapshot.solvedTransforms
         activeLayerID = snapshot.activeLayerID
         unit = snapshot.unit
-        textStyleFonts = snapshot.textStyleFonts
+        textStyles = snapshot.textStyles
         dimensionStyles = snapshot.dimensionStyles
         linetypePatterns = snapshot.linetypePatterns
         // Prune image assets no longer referenced by any entity after restore

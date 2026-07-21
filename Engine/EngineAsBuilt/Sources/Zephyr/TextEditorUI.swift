@@ -6,7 +6,7 @@ import ImGui
 // MARK: - TextEditorUI
 //
 // Renders a modal dialog for creating or editing text entities.
-// Provides multi-line text input, font selection dropdown, height,
+// Provides multi-line text input, text style selection, height,
 // rotation, alignment, and MTEXT width controls.
 //
 // Activated by the TEXT command (new text) or DDEDIT command / double-click
@@ -21,19 +21,10 @@ import ImGui
 @MainActor
 public struct TextEditorUI {
 
-    /// Available fonts cache (populated lazily from CADFontManager).
-    private static var _cachedFonts: [CADFontManager.AvailableFont] = []
-    private static var _fontsLoaded: Bool = false
-
     /// Render the text editor modal. Returns `.active` while still open,
     /// `.confirmed(state)` when OK clicked, `.cancelled` when dismissed.
     @discardableResult
-    public static func render(state: inout TextEditorState, dw: Float, dh: Float) -> TextEditorResult {
-        if !_fontsLoaded {
-            _cachedFonts = CADFontManager.availableFonts()
-            _fontsLoaded = true
-        }
-
+    public static func render(state: inout TextEditorState, engine: PhrostEngine, dw: Float, dh: Float) -> TextEditorResult {
         let isCreating = (state.targetHandle == nil)
         let title = isCreating ? "Create Text##TextEditor" : "Edit Text##TextEditor"
 
@@ -103,26 +94,30 @@ public struct TextEditorUI {
 
         igSpacing()
 
-        // ---- Font selection ----
-        ImGuiTextV("Font:")
+        // ---- Style selection ----
+        let styles = engine.document.textStyles.values.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        if engine.document.textStyle(named: state.styleName) == nil {
+            if let matching = styles.first(where: { $0.fontFile.caseInsensitiveCompare(state.fontName) == .orderedSame }) {
+                state.styleName = matching.name
+            } else {
+                state.styleName = engine.document.resolvedTextStyleName("Standard")
+            }
+        }
+
+        ImGuiTextV("Style:")
         ImGuiSameLine(0, 8)
         ImGuiPushItemWidth(200)
-
-        let currentFontName = state.fontName
-        let fontDisplay = currentFontName.isEmpty ? "simplex.shx" : currentFontName
-
-        if ImGuiBeginCombo("##FontCombo", fontDisplay, Int32(ImGuiComboFlags_None.rawValue)) {
-            for font in _cachedFonts {
-                let label = "\(font.name) [\(font.type.rawValue)]"
-                let isSelected = (font.name == currentFontName)
-                    || (font.path == currentFontName)
-
-                if ImGuiSelectable(label, isSelected, 0, ImVec2(x: 0, y: 0)) {
-                    state.fontName = font.name
+        if ImGuiBeginCombo("##StyleCombo", state.styleName, Int32(ImGuiComboFlags_None.rawValue)) {
+            for style in styles {
+                let isSelected = style.name.caseInsensitiveCompare(state.styleName) == .orderedSame
+                if ImGuiSelectable(style.name, isSelected, 0, ImVec2(x: 0, y: 0)) {
+                    state.styleName = style.name
+                    state.fontName = style.fontFile
+                    if style.fixedHeight > 0 { state.height = style.fixedHeight }
                 }
-                if isSelected {
-                    ImGuiSetItemDefaultFocus()
-                }
+                if isSelected { ImGuiSetItemDefaultFocus() }
             }
             ImGuiEndCombo()
         }
@@ -131,13 +126,17 @@ public struct TextEditorUI {
         igSpacing()
 
         // ---- Height ----
+        let selectedStyle = engine.document.textStyle(named: state.styleName) ?? .standard
+        if selectedStyle.fixedHeight > 0 { state.height = selectedStyle.fixedHeight }
         ImGuiTextV("Height:")
         ImGuiSameLine(0, 8)
         ImGuiPushItemWidth(100)
+        if selectedStyle.fixedHeight > 0 { ImGuiBeginDisabled(true) }
         var h = Float(state.height)
         if ImGuiDragFloat("##HeightDrag", &h, 0.1, 0.1, 1000.0, "%.2f", ImGuiSliderFlags(0)) {
             state.height = Double(h)
         }
+        if selectedStyle.fixedHeight > 0 { ImGuiEndDisabled() }
         ImGuiPopItemWidth()
 
         ImGuiSameLine(0, 20)
@@ -230,9 +229,6 @@ public struct TextEditorUI {
         return result
     }
 
-    /// Reset the font cache (call after adding/removing font files).
-    public static func refreshFonts() {
-        _fontsLoaded = false
-        _cachedFonts = []
-    }
+    /// Retained for callers that previously refreshed the direct font list.
+    public static func refreshFonts() {}
 }

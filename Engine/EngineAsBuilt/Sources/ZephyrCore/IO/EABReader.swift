@@ -93,7 +93,7 @@ public enum EABReader {
                 constraints: components.constraints,
                 solvedTransforms: components.solvedTransforms,
                 unit: components.unit,
-                textStyleFonts: components.textStyleFonts,
+                textStyles: components.textStyles,
                 dimensionStyles: components.dimensionStyles,
                 linetypePatterns: components.linetypePatterns,
                 activeLayerID: components.activeLayerID,
@@ -112,7 +112,7 @@ public enum EABReader {
         constraints: [CADConstraint],
         solvedTransforms: [UUID: Transform3D],
         unit: CADUnit,
-        textStyleFonts: [String: String],
+        textStyles: [String: CADTextStyle],
         dimensionStyles: [String: CADDimensionStyle],
         linetypePatterns: [String: [Double]],
         activeLayerID: UUID?,
@@ -197,7 +197,7 @@ public enum EABReader {
                 constraints: components.constraints,
                 solvedTransforms: components.solvedTransforms,
                 unit: components.unit,
-                textStyleFonts: components.textStyleFonts,
+                textStyles: components.textStyles,
                 dimensionStyles: components.dimensionStyles,
                 linetypePatterns: components.linetypePatterns,
                 activeLayerID: components.activeLayerID,
@@ -233,7 +233,8 @@ public enum EABReader {
                     constraints: components.constraints,
                     solvedTransforms: components.solvedTransforms,
                     unit: components.unit,
-                    textStyleFonts: components.textStyleFonts,
+                    textStyles: components.textStyles,
+                    dimensionStyles: components.dimensionStyles,
                     linetypePatterns: components.linetypePatterns,
                     activeLayerID: components.activeLayerID,
                     imageStore: components.imageStore
@@ -257,7 +258,7 @@ public enum EABReader {
         constraints: [CADConstraint],
         solvedTransforms: [UUID: Transform3D],
         unit: CADUnit,
-        textStyleFonts: [String: String],
+        textStyles: [String: CADTextStyle],
         dimensionStyles: [String: CADDimensionStyle],
         linetypePatterns: [String: [Double]],
         activeLayerID: UUID?,
@@ -271,7 +272,7 @@ public enum EABReader {
         var entities: [CADEntity] = []
         var constraints: [CADConstraint] = []
         var solvedTransforms: [UUID: Transform3D] = [:]
-        var textStyleFonts: [String: String] = [:]
+        var textStyles: [String: CADTextStyle] = ["Standard": .standard]
         var dimensionStyles: [String: CADDimensionStyle] = [:]
         var linetypePatterns: [String: [Double]] = [:]
         var activeLayerID: UUID? = nil
@@ -291,7 +292,7 @@ public enum EABReader {
             case .solved:
                 solvedTransforms = try parseSolvedTransforms(reader)
             case .textStyles:
-                textStyleFonts = try parseTextStyleFonts(reader)
+                textStyles = try parseTextStyles(reader, version: header.version)
             case .dimensionStyles:
                 dimensionStyles = try parseDimensionStyles(reader)
             case .lineTypes:
@@ -306,7 +307,7 @@ public enum EABReader {
         }
 
         return (layers, blocks, entities, constraints, solvedTransforms, header.unit,
-                textStyleFonts, dimensionStyles, linetypePatterns, activeLayerID, loadedImageStore)
+                textStyles, dimensionStyles, linetypePatterns, activeLayerID, loadedImageStore)
     }
 
     private static func parseDimensionStyles(_ r: BinaryReader) throws -> [String: CADDimensionStyle] {
@@ -349,7 +350,7 @@ public enum EABReader {
         constraints: [CADConstraint],
         solvedTransforms: [UUID: Transform3D],
         unit: CADUnit,
-        textStyleFonts: [String: String],
+        textStyles: [String: CADTextStyle],
         dimensionStyles: [String: CADDimensionStyle],
         linetypePatterns: [String: [Double]],
         activeLayerID: UUID?,
@@ -374,7 +375,7 @@ public enum EABReader {
         var entities: [CADEntity] = []
         var constraints: [CADConstraint] = []
         var solvedTransforms: [UUID: Transform3D] = [:]
-        var textStyleFonts: [String: String] = [:]
+        var textStyles: [String: CADTextStyle] = ["Standard": .standard]
         var dimensionStyles: [String: CADDimensionStyle] = [:]
         var linetypePatterns: [String: [Double]] = [:]
         var activeLayerID: UUID? = nil
@@ -398,7 +399,7 @@ public enum EABReader {
             case .solved:
                 solvedTransforms = try parseSolvedTransforms(reader)
             case .textStyles:
-                textStyleFonts = try parseTextStyleFonts(reader)
+                textStyles = try parseTextStyles(reader, version: header.version)
             case .dimensionStyles:
                 dimensionStyles = try parseDimensionStyles(reader)
             case .lineTypes:
@@ -413,7 +414,7 @@ public enum EABReader {
         }
 
         return (layers, blocks, entities, constraints, solvedTransforms, header.unit,
-                textStyleFonts, dimensionStyles, linetypePatterns, activeLayerID, loadedImageStore)
+                textStyles, dimensionStyles, linetypePatterns, activeLayerID, loadedImageStore)
     }
 
     // MARK: - Header Parsing
@@ -853,16 +854,29 @@ public enum EABReader {
 
     // MARK: - Text Style Fonts Parsing
 
-    private static func parseTextStyleFonts(_ r: BinaryReader) throws -> [String: String] {
-        let count = safeCount(r.readUInt32(), limit: maxSafeSectionCount, label: "textStyleFonts")
-        var fonts: [String: String] = [:]
-        fonts.reserveCapacity(count)
+    private static func parseTextStyles(_ r: BinaryReader, version: UInt32) throws -> [String: CADTextStyle] {
+        let count = safeCount(r.readUInt32(), limit: maxSafeSectionCount, label: "textStyles")
+        var styles: [String: CADTextStyle] = ["Standard": .standard]
+        styles.reserveCapacity(count + 1)
         for _ in 0..<count {
             let styleName = r.readString()
             let fontFile = r.readString()
-            fonts[styleName] = fontFile
+            let style: CADTextStyle
+            if version >= 13 {
+                style = CADTextStyle(
+                    name: styleName,
+                    fontFile: fontFile,
+                    fixedHeight: r.readFloat64(),
+                    widthFactor: r.readFloat64(),
+                    obliqueAngle: r.readFloat64(),
+                    isAnnotative: r.readUInt8() != 0
+                ).normalized
+            } else {
+                style = CADTextStyle(name: styleName, fontFile: fontFile).normalized
+            }
+            if !style.name.isEmpty { styles[style.name] = style }
         }
-        return fonts
+        return styles
     }
 
     // MARK: - Linetype Patterns Parsing

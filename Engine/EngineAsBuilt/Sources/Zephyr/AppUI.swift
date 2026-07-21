@@ -127,9 +127,13 @@ struct AppUI {
             LayerMoveUI.render(engine: engine, dw: dw, dh: dh)
         }
 
+        if engine.ui.styleManagerActive {
+            StyleManagerUI.render(engine: engine, dw: dw, dh: dh)
+        }
+
         // 9b. Text editor modal dialog (when creating/editing text).
         if engine.textManager.isEditorActive {
-            let result = TextEditorUI.render(state: &engine.textManager.editorState, dw: dw, dh: dh)
+            let result = TextEditorUI.render(state: &engine.textManager.editorState, engine: engine, dw: dw, dh: dh)
             switch result {
             case .active:
                 break // Still open

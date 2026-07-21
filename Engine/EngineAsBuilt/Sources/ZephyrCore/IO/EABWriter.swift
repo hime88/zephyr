@@ -388,8 +388,8 @@ public enum EABWriter {
         w.pad(to: 4)
 
         // Text style fonts (added in EAB v4)
-        if !document.textStyleFonts.isEmpty {
-            let textStylesData = serializeTextStyleFonts(document: document)
+        if !document.textStyles.isEmpty {
+            let textStylesData = serializeTextStyles(document: document)
             entries.append(EABSectionEntry(type: .textStyles, offset: UInt64(w.count),
                                             size: UInt64(textStylesData.count), compression: .none))
             w.writeBytes(textStylesData)
@@ -1034,12 +1034,20 @@ public enum EABWriter {
 
     // MARK: - Text Style Fonts
 
-    private static func serializeTextStyleFonts(document: CADDocument) -> Data {
+    private static func serializeTextStyles(document: CADDocument) -> Data {
         let w = BinaryWriter()
-        w.writeUInt32(UInt32(document.textStyleFonts.count))
-        for (styleName, fontFile) in document.textStyleFonts {
-            w.writeString(styleName)
-            w.writeString(fontFile)
+        let styles = document.textStyles.values.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        w.writeUInt32(UInt32(styles.count))
+        for style in styles {
+            let normalized = style.normalized
+            w.writeString(normalized.name)
+            w.writeString(normalized.fontFile)
+            w.writeFloat64(normalized.fixedHeight)
+            w.writeFloat64(normalized.widthFactor)
+            w.writeFloat64(normalized.obliqueAngle)
+            w.writeUInt8(normalized.isAnnotative ? 1 : 0)
         }
         return w.build()
     }

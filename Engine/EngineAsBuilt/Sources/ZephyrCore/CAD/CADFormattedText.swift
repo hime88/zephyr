@@ -128,17 +128,20 @@ public struct FormattedParagraph: Codable, Sendable, Hashable {
 /// Top-level formatted text container: default formatting for the entity,
 /// plus a list of paragraphs.
 public struct FormattedText: Codable, Sendable, Hashable {
+    public var styleName: String?
     public var defaultFont: String
     public var defaultHeight: Double
     public var defaultColor: ColorRGBA
     public var paragraphs: [FormattedParagraph]
 
     public init(
+        styleName: String? = nil,
         defaultFont: String = "simplex.shx",
         defaultHeight: Double = 2.5,
         defaultColor: ColorRGBA = .white,
         paragraphs: [FormattedParagraph] = []
     ) {
+        self.styleName = styleName
         self.defaultFont = defaultFont
         self.defaultHeight = defaultHeight
         self.defaultColor = defaultColor
@@ -153,6 +156,7 @@ public struct FormattedText: Codable, Sendable, Hashable {
     /// Create a simple FormattedText from a plain string with the given defaults.
     public static func plain(
         _ text: String,
+        styleName: String? = nil,
         font: String = "simplex.shx",
         height: Double = 2.5,
         color: ColorRGBA = .white
@@ -167,6 +171,7 @@ public struct FormattedText: Codable, Sendable, Hashable {
             )
         }
         return FormattedText(
+            styleName: styleName,
             defaultFont: font,
             defaultHeight: height,
             defaultColor: color,

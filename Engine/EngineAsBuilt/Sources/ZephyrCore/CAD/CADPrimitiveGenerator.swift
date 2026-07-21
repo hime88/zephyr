@@ -22,6 +22,7 @@ import SwiftSDL
         public let rotation: Double
         public let height: Double
         public let widthFactor: Double
+        public let obliqueAngle: Double
         public let maxWidth: Double?
         public let alignH: Int
         public let alignV: Int
@@ -43,6 +44,7 @@ import SwiftSDL
             rotation: Double,
             height: Double,
             widthFactor: Double = 1.0,
+            obliqueAngle: Double = 0.0,
             maxWidth: Double?,
             alignH: Int,
             alignV: Int,
@@ -63,6 +65,7 @@ import SwiftSDL
             self.rotation = rotation
             self.height = height
             self.widthFactor = widthFactor
+            self.obliqueAngle = obliqueAngle
             self.maxWidth = maxWidth
             self.alignH = alignH
             self.alignV = alignV
@@ -317,6 +320,7 @@ public enum CADPrimitiveGenerator {
         lineTypeScale: Double = 1.0,
         geomWidth: Double = 0.0,
         textWidthFactor: Double = 1.0,
+        textObliqueAngle: Double = 0.0,
         textStyleFonts: [String: String] = [:],
         linetypePatterns: [String: [Double]] = [:],
         opacityMultiplier: Double = 1.0,
@@ -753,6 +757,7 @@ public enum CADPrimitiveGenerator {
                     alignH: alignH,
                     alignV: alignV,
                     widthFactor: finalWidthFactor,
+                    obliqueAngle: textObliqueAngle,
                     maxWidth: finalMaxWidth
                 )
                 if textPrims.count > 500 {

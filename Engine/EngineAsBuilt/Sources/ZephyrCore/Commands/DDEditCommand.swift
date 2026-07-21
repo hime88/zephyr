@@ -169,9 +169,14 @@ public final class DDEditCommand: FeatureCommand {
         if case .string(let s) = entity.xdata["dxf.text"] { text = s }
         else { text = "" }
 
-        let fontName: String
-        if case .string(let s) = entity.xdata["dxf.textStyle"] { fontName = s }
-        else { fontName = "simplex.shx" }
+        let styleReference: String
+        if case .string(let value) = entity.xdata["dxf.textStyle"] { styleReference = value }
+        else { styleReference = "Standard" }
+        let matchedStyle = engine.document.textStyle(named: styleReference)
+            ?? engine.document.textStyles.values.first { $0.fontFile.caseInsensitiveCompare(styleReference) == .orderedSame }
+            ?? .standard
+        let styleName = matchedStyle.name
+        let fontName = matchedStyle.fontFile
 
         let height: Double
         if case .double(let d) = entity.xdata["dxf.textHeight"] { height = d }
@@ -193,6 +198,7 @@ public final class DDEditCommand: FeatureCommand {
 
         engine.textManager.editorState = TextEditorState(
             text: text,
+            styleName: styleName,
             fontName: fontName,
             height: height,
             rotation: entity.transform.rotation,
@@ -226,7 +232,8 @@ public final class DDEditCommand: FeatureCommand {
 
         // Extract text from the dimension block's .text primitive
         var text = box.value.textOverride ?? ""
-        var fontName = "simplex.shx"
+        var styleName = engine.document.resolvedTextStyleName("Standard")
+        var fontName = engine.document.textStyle(named: styleName)?.fontFile ?? "simplex.shx"
         var height: Double = 3.5
         var alignH: Int = 4  // Center Middle
         var alignV: Int = 2  // Middle
@@ -236,7 +243,14 @@ public final class DDEditCommand: FeatureCommand {
             if case .text(_, let t, let h, _, let style, let ah, let av, let mw, _) = prim {
                 if text.isEmpty { text = t }
                 height = h
-                if let s = style { fontName = s }
+                if let reference = style {
+                    let resolved = engine.document.textStyle(named: reference)
+                        ?? engine.document.textStyles.values.first { $0.fontFile.caseInsensitiveCompare(reference) == .orderedSame }
+                    if let resolved {
+                        styleName = resolved.name
+                        fontName = resolved.fontFile
+                    }
+                }
                 alignH = ah
                 alignV = av
                 mtextWidth = mw ?? 0
@@ -248,6 +262,7 @@ public final class DDEditCommand: FeatureCommand {
 
         engine.textManager.editorState = TextEditorState(
             text: text,
+            styleName: styleName,
             fontName: fontName,
             height: height,
             rotation: 0,
@@ -298,8 +313,8 @@ public final class DDEditCommand: FeatureCommand {
         else { return }
 
         let text = editorState.text
-        let height = editorState.height
-        let fontName = editorState.fontName.isEmpty ? "simplex.shx" : editorState.fontName
+        let styleName = engine.document.resolvedTextStyleName(editorState.styleName)
+        let height = engine.document.effectiveTextHeight(styleName: styleName, localHeight: editorState.height)
         let alignH = editorState.alignH
         let alignV = editorState.alignV
         let mtextWidth = editorState.mtextWidth
@@ -313,7 +328,7 @@ public final class DDEditCommand: FeatureCommand {
                     text: text,
                     height: height,
                     rotation: rotation,
-                    style: fontName,
+                    style: styleName,
                     alignH: alignH,
                     alignV: alignV,
                     mtextWidth: mtextWidth > 0 ? mtextWidth : nil,
@@ -354,9 +369,11 @@ public final class DDEditCommand: FeatureCommand {
             return
         }
 
-        let height = editorState.height
+        let styleName = engine.document.resolvedTextStyleName(editorState.styleName)
+        let style = engine.document.textStyle(named: styleName) ?? .standard
+        let height = engine.document.effectiveTextHeight(styleName: styleName, localHeight: editorState.height)
         let rotation = editorState.rotation
-        let fontName = editorState.fontName.isEmpty ? "simplex.shx" : editorState.fontName
+        let fontName = style.fontFile
         let alignH = editorState.alignH
         let alignV = editorState.alignV
         let mtextWidth = editorState.mtextWidth
@@ -375,7 +392,7 @@ public final class DDEditCommand: FeatureCommand {
             text: text,
             height: height,
             rotation: 0,      // Rotation is in transform
-            style: fontName,
+            style: styleName,
             alignH: alignH,
             alignV: alignV,
             mtextWidth: mtextWidth > 0 ? mtextWidth : nil
@@ -384,7 +401,7 @@ public final class DDEditCommand: FeatureCommand {
 
         // Update xdata
         engine.document.setXData(for: handle, key: "dxf.text", value: .string(text))
-        engine.document.setXData(for: handle, key: "dxf.textStyle", value: .string(fontName))
+        engine.document.setXData(for: handle, key: "dxf.textStyle", value: .string(styleName))
         engine.document.setXData(for: handle, key: "dxf.textHeight", value: .double(height))
         engine.document.setXData(for: handle, key: "dxf.alignH", value: .int(alignH))
         engine.document.setXData(for: handle, key: "dxf.alignV", value: .int(alignV))
@@ -395,7 +412,7 @@ public final class DDEditCommand: FeatureCommand {
         // Clear raw MTEXT (user edited, so raw is stale) and update formatted
         engine.document.setXData(for: handle, key: "dxf.mtextRaw", value: .string(""))
 
-        let formatted = FormattedText.plain(text, font: fontName, height: height)
+        let formatted = FormattedText.plain(text, styleName: styleName, font: fontName, height: height)
         if let jsonData = try? JSONEncoder().encode(formatted),
            let jsonStr = String(data: jsonData, encoding: .utf8) {
             engine.document.setXData(for: handle, key: "dxf.formattedText", value: .string(jsonStr))

@@ -283,7 +283,7 @@ public final class TabManager {
             let imported = try DXFImporter.importDXFViews(filePath: tempDXF.path)
             print("[TabManager] DWG import: \(imported.layers.count) layers, \(imported.blocks.count) blocks, \(imported.entities.count) entities")
 
-            for font in Set(imported.textStyleFonts.values) {
+            for font in Set(imported.textStyles.values.map(\.fontFile)) {
                 CADFontManager.debugFontLookup(font)
             }
 
@@ -294,7 +294,7 @@ public final class TabManager {
                     blocks: imported.blocks,
                     entities: view.entities
                 )
-                doc.textStyleFonts = imported.textStyleFonts
+                doc.textStyles = imported.textStyles
                 doc.linetypePatterns = imported.linetypePatterns
                 doc.dimensionStyles = imported.dimensionStyles
                 doc.savedRevision = doc.editRevision
@@ -321,7 +321,7 @@ public final class TabManager {
         let imported = try DXFImporter.importDXFViews(filePath: url.path)
         print("[TabManager] DXF imported: \(imported.layers.count) layers, \(imported.blocks.count) blocks, \(imported.entities.count) entities, \(imported.views.count) views")
 
-        for font in Set(imported.textStyleFonts.values) {
+        for font in Set(imported.textStyles.values.map(\.fontFile)) {
             CADFontManager.debugFontLookup(font)
         }
 
@@ -332,7 +332,7 @@ public final class TabManager {
                 blocks: imported.blocks,
                 entities: view.entities
             )
-            doc.textStyleFonts = imported.textStyleFonts
+            doc.textStyles = imported.textStyles
             doc.linetypePatterns = imported.linetypePatterns
             doc.dimensionStyles = imported.dimensionStyles
             doc.savedRevision = doc.editRevision  // freshly imported
@@ -785,7 +785,7 @@ public final class TabManager {
 
         tempDoc.activeLayerID = tab.document.activeLayerID ?? fallbackLayerID
         tempDoc.unit = tab.document.unit
-        tempDoc.textStyleFonts = tab.document.textStyleFonts
+        tempDoc.textStyles = tab.document.textStyles
         tempDoc.dimensionStyles = tab.document.dimensionStyles
         tempDoc.linetypePatterns = tab.document.linetypePatterns
         tempDoc.imageStore = tab.document.imageStore

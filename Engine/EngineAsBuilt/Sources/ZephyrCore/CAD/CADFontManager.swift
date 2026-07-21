@@ -77,13 +77,14 @@ public enum CADFontManager {
                     }
                 }
             }
-            if !formatted.defaultFont.isEmpty {
-                references.append(formatted.defaultFont)
-            }
         }
 
         if let styleName, !styleName.isEmpty {
             references.append(styleName)
+        }
+
+        if let formatted, !formatted.defaultFont.isEmpty {
+            references.append(formatted.defaultFont)
         }
 
         var seen = Set<String>()
@@ -275,6 +276,13 @@ public enum CADFontManager {
         ]
 #if os(Windows)
         fontDirectories.append(URL(fileURLWithPath: "C:/Windows/Fonts"))
+#elseif os(macOS)
+        fontDirectories.append(URL(fileURLWithPath: "/System/Library/Fonts"))
+        fontDirectories.append(URL(fileURLWithPath: "/Library/Fonts"))
+        fontDirectories.append(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Fonts"))
+#elseif os(Linux)
+        fontDirectories.append(URL(fileURLWithPath: "/usr/share/fonts"))
+        fontDirectories.append(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/fonts"))
 #endif
 
         var specificCandidates: [String] = []
@@ -414,6 +422,15 @@ public enum CADFontManager {
         ]
 #if os(Windows)
         fontDirectories.append(URL(fileURLWithPath: "C:/Windows/Fonts"))
+#elseif os(macOS)
+        fontDirectories.append(URL(fileURLWithPath: "/System/Library/Fonts"))
+        fontDirectories.append(URL(fileURLWithPath: "/Library/Fonts"))
+        fontDirectories.append(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Fonts"))
+#elseif os(Linux)
+        fontDirectories.append(URL(fileURLWithPath: "/usr/share/fonts"))
+        fontDirectories.append(URL(fileURLWithPath: "/usr/local/share/fonts"))
+        fontDirectories.append(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/fonts"))
+        fontDirectories.append(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".fonts"))
 #endif
 
         for dir in fontDirectories {
@@ -422,20 +439,20 @@ public enum CADFontManager {
                 options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
 
             for case let url as URL in enumerator {
-                // Only top-level, skip subdirectories
-                if url.deletingLastPathComponent() != dir { continue }
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+                if values?.isDirectory == true { continue }
 
                 let ext = url.pathExtension.lowercased()
                 let name = url.lastPathComponent
-                let lowerName = name.lowercased()
+                let dedupeKey = url.deletingPathExtension().lastPathComponent.lowercased()
 
-                guard !seen.contains(lowerName) else { continue }
+                guard !seen.contains(dedupeKey) else { continue }
 
                 if ext == "shx" {
-                    seen.insert(lowerName)
+                    seen.insert(dedupeKey)
                     fonts.append(AvailableFont(name: name, path: url.path, type: .shxShape))
                 } else if ext == "ttf" || ext == "otf" || ext == "ttc" {
-                    seen.insert(lowerName)
+                    seen.insert(dedupeKey)
                     fonts.append(AvailableFont(name: name, path: url.path, type: .truetype))
                 }
             }

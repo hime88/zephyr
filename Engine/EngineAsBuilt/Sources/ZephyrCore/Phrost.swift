@@ -30,6 +30,7 @@ public final class Sprite: @unchecked Sendable {
     public var adjustedColorDark: (UInt8, UInt8, UInt8, UInt8)
     public var texture: OpaquePointer? = nil
     public var rotate: (Double, Double, Double)
+    public var shearX: Double
     public var speed: (Double, Double)
     public var scale: (Double, Double, Double)
     public var text: String?
@@ -46,6 +47,7 @@ public final class Sprite: @unchecked Sendable {
         scale: (Double, Double, Double),
         size: (Double, Double),
         rotate: (Double, Double, Double),
+        shearX: Double = 0,
         color: (UInt8, UInt8, UInt8, UInt8),
         speed: (Double, Double),
         texture: OpaquePointer? = nil,
@@ -65,6 +67,7 @@ public final class Sprite: @unchecked Sendable {
         self.size = size
         self.texture = texture
         self.rotate = rotate
+        self.shearX = shearX
         self.speed = speed
         self.scale = scale
         self.text = text

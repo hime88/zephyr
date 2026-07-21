@@ -11,6 +11,7 @@ import SwiftSDL_ttf
 // =========================================================================
 public struct TextEditorState: Sendable {
     public var text: String
+    public var styleName: String
     public var fontName: String
     public var height: Double
     public var rotation: Double
@@ -21,6 +22,7 @@ public struct TextEditorState: Sendable {
 
     public init(
         text: String = "",
+        styleName: String = "Standard",
         fontName: String = "simplex.shx",
         height: Double = 2.5,
         rotation: Double = 0,
@@ -30,6 +32,7 @@ public struct TextEditorState: Sendable {
         targetHandle: UUID? = nil
     ) {
         self.text = text
+        self.styleName = styleName
         self.fontName = fontName
         self.height = height
         self.rotation = rotation
@@ -350,6 +353,7 @@ public final class EngineTextManager {
         rotation: Double,
         height: Double,
         widthFactor: Double = 1.0,
+        obliqueAngle: Double = 0.0,
         maxWidth: Double?,
         alignH: Int,
         alignV: Int,
@@ -607,6 +611,7 @@ public final class EngineTextManager {
                         scale: (horizontalWorldScale, worldScale, 1.0),
                         size: (rendered.w, rendered.h),
                         rotate: (0.0, 0.0, rotation * 180.0 / .pi),
+                        shearX: tan(obliqueAngle * .pi / 180.0),
                         color: color,
                         speed: (0.0, 0.0),
                         texture: texture,

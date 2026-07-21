@@ -599,6 +599,7 @@ public final class SHXShapeFont: @unchecked Sendable {
         alignH: Int = 0,
         alignV: Int = 0,
         widthFactor: Double = 1.0,
+        obliqueAngle: Double = 0.0,
         maxWidth: Double? = nil
     ) -> [CADPrimitive] {
         var primitives: [CADPrimitive] = []
@@ -606,6 +607,7 @@ public final class SHXShapeFont: @unchecked Sendable {
         let scaleX = scaleY * max(widthFactor, 1e-9)
         let cosR = cos(rotation)
         let sinR = sin(rotation)
+        let shear = tan(obliqueAngle * .pi / 180.0)
         let storedSpaceAdvance = glyphs[0x20]?.advanceX ?? 0.0
         let spaceAdvance = storedSpaceAdvance > 0
             ? min(storedSpaceAdvance, fontHeight * 0.4)
@@ -710,10 +712,12 @@ public final class SHXShapeFont: @unchecked Sendable {
                         let lx2 = (offsetX + cursorX + seg.x2) * scaleX
                         let ly2 = -(currentLineOffsetY + seg.y2) * scaleY
 
-                        let wx1 = origin.x + lx1 * cosR - ly1 * sinR
-                        let wy1 = origin.y + lx1 * sinR + ly1 * cosR
-                        let wx2 = origin.x + lx2 * cosR - ly2 * sinR
-                        let wy2 = origin.y + lx2 * sinR + ly2 * cosR
+                        let sx1 = lx1 - ly1 * shear
+                        let wx1 = origin.x + sx1 * cosR - ly1 * sinR
+                        let wy1 = origin.y + sx1 * sinR + ly1 * cosR
+                        let sx2 = lx2 - ly2 * shear
+                        let wx2 = origin.x + sx2 * cosR - ly2 * sinR
+                        let wy2 = origin.y + sx2 * sinR + ly2 * cosR
 
                         primitives.append(.line(
                             start: Vector3(x: wx1, y: wy1, z: origin.z),
@@ -731,10 +735,12 @@ public final class SHXShapeFont: @unchecked Sendable {
                     let lx2 = (offsetX + cursorX + charAdvance) * scaleX
                     let ly2 = -(currentLineOffsetY + underlineY) * scaleY
 
-                    let wx1 = origin.x + lx1 * cosR - ly1 * sinR
-                    let wy1 = origin.y + lx1 * sinR + ly1 * cosR
-                    let wx2 = origin.x + lx2 * cosR - ly2 * sinR
-                    let wy2 = origin.y + lx2 * sinR + ly2 * cosR
+                    let sx1 = lx1 - ly1 * shear
+                    let wx1 = origin.x + sx1 * cosR - ly1 * sinR
+                    let wy1 = origin.y + sx1 * sinR + ly1 * cosR
+                    let sx2 = lx2 - ly2 * shear
+                    let wx2 = origin.x + sx2 * cosR - ly2 * sinR
+                    let wy2 = origin.y + sx2 * sinR + ly2 * cosR
 
                     primitives.append(.line(
                         start: Vector3(x: wx1, y: wy1, z: origin.z),
