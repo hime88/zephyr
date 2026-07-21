@@ -21,14 +21,17 @@ public enum CADTessellator {
         holes: [[Vector3]],
         transform: Transform3D,
         color: (UInt8, UInt8, UInt8, UInt8),
-        z: Double
+        z: Double,
+        renderOrigin: CADRenderOrigin = .zero
     ) -> PrimitiveSpec {
         // 1. Helper to clean duplicates and floating-point drift
         func cleanLoop(_ loop: [Vector3]) -> [SDL_FPoint] {
             var pts: [SDL_FPoint] = []
             for v in loop {
                 let t = transform.transformPoint(v)
-                let pt = SDL_FPoint(x: Float(t.x), y: Float(t.y))
+                let pt = SDL_FPoint(
+                    x: renderOrigin.localX(t.x),
+                    y: renderOrigin.localY(t.y))
                 if let last = pts.last {
                     let dx = pt.x - last.x
                     let dy = pt.y - last.y
@@ -252,13 +255,16 @@ public enum CADTessellator {
         color1: (UInt8, UInt8, UInt8, UInt8),
         color2: (UInt8, UInt8, UInt8, UInt8),
         angle: Double,
-        z: Double
+        z: Double,
+        renderOrigin: CADRenderOrigin = .zero
     ) -> [PrimitiveSpec] {
         func cleanLoop(_ loop: [Vector3]) -> [SDL_FPoint] {
             var pts: [SDL_FPoint] = []
             for v in loop {
                 let t = transform.transformPoint(v)
-                let pt = SDL_FPoint(x: Float(t.x), y: Float(t.y))
+                let pt = SDL_FPoint(
+                    x: renderOrigin.localX(t.x),
+                    y: renderOrigin.localY(t.y))
                 if let last = pts.last {
                     let dx = pt.x - last.x
                     let dy = pt.y - last.y

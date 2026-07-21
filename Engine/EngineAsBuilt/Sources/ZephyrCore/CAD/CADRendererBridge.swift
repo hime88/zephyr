@@ -53,7 +53,11 @@ public final class CADRendererBridge {
     /// Protected by `pendingLock` — written from the background task, read from the render
     /// loop on the main thread. The generation tag lets the render loop discard results from
     /// a superseded tab/edit instead of displaying them.
-    private nonisolated(unsafe) var pendingResults: (generation: Int, results: [EntityResult])? = nil
+    private nonisolated(unsafe) var pendingResults: (
+        generation: Int,
+        renderOrigin: CADRenderOrigin,
+        results: [EntityResult]
+    )? = nil
     private let pendingLock = NSLock()
 
 
@@ -72,9 +76,14 @@ public final class CADRendererBridge {
         generation: Int,
         simplifyComplexBlocks: Bool,
         into geometryManager: GeometryManager,
+        renderOrigin: CADRenderOrigin = .zero,
         splineTessellationDivisor: Double = 5000.0
     ) async {
-        let results = await Self.computeSpecs(fromSnapshot: snapshot, simplifyComplexBlocks: simplifyComplexBlocks, splineTessellationDivisor: splineTessellationDivisor)
+        let results = await Self.computeSpecs(
+            fromSnapshot: snapshot,
+            simplifyComplexBlocks: simplifyComplexBlocks,
+            renderOrigin: renderOrigin,
+            splineTessellationDivisor: splineTessellationDivisor)
         print("[CADBridge] computeSpecs (gen \(generation)) returned \(results.count) entity results")
         // Best-effort early-out: if a newer tab/edit cancelled this task, don't publish.
         // The generation guards below + in applyPendingIfNeeded are the authoritative checks.
@@ -83,7 +92,7 @@ public final class CADRendererBridge {
             // Never let an older generation overwrite results from a newer one that already
             // landed (tasks can finish out of order; the newest generation always wins).
             if let existing = pendingResults, existing.generation >= generation { return }
-            pendingResults = (generation, results)
+            pendingResults = (generation, renderOrigin, results)
         }
     }
 
@@ -95,7 +104,7 @@ public final class CADRendererBridge {
         splineTessellationDivisor: Double = 5000.0,
         engine: PhrostEngine
     ) -> Bool {
-        let applied = pendingLock.withLock { () -> [EntityResult]? in
+        let applied = pendingLock.withLock { () -> (CADRenderOrigin, [EntityResult])? in
             guard let p = pendingResults else { return nil }
             if p.generation != wantGen {
                 // Stale: drop older generations so they can't linger and be applied later.
@@ -105,9 +114,10 @@ public final class CADRendererBridge {
                 return nil
             }
             pendingResults = nil
-            return p.results
+            return (p.renderOrigin, p.results)
         }
-        guard let results = applied else { return false }
+        guard let (renderOrigin, results) = applied else { return false }
+        geometryManager.renderOrigin = renderOrigin
         applySpecs(results, into: geometryManager, engine: engine)
         print("[CADBridge] applySpecs (gen \(wantGen)) done, geomMgr has \(geometryManager.primitiveCount) primitives")
         return true
@@ -279,7 +289,8 @@ public final class CADRendererBridge {
         scale: Double,
         color: ColorRGBA?,
         usesViewportColor: Bool,
-        z: Double
+        z: Double,
+        renderOrigin: CADRenderOrigin
     ) -> PrimitiveSpec? {
         guard scale >= 1.0, usesViewportColor || color != nil else { return nil }
         let bounds = CADEntity.estimateTextLocalBounds(
@@ -299,8 +310,8 @@ public final class CADRendererBridge {
         let sinR = sin(rotation)
         let corners = localCorners.map { local -> SDL_FPoint in
             SDL_FPoint(
-                x: Float(origin.x + local.0 * cosR - local.1 * sinR),
-                y: Float(origin.y + local.0 * sinR + local.1 * cosR))
+                x: renderOrigin.localX(origin.x + local.0 * cosR - local.1 * sinR),
+                y: renderOrigin.localY(origin.y + local.0 * sinR + local.1 * cosR))
         }
         let rgba = color.map { ($0.r, $0.g, $0.b, $0.a) } ?? (0, 0, 0, 255)
         return PrimitiveSpec(
@@ -315,7 +326,12 @@ public final class CADRendererBridge {
 
     /// Pure computation from a value-typed snapshot. Safe for any thread —
     /// the snapshot is an independent copy of all document state.
-    nonisolated static func computeSpecs(fromSnapshot snapshot: CADDocumentSnapshot, simplifyComplexBlocks: Bool, splineTessellationDivisor: Double = 5000.0) async -> [EntityResult] {
+    nonisolated static func computeSpecs(
+        fromSnapshot snapshot: CADDocumentSnapshot,
+        simplifyComplexBlocks: Bool,
+        renderOrigin: CADRenderOrigin = .zero,
+        splineTessellationDivisor: Double = 5000.0
+    ) async -> [EntityResult] {
         var visible:
             [(
                 index: Int, handle: UUID,
@@ -756,7 +772,8 @@ public final class CADRendererBridge {
                                         scale: backgroundScale,
                                         color: backgroundColor,
                                         usesViewportColor: backgroundUsesViewportColor,
-                                        z: primZ - 0.02) {
+                                        z: primZ - 0.02,
+                                        renderOrigin: renderOrigin) {
                                         specs.append(mask)
                                     }
                                 }
@@ -776,6 +793,7 @@ public final class CADRendererBridge {
                                     textStyleFonts: snapshot.textStyleFonts,
                                     linetypePatterns: snapshot.linetypePatterns,
                                     opacityMultiplier: drawStyle.opacityMultiplier,
+                                    renderOrigin: renderOrigin,
                                     splineTessellationDivisor: splineTessellationDivisor)
                                 if s.count > 10000 {
                                     let typeStr: String
@@ -823,7 +841,8 @@ public final class CADRendererBridge {
                                         from: primitive,
                                         transform: v.transform,
                                         z: baseZ + 500000.0,
-                                        tint: drawStyle.color
+                                        tint: drawStyle.color,
+                                        renderOrigin: renderOrigin
                                     ) {
                                         imageSpecs.append(imgSpec)
                                     }
@@ -898,7 +917,8 @@ public final class CADRendererBridge {
                                     scale: backgroundScale,
                                     color: vt.textBackgroundColor,
                                     usesViewportColor: vt.textBackgroundUsesViewportColor,
-                                    z: baseZ - 0.02) {
+                                    z: baseZ - 0.02,
+                                    renderOrigin: renderOrigin) {
                                     specs.append(mask)
                                 }
                                 let textPrims: [CADPrimitive]
@@ -946,6 +966,7 @@ public final class CADRendererBridge {
                                         from: prim, transform: .identity, color: color, z: z,
                                         textStyleFonts: snapshot.textStyleFonts,
                                         linetypePatterns: snapshot.linetypePatterns,
+                                        renderOrigin: renderOrigin,
                                         splineTessellationDivisor: splineTessellationDivisor)
                                     specs.append(contentsOf: s)
                                     z += 0.01
@@ -1147,7 +1168,10 @@ public final class CADRendererBridge {
                 // Use sprite system to render as textured quad
                 engine.spriteManager.addSprite(
                     id1: spriteID.id1, id2: spriteID.id2,
-                    position: (Double(imgSpec.c0.x), Double(imgSpec.c0.y), imgSpec.z),
+                    position: (
+                        geometryManager.renderOrigin.worldX(imgSpec.c0.x),
+                        geometryManager.renderOrigin.worldY(imgSpec.c0.y),
+                        imgSpec.z),
                     size: (w, h),
                     color: spriteColor,
                     texture: texture
@@ -1235,14 +1259,14 @@ public final class CADRendererBridge {
             guard let rp = firstRP(), rp.points.count >= 2 else { return }
             rp.points[0].x += dx
             rp.points[0].y += dy
-            markPrimitiveDirty(rp)
+            markPrimitiveDirty(rp, in: gm)
         }
         func updateLastPointOfLastRP() {
             guard let rp = lastRP(), rp.points.count >= 2 else { return }
             let last = rp.points.count - 1
             rp.points[last].x += dx
             rp.points[last].y += dy
-            markPrimitiveDirty(rp)
+            markPrimitiveDirty(rp, in: gm)
         }
 
         var offset = 0
@@ -1355,9 +1379,11 @@ public final class CADRendererBridge {
                     if let rp = rpForCurrentPrimitive() {
                         rp.points = movedPath.tessellatedPoints().map {
                             let world = entity.transform.transformPoint($0)
-                            return SDL_FPoint(x: Float(world.x), y: Float(world.y))
+                            return SDL_FPoint(
+                                x: gm.renderOrigin.localX(world.x),
+                                y: gm.renderOrigin.localY(world.y))
                         }
-                        markPrimitiveDirty(rp)
+                        markPrimitiveDirty(rp, in: gm)
                     }
                     return
 
@@ -1437,8 +1463,10 @@ public final class CADRendererBridge {
                     let scaleAvg = max(abs(s.x), abs(s.y))
                     let newRadius = scaleAvg > 1e-9 ? newRadiusWorld / scaleAvg : 1.0
                     if let rp = rpForCurrentPrimitive() {
-                        CADGeometryMath.regenCirclePoints(rp: rp, center: newCenterLocal, radius: newRadius, transform: entity.transform)
-                        markPrimitiveDirty(rp)
+                        CADGeometryMath.regenCirclePoints(
+                            rp: rp, center: newCenterLocal, radius: newRadius,
+                            transform: entity.transform, renderOrigin: gm.renderOrigin)
+                        markPrimitiveDirty(rp, in: gm)
                     }
                     writeLiveGeometry(.circle(center: newCenterLocal, radius: newRadius, color: c))
                     return
@@ -1451,8 +1479,11 @@ public final class CADRendererBridge {
                     if localIdx == 0 {
                         let movedCenter = invTransform.transformPoint(newWorldPts[0])
                         if let rp = rpForCurrentPrimitive() {
-                            CADGeometryMath.regenArcPoints(rp: rp, center: movedCenter, radius: radius, startAngle: startAngle, endAngle: endAngle, transform: entity.transform)
-                            markPrimitiveDirty(rp)
+                            CADGeometryMath.regenArcPoints(
+                                rp: rp, center: movedCenter, radius: radius,
+                                startAngle: startAngle, endAngle: endAngle,
+                                transform: entity.transform, renderOrigin: gm.renderOrigin)
+                            markPrimitiveDirty(rp, in: gm)
                         }
                         writeLiveGeometry(.arc(center: movedCenter, radius: radius, startAngle: startAngle, endAngle: endAngle, color: c))
                     } else if localIdx == 1 || localIdx == 2 || localIdx == 3 {
@@ -1485,8 +1516,11 @@ public final class CADRendererBridge {
                         if let solved = CADGeometryMath.circleThroughThreePoints(startLocal, midLocal, endLocal) {
                             let angles = CADGeometryMath.arcAnglesIncludingMid(center: solved.center, start: startLocal, mid: midLocal, end: endLocal)
                             if let rp = rpForCurrentPrimitive() {
-                                CADGeometryMath.regenArcPoints(rp: rp, center: solved.center, radius: solved.radius, startAngle: angles.start, endAngle: angles.end, transform: entity.transform)
-                                markPrimitiveDirty(rp)
+                                CADGeometryMath.regenArcPoints(
+                                    rp: rp, center: solved.center, radius: solved.radius,
+                                    startAngle: angles.start, endAngle: angles.end,
+                                    transform: entity.transform, renderOrigin: gm.renderOrigin)
+                                markPrimitiveDirty(rp, in: gm)
                             }
                             writeLiveGeometry(.arc(center: solved.center, radius: solved.radius, startAngle: angles.start, endAngle: angles.end, color: c))
                         }
@@ -1508,9 +1542,9 @@ public final class CADRendererBridge {
                     if let rp = rpForCurrentPrimitive() {
                         rp.points = evaluated.map {
                             let twp = entity.transform.transformPoint($0)
-                            return SDL_FPoint(x: Float(twp.x), y: Float(twp.y))
+                            return SDL_FPoint(x: gm.renderOrigin.localX(twp.x), y: gm.renderOrigin.localY(twp.y))
                         }
-                        markPrimitiveDirty(rp)
+                        markPrimitiveDirty(rp, in: gm)
                     }
                     writeLiveGeometry(.spline(controlPoints: newLocalCPs, knots: knots, degree: degree, weights: weights, color: c))
                     return
@@ -1539,7 +1573,7 @@ public final class CADRendererBridge {
                                     rp.points[i].x += dx
                                     rp.points[i].y += dy
                                 }
-                                markPrimitiveDirty(rp)
+                                markPrimitiveDirty(rp, in: gm)
                             }
                         }
                     }
@@ -1555,8 +1589,11 @@ public final class CADRendererBridge {
                         let newCenter = invTransform.transformPoint(newWorldPts[0])
                         writeLiveGeometry(.ellipse(center: newCenter, majorAxis: majorAxis, minorRatio: minorRatio, color: c))
                         if let rp = rpForCurrentPrimitive() {
-                            CADGeometryMath.regenEllipseRP(rp, center: newCenter, majorAxis: majorAxis, minorRatio: minorRatio, transform: entity.transform)
-                            markPrimitiveDirty(rp)
+                            CADGeometryMath.regenEllipseRP(
+                                rp, center: newCenter, majorAxis: majorAxis,
+                                minorRatio: minorRatio, transform: entity.transform,
+                                renderOrigin: gm.renderOrigin)
+                            markPrimitiveDirty(rp, in: gm)
                         }
                     } else {
                         // Move quadrant point — recompute majorAxis and minorRatio
@@ -1580,8 +1617,11 @@ public final class CADRendererBridge {
                         }
                         writeLiveGeometry(.ellipse(center: center, majorAxis: newMajorAxis, minorRatio: newMinorRatio, color: c))
                         if let rp = rpForCurrentPrimitive() {
-                            CADGeometryMath.regenEllipseRP(rp, center: center, majorAxis: newMajorAxis, minorRatio: newMinorRatio, transform: entity.transform)
-                            markPrimitiveDirty(rp)
+                            CADGeometryMath.regenEllipseRP(
+                                rp, center: center, majorAxis: newMajorAxis,
+                                minorRatio: newMinorRatio, transform: entity.transform,
+                                renderOrigin: gm.renderOrigin)
+                            markPrimitiveDirty(rp, in: gm)
                         }
                     }
                     return
@@ -1599,7 +1639,7 @@ public final class CADRendererBridge {
                     if let rp = rpForCurrentPrimitive(), localIdx < rp.points.count {
                         rp.points[localIdx].x += dx
                         rp.points[localIdx].y += dy
-                        markPrimitiveDirty(rp)
+                        markPrimitiveDirty(rp, in: gm)
                     }
                     return
 
@@ -1631,7 +1671,7 @@ public final class CADRendererBridge {
                         if let rp = rpForCurrentPrimitive(), 0 < rp.points.count {
                             rp.points[0].x += dx
                             rp.points[0].y += dy
-                            markPrimitiveDirty(rp)
+                            markPrimitiveDirty(rp, in: gm)
                         }
                     } else {
                         let ws = newWorldPts[0]
@@ -1643,7 +1683,7 @@ public final class CADRendererBridge {
                         if let rp = rpForCurrentPrimitive(), localIdx < rp.points.count {
                             rp.points[localIdx].x += dx
                             rp.points[localIdx].y += dy
-                            markPrimitiveDirty(rp)
+                            markPrimitiveDirty(rp, in: gm)
                         }
                     }
                     return
@@ -1908,6 +1948,7 @@ public final class CADRendererBridge {
             geomWidth: style.geomWidth,
             linetypePatterns: document.linetypePatterns,
             opacityMultiplier: style.layerOpacity,
+            renderOrigin: gm.renderOrigin,
             splineTessellationDivisor: 5000.0
         )
 
@@ -1926,8 +1967,8 @@ public final class CADRendererBridge {
         return true
     }
 
-    private func markPrimitiveDirty(_ rp: RenderPrimitive) {
-        rp.computeWorldBounds()
+    private func markPrimitiveDirty(_ rp: RenderPrimitive, in gm: GeometryManager) {
+        rp.computeWorldBounds(renderOrigin: gm.renderOrigin)
         rp.cameraGenerationPoints = -1
         rp.cameraGenerationRects = -1
         rp.cameraGenerationCorners = -1

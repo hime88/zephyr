@@ -374,6 +374,13 @@ public final class EngineTextManager {
             return ([], [])
         }
 
+        let renderOrigin = geometryManager.renderOrigin
+        func localPoint(_ point: Vector3) -> SDL_FPoint {
+            SDL_FPoint(
+                x: renderOrigin.localX(point.x),
+                y: renderOrigin.localY(point.y))
+        }
+
         let metrics = cadFontMetrics(for: font)
         let worldScale = height / metrics.capHeightPixels
         let horizontalWorldScale = worldScale * max(widthFactor, 1e-9)
@@ -499,7 +506,7 @@ public final class EngineTextManager {
                 ]
                 let corners = localCorners.map { corner in
                     let point = worldPoint(localX: corner.0, localY: corner.1)
-                    return SDL_FPoint(x: Float(point.x), y: Float(point.y))
+                    return localPoint(point)
                 }
                 let maskID = geometryManager.addFillCorners(
                     corners,
@@ -554,8 +561,8 @@ public final class EngineTextManager {
                 let a = corners[cornerIndex]
                 let b = corners[(cornerIndex + 1) % 4]
                 let proxyID = geometryManager.addLine(
-                    x1: Float(a.x), y1: Float(a.y),
-                    x2: Float(b.x), y2: Float(b.y),
+                    x1: renderOrigin.localX(a.x), y1: renderOrigin.localY(a.y),
+                    x2: renderOrigin.localX(b.x), y2: renderOrigin.localY(b.y),
                     z: z,
                     color: color)
                 if let proxy = geometryManager.getPrimitive(id: proxyID) {
@@ -649,10 +656,10 @@ public final class EngineTextManager {
                 let p2 = worldPoint(localX: x2, localY: underlineY)
 
                 let underlineID = geometryManager.addLine(
-                    x1: Float(p1.x),
-                    y1: Float(p1.y),
-                    x2: Float(p2.x),
-                    y2: Float(p2.y),
+                    x1: renderOrigin.localX(p1.x),
+                    y1: renderOrigin.localY(p1.y),
+                    x2: renderOrigin.localX(p2.x),
+                    y2: renderOrigin.localY(p2.y),
                     z: z + 0.01,
                     color: color)
                 primitiveIDs.append(underlineID)

@@ -227,9 +227,13 @@ public final class EngineCameraManager {
     ///   - windowW: The width of the viewport.
     ///   - windowH: The height of the viewport.
     /// - Returns: A column-major array of 16 floats representing the 4x4 projection matrix.
-    internal func computeMatrix(windowW: Double, windowH: Double) -> [Float] {
-        let camX = offset.x
-        let camY = offset.y
+    internal func computeMatrix(
+        windowW: Double,
+        windowH: Double,
+        renderOrigin: CADRenderOrigin = .zero
+    ) -> [Float] {
+        let camX = offset.x - renderOrigin.x
+        let camY = offset.y - renderOrigin.y
         let camZoom = zoom
         let cosR = cos(-rotation)
         let sinR = sin(-rotation)
@@ -254,8 +258,16 @@ public final class EngineCameraManager {
     /// This creates a tiny logical viewport (e.g. 9x9 pixels) centered around the mouse cursor,
     /// so the GPU only rasterizes and tests geometry immediately under the mouse.
     /// This is a massive performance optimization over reading back the entire screen buffer.
-    internal func computePickMatrix(cursorScreenX: Float, cursorScreenY: Float, windowWidth: Int32, windowHeight: Int32) -> [Float] {
+    internal func computePickMatrix(
+        cursorScreenX: Float,
+        cursorScreenY: Float,
+        windowWidth: Int32,
+        windowHeight: Int32,
+        renderOrigin: CADRenderOrigin = .zero
+    ) -> [Float] {
         let (worldCX, worldCY) = screenToWorld(screenX: cursorScreenX, screenY: cursorScreenY, windowWidth: windowWidth, windowHeight: windowHeight)
+        let localCX = worldCX - renderOrigin.x
+        let localCY = worldCY - renderOrigin.y
         let cosR = cos(-rotation)
         let sinR = sin(-rotation)
 
@@ -264,11 +276,11 @@ public final class EngineCameraManager {
 
         let a = Float(2.0 * zoom * cosR / ww)
         let b = Float(-2.0 * zoom * sinR / ww)
-        let c = Float(-2.0 * zoom * (worldCX * cosR - worldCY * sinR) / ww)
+        let c = Float(-2.0 * zoom * (localCX * cosR - localCY * sinR) / ww)
 
         let d = Float(-2.0 * zoom * sinR / wh)
         let e = Float(-2.0 * zoom * cosR / wh)
-        let f = Float(2.0 * zoom * (worldCX * sinR + worldCY * cosR) / wh)
+        let f = Float(2.0 * zoom * (localCX * sinR + localCY * cosR) / wh)
 
         return [
             a, d, 0.0, 0.0,

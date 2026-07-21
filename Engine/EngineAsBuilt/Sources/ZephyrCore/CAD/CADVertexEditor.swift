@@ -91,7 +91,10 @@ public final class CADVertexEditor {
             // Read world positions from render primitive, transform back to local
             var localPts: [Vector3] = []
             for p in rp.points {
-                let world = Vector3(x: Double(p.x), y: Double(p.y), z: 0)
+                let world = Vector3(
+                    x: gm.renderOrigin.worldX(p.x),
+                    y: gm.renderOrigin.worldY(p.y),
+                    z: 0)
                 localPts.append(invTransform.transformPoint(world))
             }
 
@@ -206,8 +209,11 @@ public final class CADVertexEditor {
             guard count > 0 else { break }
 
             for i in 0..<count {
-                body(Double(pts[i].x), Double(pts[i].y),
-                     Double(pts[i + 1].x), Double(pts[i + 1].y))
+                body(
+                    gm.renderOrigin.worldX(pts[i].x),
+                    gm.renderOrigin.worldY(pts[i].y),
+                    gm.renderOrigin.worldX(pts[i + 1].x),
+                    gm.renderOrigin.worldY(pts[i + 1].y))
             }
             emitted += count
         }
@@ -221,8 +227,8 @@ public final class CADVertexEditor {
         handles: Set<UUID>, around center: (Double, Double),
         angleDelta: Double, in gm: GeometryManager
     ) {
-        let cx = Float(center.0)
-        let cy = Float(center.1)
+        let cx = gm.renderOrigin.localX(center.0)
+        let cy = gm.renderOrigin.localY(center.1)
         let cosR = Float(cos(angleDelta))
         let sinR = Float(sin(angleDelta))
         for handle in handles {
@@ -251,7 +257,7 @@ public final class CADVertexEditor {
                 }
                 for i in 0..<prim.corners.count { rotate(&prim.corners[i]) }
                 // Bounds: recompute lazily — just invalidate
-                prim.worldMinX = nil  // forces lazy recompute on next access
+                prim.computeWorldBounds(renderOrigin: gm.renderOrigin)
                 prim.cameraGenerationPoints = -1
                 prim.cameraGenerationRects = -1
                 prim.cameraGenerationCorners = -1
@@ -266,8 +272,8 @@ public final class CADVertexEditor {
         handles: Set<UUID>, around center: (Double, Double),
         factor: Double, in gm: GeometryManager
     ) {
-        let cx = Float(center.0)
-        let cy = Float(center.1)
+        let cx = gm.renderOrigin.localX(center.0)
+        let cy = gm.renderOrigin.localY(center.1)
         let f = Float(factor)
         for handle in handles {
             guard let ids = bridge.entityPrimitiveMap[handle] else { continue }
@@ -291,7 +297,7 @@ public final class CADVertexEditor {
                     prim.rects[i] = r
                 }
                 for i in 0..<prim.corners.count { scale(&prim.corners[i]) }
-                prim.worldMinX = nil
+                prim.computeWorldBounds(renderOrigin: gm.renderOrigin)
                 prim.cameraGenerationPoints = -1
                 prim.cameraGenerationRects = -1
                 prim.cameraGenerationCorners = -1

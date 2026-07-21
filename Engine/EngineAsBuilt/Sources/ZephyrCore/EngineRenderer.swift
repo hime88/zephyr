@@ -303,6 +303,18 @@ public final class EngineRenderer {
             print("[Loop] regen needed for generation \(wantGen), launching task")
             engine._regenerationTask?.cancel()
             let docSnapshot = activeDoc.snapshot()
+            let renderOrigin: CADRenderOrigin = {
+                guard let bounds = activeDoc.renderableWorldBoundingBox(visibleLayersOnly: false) else {
+                    return .zero
+                }
+                let centerX = (bounds.min.x + bounds.max.x) * 0.5
+                let centerY = (bounds.min.y + bounds.max.y) * 0.5
+                guard centerX.isFinite, centerY.isFinite else { return .zero }
+                let quantum = 1024.0
+                return CADRenderOrigin(
+                    x: (centerX / quantum).rounded() * quantum,
+                    y: (centerY / quantum).rounded() * quantum)
+            }()
             engine._regenerationInFlight = wantGen
             let inBlockEditor = engine.tabManager.activeTab?.editingBlockID != nil
             let simplify = inBlockEditor ? false : engine.simplifyComplexBlocks
@@ -314,6 +326,7 @@ public final class EngineRenderer {
                     generation: wantGen,
                     simplifyComplexBlocks: simplify,
                     into: engine.geometryManager,
+                    renderOrigin: renderOrigin,
                     splineTessellationDivisor: tessDiv
                 )
             }
@@ -673,7 +686,12 @@ public final class EngineRenderer {
                     SDL_BindGPUVertexBuffers(pickPass, 0, &vertexBinding, 1)
 
                     // Upload pick matrix (9×9 viewport centered on cursor)
-                    var pickMatrix = engine.camera.computePickMatrix(cursorScreenX: pickX, cursorScreenY: pickY, windowWidth: engine.windowWidth, windowHeight: engine.windowHeight)
+                    var pickMatrix = engine.camera.computePickMatrix(
+                        cursorScreenX: pickX,
+                        cursorScreenY: pickY,
+                        windowWidth: engine.windowWidth,
+                        windowHeight: engine.windowHeight,
+                        renderOrigin: engine.geometryManager.renderOrigin)
                     SDL_PushGPUVertexUniformData(pickCmd, 0, &pickMatrix, UInt32(pickMatrix.count * 4))
 
                     // Draw all batches with appropriate ID pipeline per primitive type
@@ -764,7 +782,10 @@ public final class EngineRenderer {
                     var vertexBinding = SDL_GPUBufferBinding(buffer: vertexBuf, offset: 0)
                     SDL_BindGPUVertexBuffers(renderPass, 0, &vertexBinding, 1)
 
-                    let cameraMatrix = engine.camera.computeMatrix(windowW: Double(engine.windowWidth), windowH: Double(engine.windowHeight))
+                    let cameraMatrix = engine.camera.computeMatrix(
+                        windowW: Double(engine.windowWidth),
+                        windowH: Double(engine.windowHeight),
+                        renderOrigin: engine.geometryManager.renderOrigin)
                     
                     var uniformData = CameraUniformData()
                     uniformData.m00 = cameraMatrix[0]; uniformData.m01 = cameraMatrix[1]; uniformData.m02 = cameraMatrix[2]; uniformData.m03 = cameraMatrix[3]

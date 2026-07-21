@@ -411,7 +411,8 @@ public enum CADGeometryMath {
 
     /// Regenerate tessellated circle points from local parameters + world transform.
     public static func regenCirclePoints(
-        rp: RenderPrimitive, center: Vector3, radius: Double, transform: Transform3D
+        rp: RenderPrimitive, center: Vector3, radius: Double, transform: Transform3D,
+        renderOrigin: CADRenderOrigin = .zero
     ) {
         let segments = 32
         var pts: [SDL_FPoint] = []
@@ -421,7 +422,9 @@ public enum CADGeometryMath {
             let local = Vector3(x: center.x + cos(angle) * radius,
                                 y: center.y + sin(angle) * radius, z: center.z)
             let wp = transform.transformPoint(local)
-            pts.append(SDL_FPoint(x: Float(wp.x), y: Float(wp.y)))
+            pts.append(SDL_FPoint(
+                x: renderOrigin.localX(wp.x),
+                y: renderOrigin.localY(wp.y)))
         }
         rp.points = pts
     }
@@ -431,7 +434,8 @@ public enum CADGeometryMath {
     /// Regenerate tessellated ellipse points from local parameters + world transform.
     public static func regenEllipseRP(
         _ rp: RenderPrimitive, center: Vector3, majorAxis: Vector3,
-        minorRatio: Double, transform: Transform3D
+        minorRatio: Double, transform: Transform3D,
+        renderOrigin: CADRenderOrigin = .zero
     ) {
         let segments = 64
         let majorLen = majorAxis.magnitude
@@ -449,7 +453,9 @@ public enum CADGeometryMath {
             let ry = px * sinRot + py * cosRot + center.y
             let local = Vector3(x: rx, y: ry, z: center.z)
             let wp = transform.transformPoint(local)
-            pts.append(SDL_FPoint(x: Float(wp.x), y: Float(wp.y)))
+            pts.append(SDL_FPoint(
+                x: renderOrigin.localX(wp.x),
+                y: renderOrigin.localY(wp.y)))
         }
         rp.points = pts
     }
@@ -457,7 +463,8 @@ public enum CADGeometryMath {
     /// Regenerate tessellated arc points from local parameters + world transform.
     public static func regenArcPoints(
         rp: RenderPrimitive, center: Vector3, radius: Double,
-        startAngle: Double, endAngle: Double, transform: Transform3D
+        startAngle: Double, endAngle: Double, transform: Transform3D,
+        renderOrigin: CADRenderOrigin = .zero
     ) {
         let segments = 16
         var span = endAngle - startAngle
@@ -470,14 +477,21 @@ public enum CADGeometryMath {
             let local = Vector3(x: center.x + cos(angle) * radius,
                                 y: center.y + sin(angle) * radius, z: center.z)
             let wp = transform.transformPoint(local)
-            pts.append(SDL_FPoint(x: Float(wp.x), y: Float(wp.y)))
+            pts.append(SDL_FPoint(
+                x: renderOrigin.localX(wp.x),
+                y: renderOrigin.localY(wp.y)))
         }
         rp.points = pts
     }
 
 
     /// Compute 4 world-space corners of a rect after applying the full transform (including rotation).
-    public static func getRotatedCorners(origin: Vector3, size: Vector3, transform: Transform3D)
+    public static func getRotatedCorners(
+        origin: Vector3,
+        size: Vector3,
+        transform: Transform3D,
+        renderOrigin: CADRenderOrigin = .zero
+    )
         -> [SDL_FPoint]
     {
         let c1 = transform.transformPoint(origin)
@@ -486,10 +500,10 @@ public enum CADGeometryMath {
             Vector3(x: origin.x + size.x, y: origin.y + size.y, z: origin.z))
         let c4 = transform.transformPoint(Vector3(x: origin.x, y: origin.y + size.y, z: origin.z))
         return [
-            SDL_FPoint(x: Float(c1.x), y: Float(c1.y)),
-            SDL_FPoint(x: Float(c2.x), y: Float(c2.y)),
-            SDL_FPoint(x: Float(c3.x), y: Float(c3.y)),
-            SDL_FPoint(x: Float(c4.x), y: Float(c4.y)),
+            SDL_FPoint(x: renderOrigin.localX(c1.x), y: renderOrigin.localY(c1.y)),
+            SDL_FPoint(x: renderOrigin.localX(c2.x), y: renderOrigin.localY(c2.y)),
+            SDL_FPoint(x: renderOrigin.localX(c3.x), y: renderOrigin.localY(c3.y)),
+            SDL_FPoint(x: renderOrigin.localX(c4.x), y: renderOrigin.localY(c4.y)),
         ]
     }
 

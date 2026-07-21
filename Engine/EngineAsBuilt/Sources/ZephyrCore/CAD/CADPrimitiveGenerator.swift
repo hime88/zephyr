@@ -134,13 +134,15 @@ import SwiftSDL
             let effectiveColor = usesViewportBackground
                 ? (viewportBackground ?? color)
                 : color
+            let worldZeroX = gm.renderOrigin.localX(0.0)
+            let worldZeroY = gm.renderOrigin.localY(0.0)
             let id: SpriteID
             switch type {
             case .point:
                 if let p = points.first {
                     id = gm.addPoint(x: p.x, y: p.y, z: z, color: effectiveColor)
                 } else {
-                    id = gm.addPoint(x: 0, y: 0, z: z, color: effectiveColor)
+                    id = gm.addPoint(x: worldZeroX, y: worldZeroY, z: z, color: effectiveColor)
                 }
             case .line:
                 if points.count >= 2 {
@@ -149,7 +151,7 @@ import SwiftSDL
                         x2: points[1].x, y2: points[1].y,
                         z: z, color: effectiveColor)
                 } else {
-                    id = gm.addPoint(x: 0, y: 0, z: z, color: effectiveColor)
+                    id = gm.addPoint(x: worldZeroX, y: worldZeroY, z: z, color: effectiveColor)
                 }
             case .lines:
                 id = gm.addLines(points, z: z, color: effectiveColor)
@@ -161,7 +163,7 @@ import SwiftSDL
                         x: r.x, y: r.y, w: r.w, h: r.h,
                         z: z, color: effectiveColor)
                 } else {
-                    id = gm.addPoint(x: 0, y: 0, z: z, color: effectiveColor)
+                    id = gm.addPoint(x: worldZeroX, y: worldZeroY, z: z, color: effectiveColor)
                 }
             case .fillRects:
                 if let r = rects.first {
@@ -169,7 +171,7 @@ import SwiftSDL
                         x: r.x, y: r.y, w: r.w, h: r.h,
                         z: z, color: effectiveColor)
                 } else {
-                    id = gm.addPoint(x: 0, y: 0, z: z, color: effectiveColor)
+                    id = gm.addPoint(x: worldZeroX, y: worldZeroY, z: z, color: effectiveColor)
                 }
             case .rect:
                 if !corners.isEmpty {
@@ -179,10 +181,10 @@ import SwiftSDL
                         x: r.x, y: r.y, w: r.w, h: r.h,
                         z: z, color: effectiveColor)
                 } else {
-                    id = gm.addPoint(x: 0, y: 0, z: z, color: effectiveColor)
+                    id = gm.addPoint(x: worldZeroX, y: worldZeroY, z: z, color: effectiveColor)
                 }
             case .points, .rects:
-                id = gm.addPoint(x: 0, y: 0, z: z, color: effectiveColor)
+                id = gm.addPoint(x: worldZeroX, y: worldZeroY, z: z, color: effectiveColor)
             }
             if let prim = gm.getPrimitive(id: id) {
                 prim.lineWeight = lineWeight
@@ -324,6 +326,7 @@ public enum CADPrimitiveGenerator {
         textStyleFonts: [String: String] = [:],
         linetypePatterns: [String: [Double]] = [:],
         opacityMultiplier: Double = 1.0,
+        renderOrigin: CADRenderOrigin = .zero,
         splineTessellationDivisor: Double = 5000.0
     ) -> [PrimitiveSpec] {
         // Extract primitive color override if present
@@ -359,6 +362,13 @@ public enum CADPrimitiveGenerator {
         let planarScale = (abs(transform.scale.x) + abs(transform.scale.y)) * 0.5
         let geometryScale = planarScale.isFinite && planarScale > 1e-12 ? planarScale : 1.0
         let transformedGeomWidth = geomWidth > 0.0 ? geomWidth * geometryScale : 0.0
+
+        @inline(__always)
+        func renderPoint(_ point: Vector3) -> SDL_FPoint {
+            SDL_FPoint(
+                x: renderOrigin.localX(point.x),
+                y: renderOrigin.localY(point.y))
+        }
 
         func makeLineSpec(p1: SDL_FPoint, p2: SDL_FPoint, weight: Double, z: Double, color: (UInt8, UInt8, UInt8, UInt8)) -> PrimitiveSpec {
             return PrimitiveSpec(type: .line, points: [p1, p2], rects: [], corners: [], z: z, color: color, lineWeight: weight, geomWidth: transformedGeomWidth)
@@ -551,15 +561,15 @@ public enum CADPrimitiveGenerator {
             specs.append(
                 PrimitiveSpec(
                     type: .point,
-                    points: [SDL_FPoint(x: Float(wp.x), y: Float(wp.y))],
+                    points: [renderPoint(wp)],
                     rects: [], corners: [], z: z, color: finalColor))
 
         case .line(let start, let end, _):
             let ws = transform.transformPoint(start)
             let we = transform.transformPoint(end)
             let pts = [
-                SDL_FPoint(x: Float(ws.x), y: Float(ws.y)),
-                SDL_FPoint(x: Float(we.x), y: Float(we.y)),
+                renderPoint(ws),
+                renderPoint(we),
             ]
             specs.append(contentsOf: makePathSpecs(points: pts, dashPattern: dashPattern, scale: lineTypeScale, weight: lineWeight, z: z, color: finalColor))
 
@@ -569,11 +579,11 @@ public enum CADPrimitiveGenerator {
             let c3 = transform.transformPoint(Vector3(x: origin.x + size.x, y: origin.y + size.y, z: origin.z))
             let c4 = transform.transformPoint(Vector3(x: origin.x, y: origin.y + size.y, z: origin.z))
             let pts = [
-                SDL_FPoint(x: Float(c1.x), y: Float(c1.y)),
-                SDL_FPoint(x: Float(c2.x), y: Float(c2.y)),
-                SDL_FPoint(x: Float(c3.x), y: Float(c3.y)),
-                SDL_FPoint(x: Float(c4.x), y: Float(c4.y)),
-                SDL_FPoint(x: Float(c1.x), y: Float(c1.y)),
+                renderPoint(c1),
+                renderPoint(c2),
+                renderPoint(c3),
+                renderPoint(c4),
+                renderPoint(c1),
             ]
             specs.append(contentsOf: makePathSpecs(points: pts, dashPattern: dashPattern, scale: lineTypeScale, weight: lineWeight, z: z, color: finalColor))
 
@@ -590,17 +600,17 @@ public enum CADPrimitiveGenerator {
                     type: .fillRect,
                     points: [], rects: [],
                     corners: [
-                        SDL_FPoint(x: Float(c1.x), y: Float(c1.y)),
-                        SDL_FPoint(x: Float(c2.x), y: Float(c2.y)),
-                        SDL_FPoint(x: Float(c3.x), y: Float(c3.y)),
-                        SDL_FPoint(x: Float(c4.x), y: Float(c4.y)),
+                        renderPoint(c1),
+                        renderPoint(c2),
+                        renderPoint(c3),
+                        renderPoint(c4),
                     ],
                     z: z, color: finalColor))
 
         case .polygon(let points, _):
             var wp = points.map { p -> SDL_FPoint in
                 let t = transform.transformPoint(p)
-                return SDL_FPoint(x: Float(t.x), y: Float(t.y))
+                return renderPoint(t)
             }
             if let first = wp.first {
                 wp.append(first)
@@ -634,14 +644,14 @@ public enum CADPrimitiveGenerator {
 
                     let worldPoints = localPoints.map { point -> SDL_FPoint in
                         let transformed = transform.transformPoint(point)
-                        return SDL_FPoint(x: Float(transformed.x), y: Float(transformed.y))
+                        return renderPoint(transformed)
                     }
                     specs.append(contentsOf: makePathSpecs(points: worldPoints, dashPattern: dashPattern, scale: lineTypeScale, weight: lineWeight, z: z, color: finalColor))
                 }
             } else {
                 let wp = path.tessellatedPoints().map { p -> SDL_FPoint in
                     let t = transform.transformPoint(p)
-                    return SDL_FPoint(x: Float(t.x), y: Float(t.y))
+                    return renderPoint(t)
                 }
                 specs.append(contentsOf: makePathSpecs(points: wp, dashPattern: dashPattern, scale: lineTypeScale, weight: lineWeight, z: z, color: finalColor))
             }
@@ -649,7 +659,7 @@ public enum CADPrimitiveGenerator {
         case .fillPolygon(let points, _):
             let wp = points.map { p -> SDL_FPoint in
                 let t = transform.transformPoint(p)
-                return SDL_FPoint(x: Float(t.x), y: Float(t.y))
+                return renderPoint(t)
             }
             let triangles = CADTessellator.triangulatePolygon(wp)
             specs.append(
@@ -658,7 +668,9 @@ public enum CADPrimitiveGenerator {
                     points: [], rects: [], corners: triangles, z: z, color: finalColor))
 
         case .fillComplexPolygon(let outer, let holes, _):
-            let s = CADTessellator.computeMultiLoopFillSpecs(outer: outer, holes: holes, transform: transform, color: finalColor, z: z)
+            let s = CADTessellator.computeMultiLoopFillSpecs(
+                outer: outer, holes: holes, transform: transform,
+                color: finalColor, z: z, renderOrigin: renderOrigin)
             specs.append(s)
 
         case .gradient(let outer, let holes, _, let gradAngle, let c1, let c2):
@@ -669,7 +681,8 @@ public enum CADPrimitiveGenerator {
             let s = CADTessellator.computeGradientFillSpecs(
                 outer: outer, holes: holes, transform: transform,
                 color1: gradColor1, color2: gradColor2,
-                angle: effectiveAngle, z: z)
+                angle: effectiveAngle, z: z,
+                renderOrigin: renderOrigin)
             specs.append(contentsOf: s)
 
         case .circle(let center, let radius, _):
@@ -681,7 +694,7 @@ public enum CADPrimitiveGenerator {
                     x: center.x + cos(angle) * radius,
                     y: center.y + sin(angle) * radius, z: center.z)
                 let wp = transform.transformPoint(local)
-                pts.append(SDL_FPoint(x: Float(wp.x), y: Float(wp.y)))
+                pts.append(renderPoint(wp))
             }
             specs.append(contentsOf: makePathSpecs(points: pts, dashPattern: dashPattern, scale: lineTypeScale, weight: lineWeight, z: z, color: finalColor))
 
@@ -698,7 +711,7 @@ public enum CADPrimitiveGenerator {
                     x: center.x + cos(angle) * radius,
                     y: center.y + sin(angle) * radius, z: center.z)
                 let wp = transform.transformPoint(local)
-                pts.append(SDL_FPoint(x: Float(wp.x), y: Float(wp.y)))
+                pts.append(renderPoint(wp))
             }
             specs.append(contentsOf: makePathSpecs(points: pts, dashPattern: dashPattern, scale: lineTypeScale, weight: lineWeight, z: z, color: finalColor))
 
@@ -725,7 +738,7 @@ public enum CADPrimitiveGenerator {
                 maxDepth: 10,
                 maxSegments: 4096)
             guard evaluated.count >= 2 else { break }
-            let pts = evaluated.map { SDL_FPoint(x: Float($0.x), y: Float($0.y)) }
+            let pts = evaluated.map { renderPoint($0) }
             specs.append(contentsOf: makePathSpecs(points: pts, dashPattern: dashPattern, scale: lineTypeScale, weight: lineWeight, z: z, color: finalColor))
             
         case .text(let pos, let text, let height, let rotation, let style, let alignH, let alignV, let mtextWidth, _):
@@ -777,7 +790,8 @@ public enum CADPrimitiveGenerator {
                         lineTypeScale: lineTypeScale,
                         geomWidth: geomWidth,
                         textStyleFonts: textStyleFonts,
-                        linetypePatterns: linetypePatterns
+                        linetypePatterns: linetypePatterns,
+                        renderOrigin: renderOrigin
                     )
                     localSpecs.append(contentsOf: s)
                     localZ += 0.01
@@ -804,7 +818,7 @@ public enum CADPrimitiveGenerator {
                 let ry = px * sinRot + py * cosRot + center.y
                 let local = Vector3(x: rx, y: ry, z: center.z)
                 let wp = transform.transformPoint(local)
-                pts.append(SDL_FPoint(x: Float(wp.x), y: Float(wp.y)))
+                pts.append(renderPoint(wp))
             }
             specs.append(contentsOf: makePathSpecs(points: pts, dashPattern: dashPattern, scale: lineTypeScale, weight: lineWeight, z: z, color: finalColor))
 
@@ -822,7 +836,8 @@ public enum CADPrimitiveGenerator {
                     holes: hatchLoops.holes,
                     transform: transform,
                     color: bgColor,
-                    z: backgroundZ))
+                    z: backgroundZ,
+                    renderOrigin: renderOrigin))
             }
             if pattern.uppercased() == "SOLID" || pattern.isEmpty {
                 specs.append(CADTessellator.computeMultiLoopFillSpecs(
@@ -830,7 +845,8 @@ public enum CADPrimitiveGenerator {
                     holes: hatchLoops.holes,
                     transform: transform,
                     color: finalColor,
-                    z: foregroundZ))
+                    z: foregroundZ,
+                    renderOrigin: renderOrigin))
             } else {
                 // Patterned hatch: generate line pattern with zoom-aware adaptive spacing.
                 // When zoomed out, scale up spacing so hatch lines don't explode primitive count
@@ -858,8 +874,8 @@ public enum CADPrimitiveGenerator {
                     case .line(let s, let e, _):
                         specs.append(PrimitiveSpec(
                             type: .line,
-                            points: [SDL_FPoint(x: Float(s.x), y: Float(s.y)),
-                                     SDL_FPoint(x: Float(e.x), y: Float(e.y))],
+                            points: [renderPoint(s),
+                                     renderPoint(e)],
                             rects: [], corners: [],
                             z: foregroundZ, color: finalColor,
                             lineWeight: 0.0, geomWidth: 0.0,
@@ -868,7 +884,7 @@ public enum CADPrimitiveGenerator {
                     case .point(let p, _):
                         specs.append(PrimitiveSpec(
                             type: .point,
-                            points: [SDL_FPoint(x: Float(p.x), y: Float(p.y))],
+                            points: [renderPoint(p)],
                             rects: [], corners: [],
                             z: foregroundZ, color: finalColor,
                             lineWeight: 0.0, geomWidth: 0.0,
@@ -895,7 +911,8 @@ public enum CADPrimitiveGenerator {
                     holes: holes,
                     transform: transform,
                     color: bgColor,
-                    z: backgroundZ))
+                    z: backgroundZ,
+                    renderOrigin: renderOrigin))
             }
             if pattern.uppercased() == "SOLID" || pattern.isEmpty {
                 specs.append(CADTessellator.computeMultiLoopFillSpecs(
@@ -903,7 +920,8 @@ public enum CADPrimitiveGenerator {
                     holes: holes,
                     transform: transform,
                     color: finalColor,
-                    z: foregroundZ))
+                    z: foregroundZ,
+                    renderOrigin: renderOrigin))
             } else {
                 let transformedOuter = outer.map { transform.transformPoint($0) }
                 let transformedHoles = holes.map { $0.map { transform.transformPoint($0) } }
@@ -927,8 +945,8 @@ public enum CADPrimitiveGenerator {
                     case .line(let s, let e, _):
                         specs.append(PrimitiveSpec(
                             type: .line,
-                            points: [SDL_FPoint(x: Float(s.x), y: Float(s.y)),
-                                     SDL_FPoint(x: Float(e.x), y: Float(e.y))],
+                            points: [renderPoint(s),
+                                     renderPoint(e)],
                             rects: [], corners: [],
                             z: foregroundZ, color: finalColor,
                             lineWeight: 0.0, geomWidth: 0.0,
@@ -937,7 +955,7 @@ public enum CADPrimitiveGenerator {
                     case .point(let p, _):
                         specs.append(PrimitiveSpec(
                             type: .point,
-                            points: [SDL_FPoint(x: Float(p.x), y: Float(p.y))],
+                            points: [renderPoint(p)],
                             rects: [], corners: [],
                             z: foregroundZ, color: finalColor,
                             lineWeight: 0.0, geomWidth: 0.0,
@@ -957,8 +975,8 @@ public enum CADPrimitiveGenerator {
             guard dirNorm > 1e-12 else { break }
             let unitDir = Vector3(x: direction.x / dirNorm, y: direction.y / dirNorm, z: 0)
             let farEndWorld = Vector3(x: ws.x + unitDir.x * 100_000, y: ws.y + unitDir.y * 100_000, z: ws.z)
-            let p1 = SDL_FPoint(x: Float(ws.x), y: Float(ws.y))
-            let p2 = SDL_FPoint(x: Float(farEndWorld.x), y: Float(farEndWorld.y))
+            let p1 = renderPoint(ws)
+            let p2 = renderPoint(farEndWorld)
             specs.append(makeLineSpec(p1: p1, p2: p2, weight: lineWeight, z: z, color: finalColor))
 
         case .image:
@@ -980,6 +998,7 @@ public enum CADPrimitiveGenerator {
                     textStyleFonts: textStyleFonts,
                     linetypePatterns: linetypePatterns,
                     opacityMultiplier: opacityMultiplier,
+                    renderOrigin: renderOrigin,
                     splineTessellationDivisor: splineTessellationDivisor))
             }
         }
@@ -1075,7 +1094,8 @@ public enum CADPrimitiveGenerator {
         from primitive: CADPrimitive,
         transform: Transform3D,
         z: Double,
-        tint: ColorRGBA?
+        tint: ColorRGBA?,
+        renderOrigin: CADRenderOrigin = .zero
     ) -> ImageSpec? {
         guard case .image(let insertion, let uAxis, let vAxis, let imageName, _, let primTint) = primitive else {
             return nil
@@ -1092,12 +1112,17 @@ public enum CADPrimitiveGenerator {
             guard let t = t else { return nil }
             return (t.r, t.g, t.b, t.a)
         }()
+        func renderPoint(_ point: Vector3) -> SDL_FPoint {
+            SDL_FPoint(
+                x: renderOrigin.localX(point.x),
+                y: renderOrigin.localY(point.y))
+        }
         return ImageSpec(
             imageName: imageName,
-            c0: SDL_FPoint(x: Float(c0.x), y: Float(c0.y)),
-            c1: SDL_FPoint(x: Float(c1.x), y: Float(c1.y)),
-            c2: SDL_FPoint(x: Float(c2.x), y: Float(c2.y)),
-            c3: SDL_FPoint(x: Float(c3.x), y: Float(c3.y)),
+            c0: renderPoint(c0),
+            c1: renderPoint(c1),
+            c2: renderPoint(c2),
+            c3: renderPoint(c3),
             z: z,
             tint: effectiveTint
         )

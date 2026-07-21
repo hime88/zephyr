@@ -8,6 +8,38 @@
 
 import Foundation
 
+public struct CADRenderOrigin: Sendable, Equatable {
+    public var x: Double
+    public var y: Double
+
+    public static let zero = CADRenderOrigin(x: 0.0, y: 0.0)
+
+    public init(x: Double, y: Double) {
+        self.x = x
+        self.y = y
+    }
+
+    @inline(__always)
+    public func localX(_ worldX: Double) -> Float {
+        Float(worldX - x)
+    }
+
+    @inline(__always)
+    public func localY(_ worldY: Double) -> Float {
+        Float(worldY - y)
+    }
+
+    @inline(__always)
+    public func worldX(_ localX: Float) -> Double {
+        Double(localX) + x
+    }
+
+    @inline(__always)
+    public func worldY(_ localY: Float) -> Double {
+        Double(localY) + y
+    }
+}
+
 // MARK: - Interactive Tool Modes
 
 /// Represents the active interactive state of the CAD application.

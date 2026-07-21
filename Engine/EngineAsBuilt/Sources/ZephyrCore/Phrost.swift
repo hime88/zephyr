@@ -293,8 +293,8 @@ public final class RenderPrimitive: @unchecked Sendable {
     public var worldMaxX: Double?
     public var worldMaxY: Double?
 
-    /// Compute world-space AABB from points/rects/corners (all in world-space).
-    func computeWorldBounds() {
+    /// Compute world-space AABB from render-local points/rects/corners.
+    func computeWorldBounds(renderOrigin: CADRenderOrigin = .zero) {
         guard !isScreenSpace else { return }
         var minX = Double.infinity
         var minY = Double.infinity
@@ -303,24 +303,24 @@ public final class RenderPrimitive: @unchecked Sendable {
         var hasData = false
 
         for p in points {
-            minX = Swift.min(minX, Double(p.x))
-            maxX = Swift.max(maxX, Double(p.x))
-            minY = Swift.min(minY, Double(p.y))
-            maxY = Swift.max(maxY, Double(p.y))
+            minX = Swift.min(minX, renderOrigin.worldX(p.x))
+            maxX = Swift.max(maxX, renderOrigin.worldX(p.x))
+            minY = Swift.min(minY, renderOrigin.worldY(p.y))
+            maxY = Swift.max(maxY, renderOrigin.worldY(p.y))
             hasData = true
         }
         for r in rects {
-            minX = Swift.min(minX, Double(r.x))
-            maxX = Swift.max(maxX, Double(r.x + r.w))
-            minY = Swift.min(minY, Double(r.y))
-            maxY = Swift.max(maxY, Double(r.y + r.h))
+            minX = Swift.min(minX, renderOrigin.worldX(r.x))
+            maxX = Swift.max(maxX, renderOrigin.worldX(r.x + r.w))
+            minY = Swift.min(minY, renderOrigin.worldY(r.y))
+            maxY = Swift.max(maxY, renderOrigin.worldY(r.y + r.h))
             hasData = true
         }
         for c in corners {
-            minX = Swift.min(minX, Double(c.x))
-            maxX = Swift.max(maxX, Double(c.x))
-            minY = Swift.min(minY, Double(c.y))
-            maxY = Swift.max(maxY, Double(c.y))
+            minX = Swift.min(minX, renderOrigin.worldX(c.x))
+            maxX = Swift.max(maxX, renderOrigin.worldX(c.x))
+            minY = Swift.min(minY, renderOrigin.worldY(c.y))
+            maxY = Swift.max(maxY, renderOrigin.worldY(c.y))
             hasData = true
         }
 
@@ -371,6 +371,7 @@ public final class GeometryManager: @unchecked Sendable {
     public var entityIndexToHandle: [UInt32: UUID] = [:]
     /// Maps entity handle (UUID) → entity index (UInt32).
     public var handleToEntityIndex: [UUID: UInt32] = [:]
+    public var renderOrigin: CADRenderOrigin = .zero
 
     // MARK: Spatial Grid (lazy-built when primitive count exceeds threshold)
     private static let spatialGridThreshold: Int = 4_000
@@ -562,7 +563,7 @@ public final class GeometryManager: @unchecked Sendable {
     }
 
     private func addPrimitive(_ primitive: RenderPrimitive) {
-        primitive.computeWorldBounds()
+        primitive.computeWorldBounds(renderOrigin: renderOrigin)
         primitives[primitive.id] = primitive
         isSortNeeded = true
         mutationGeneration &+= 1
