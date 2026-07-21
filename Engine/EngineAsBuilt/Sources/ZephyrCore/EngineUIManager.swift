@@ -442,6 +442,9 @@ public final class EngineUIManager {
             if event.key.scancode == SDL_SCANCODE_LALT || event.key.scancode == SDL_SCANCODE_RALT {
                 ImGuiIO_AddKeyEvent(io, ImGuiMod_Alt, isDown)
             }
+            if event.key.scancode == SDL_SCANCODE_LGUI || event.key.scancode == SDL_SCANCODE_RGUI {
+                ImGuiIO_AddKeyEvent(io, ImGuiMod_Super, isDown)
+            }
             return io.pointee.WantCaptureKeyboard
 
         default:

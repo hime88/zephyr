@@ -75,6 +75,10 @@ public struct ImGuiFileBrowser {
     private var backStack: [URL] = []
     private var forwardStack: [URL] = []
 
+    /// Shared across all browser instances — remembers the last directory the user navigated to
+    /// or selected a file from. All access occurs on the main actor.
+    private static nonisolated(unsafe) var lastUsedDirectory: URL?
+
     // MARK: - Input Helper
 
     private static func inputText(
@@ -116,8 +120,10 @@ public struct ImGuiFileBrowser {
     private mutating func openCommon(directory: URL?, filterExtension: String?, mode: Mode) {
         if let dir = directory {
             currentDirectory = dir
+        } else if let lastDir = Self.lastUsedDirectory {
+            currentDirectory = lastDir
         } else {
-            currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            currentDirectory = URL(fileURLWithPath: NSHomeDirectory())
         }
 
         var isDir: ObjCBool = false
@@ -799,6 +805,7 @@ public struct ImGuiFileBrowser {
         switch mode {
         case .open:
             guard let file = selectedFile else { return }
+            Self.lastUsedDirectory = currentDirectory
             onFileSelected?(file)
             close()
             ImGuiCloseCurrentPopup()
@@ -814,6 +821,7 @@ public struct ImGuiFileBrowser {
                 if !lowerName.hasSuffix(".\(ext)") { name += ".\(String(ext))" }
             }
             let url = currentDirectory.appendingPathComponent(name)
+            Self.lastUsedDirectory = currentDirectory
             if let onSaveFileSelected {
                 onSaveFileSelected(url, selectedDXFVersion)
             } else {

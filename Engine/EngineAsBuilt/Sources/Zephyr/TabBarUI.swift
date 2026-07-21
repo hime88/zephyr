@@ -131,7 +131,11 @@ struct TabBarUI {
                 }
                 if ImGuiIsItemHovered(0) {
                     ImGuiBeginTooltip()
+#if os(macOS)
+                    ImGuiTextV("Cmd+N to create a new drawing")
+#else
                     ImGuiTextV("Ctrl+N to create a new drawing")
+#endif
                     ImGuiEndTooltip()
                 }
 

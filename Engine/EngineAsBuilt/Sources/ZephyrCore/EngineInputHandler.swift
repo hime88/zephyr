@@ -216,7 +216,18 @@ internal final class EngineInputHandler {
         }
 
         if !handledByImGui {
-            let ctrlHeld = engine.io != nil && (engine.io.pointee.KeyCtrl || engine.io.pointee.KeySuper)
+            // Use the modifier state from the key event itself — SDL records
+            // which modifier keys were held when this key was pressed.
+            // macOS: Command key (SDL_KMOD_GUI) triggers shortcuts.
+            // Windows/Linux: Control key (SDL_KMOD_CTRL) triggers shortcuts.
+            let keyMod = UInt32(e.key.mod)
+            #if os(macOS)
+            let ctrlHeld = (engine.io != nil && engine.io.pointee.KeySuper)
+                || (keyMod & SDL_KMOD_GUI) != 0
+            #else
+            let ctrlHeld = (engine.io != nil && engine.io.pointee.KeyCtrl)
+                || (keyMod & SDL_KMOD_CTRL) != 0
+            #endif
 
             // ── Ctrl/Cmd + key shortcuts (don't open command line) ──
             if ctrlHeld {

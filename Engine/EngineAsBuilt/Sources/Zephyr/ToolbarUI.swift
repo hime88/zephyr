@@ -51,7 +51,11 @@ struct ToolbarUI {
             ImGuiSameLine(0, 4)
             if ImGuiIsItemHovered(0) {
                 ImGuiBeginTooltip()
+#if os(macOS)
+                ImGuiTextV("Cmd+O to open a DXF/DWG file in a new tab")
+#else
                 ImGuiTextV("Ctrl+O to open a DXF/DWG file in a new tab")
+#endif
                 ImGuiEndTooltip()
             }
 
@@ -66,7 +70,11 @@ struct ToolbarUI {
             }
             if ImGuiIsItemHovered(0) {
                 ImGuiBeginTooltip()
+#if os(macOS)
+                ImGuiTextV("Cmd+S to save")
+#else
                 ImGuiTextV("Ctrl+S to save")
+#endif
                 ImGuiEndTooltip()
             }
 
@@ -77,7 +85,11 @@ struct ToolbarUI {
             }
             if ImGuiIsItemHovered(0) {
                 ImGuiBeginTooltip()
+#if os(macOS)
+                ImGuiTextV("Cmd+Shift+S to save as a new file")
+#else
                 ImGuiTextV("Ctrl+Shift+S to save as a new file")
+#endif
                 ImGuiEndTooltip()
             }
 
@@ -88,7 +100,11 @@ struct ToolbarUI {
             }
             if ImGuiIsItemHovered(0) {
                 ImGuiBeginTooltip()
+#if os(macOS)
+                ImGuiTextV("Cmd+Shift+P to import a PDF page as an underlay")
+#else
                 ImGuiTextV("Ctrl+Shift+P to import a PDF page as an underlay")
+#endif
                 ImGuiEndTooltip()
             }
 
