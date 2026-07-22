@@ -580,6 +580,18 @@ public final class SHXShapeFont: @unchecked Sendable {
         return GlyphShape(segments: segments, advanceX: x)
     }
 
+
+    private static func resolvedSpaceAdvance(
+        stored: Double,
+        fontHeight: Double
+    ) -> Double {
+        let fallback = max(fontHeight * 0.4, 1e-9)
+        guard stored.isFinite, stored > 0, stored <= fontHeight * 2.0 else {
+            return fallback
+        }
+        return stored
+    }
+
     // MARK: - Text-to-Geometry
 
     /// Convert a string into line primitives at the given position and height.
@@ -609,9 +621,9 @@ public final class SHXShapeFont: @unchecked Sendable {
         let sinR = sin(rotation)
         let shear = tan(obliqueAngle * .pi / 180.0)
         let storedSpaceAdvance = glyphs[0x20]?.advanceX ?? 0.0
-        let spaceAdvance = storedSpaceAdvance > 0
-            ? min(storedSpaceAdvance, fontHeight * 0.4)
-            : fontHeight * 0.4
+        let spaceAdvance = Self.resolvedSpaceAdvance(
+            stored: storedSpaceAdvance,
+            fontHeight: fontHeight)
 
         // Split text into explicit paragraphs first
         let paragraphs = text.components(separatedBy: "\n")
@@ -844,10 +856,9 @@ public final class SHXShapeFont: @unchecked Sendable {
         }
 
         func spaceAdvance(for font: SHXShapeFont) -> Double {
-            let storedAdvance = font.glyphs[0x20]?.advanceX ?? 0.0
-            return storedAdvance > 0
-                ? min(storedAdvance, font.fontHeight * 0.4)
-                : font.fontHeight * 0.4
+            Self.resolvedSpaceAdvance(
+                stored: font.glyphs[0x20]?.advanceX ?? 0.0,
+                fontHeight: font.fontHeight)
         }
 
         func makeGlyphs(_ run: FormattedTextRun) -> [FormattedGlyphLayout] {
@@ -1006,14 +1017,14 @@ public final class SHXShapeFont: @unchecked Sendable {
         var lines: [FormattedLineLayout] = []
         for paragraph in formatted.paragraphs {
             let paragraphGlyphs = paragraph.runs.flatMap(makeGlyphs)
-            let paragraphHeight = paragraphGlyphs.map(\.height).first ?? defaultHeight
-            let leftIndent = (paragraph.leftIndent ?? 0.0) * paragraphHeight
-            let firstLineIndent = (paragraph.firstLineIndent ?? 0.0) * paragraphHeight
-            let rightIndent = max(0.0, (paragraph.rightIndent ?? 0.0) * paragraphHeight)
+            let paragraphUnit = defaultHeight
+            let leftIndent = (paragraph.leftIndent ?? 0.0) * paragraphUnit
+            let firstLineIndent = (paragraph.firstLineIndent ?? 0.0) * paragraphUnit
+            let rightIndent = max(0.0, (paragraph.rightIndent ?? 0.0) * paragraphUnit)
             let firstLineLeft = leftIndent + firstLineIndent
             let continuationLeft = leftIndent
             let tabStops = (paragraph.tabStops ?? [])
-                .map { $0 * paragraphHeight }
+                .map { $0 * paragraphUnit }
                 .sorted()
 
             guard let maxWidth, maxWidth > 0 else {

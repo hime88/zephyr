@@ -76,6 +76,7 @@ public final class EngineTextManager {
 
     private struct CADFontMetrics {
         let capHeightPixels: Double
+        let capTopPaddingPixels: Double
         let lineHeightPixels: Double
         let ascentPixels: Double
         let descentPixels: Double
@@ -187,8 +188,12 @@ public final class EngineTextManager {
             : lineHeight
         let ascent = max(Double(TTF_GetFontAscent(font)), capHeight)
         let descent = min(Double(TTF_GetFontDescent(font)), 0.0)
+        let capTopPadding = hasCapMetrics
+            ? max(0.0, ascent - Double(maxY))
+            : max(0.0, lineHeight - capHeight) * 0.5
         let metrics = CADFontMetrics(
             capHeightPixels: capHeight,
+            capTopPaddingPixels: capTopPadding,
             lineHeightPixels: max(lineHeight, capHeight),
             ascentPixels: ascent,
             descentPixels: descent)
@@ -345,6 +350,41 @@ public final class EngineTextManager {
         return (w, h)
     }
 
+    private func measureTextLayoutPixels(
+        font: OpaquePointer?,
+        text: String
+    ) -> Double {
+        guard let font, !text.isEmpty else { return 0 }
+
+        let surfaceWidth = measureTextPixels(font: font, text: text).w
+        var advanceWidth = 0.0
+        var measuredAllGlyphs = true
+
+        for scalar in text.unicodeScalars {
+            var minX: Int32 = 0
+            var maxX: Int32 = 0
+            var minY: Int32 = 0
+            var maxY: Int32 = 0
+            var advance: Int32 = 0
+
+            if TTF_GetGlyphMetrics(
+                font, scalar.value,
+                &minX, &maxX, &minY, &maxY, &advance
+            ) {
+                advanceWidth += Double(advance)
+            } else {
+                measuredAllGlyphs = false
+                break
+            }
+        }
+
+        let measuredWidth = measuredAllGlyphs && advanceWidth > 0
+            ? min(surfaceWidth, advanceWidth)
+            : surfaceWidth
+        let wrapTolerance = max(1.0, measuredWidth * 0.02)
+        return max(0.0, measuredWidth - wrapTolerance)
+    }
+
     internal func addCADTextSprites(
         text: String,
         fontPath: String,
@@ -392,11 +432,11 @@ public final class EngineTextManager {
                 formatted: formattedText,
                 maxWidth: maxWidthPixels
             ) { value in
-                measureTextPixels(font: font, text: value).w
+                measureTextLayoutPixels(font: font, text: value)
             }
         } else {
             lines = CADTextFormatter.layout(text, maxWidth: maxWidthPixels) { value in
-                measureTextPixels(font: font, text: value).w
+                measureTextLayoutPixels(font: font, text: value)
             }
         }
 
@@ -432,7 +472,7 @@ public final class EngineTextManager {
             case 2, 4:
                 baseY = -blockHeight * 0.5
             case 3:
-                baseY = 0
+                baseY = -metrics.capTopPaddingPixels * worldScale
             default:
                 baseY = -height
             }

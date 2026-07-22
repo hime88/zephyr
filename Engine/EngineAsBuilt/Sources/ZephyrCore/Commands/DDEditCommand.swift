@@ -369,6 +369,20 @@ public final class DDEditCommand: FeatureCommand {
             return
         }
 
+        let originalText: String
+        if case .string(let value) = entity.xdata["dxf.text"] {
+            originalText = value
+        } else {
+            originalText = ""
+        }
+        let originalHeight: Double
+        if case .double(let value) = entity.xdata["dxf.textHeight"], value > 0 {
+            originalHeight = value
+        } else {
+            originalHeight = editorState.height
+        }
+        let contentChanged = text != originalText
+
         let styleName = engine.document.resolvedTextStyleName(editorState.styleName)
         let style = engine.document.textStyle(named: styleName) ?? .standard
         let height = max(editorState.height, 1e-9)
@@ -408,15 +422,45 @@ public final class DDEditCommand: FeatureCommand {
         engine.document.setXData(for: handle, key: "dxf.alignV", value: .int(alignV))
         if mtextWidth > 0 {
             engine.document.setXData(for: handle, key: "dxf.mtextWidth", value: .double(mtextWidth))
+        } else {
+            engine.document.removeXData(for: handle, key: "dxf.mtextWidth")
         }
 
-        // Clear raw MTEXT (user edited, so raw is stale) and update formatted
-        engine.document.setXData(for: handle, key: "dxf.mtextRaw", value: .string(""))
+        if contentChanged {
+            engine.document.setXData(for: handle, key: "dxf.mtextRaw", value: .string(""))
 
-        let formatted = FormattedText.plain(text, styleName: styleName, font: fontName, height: height)
-        if let jsonData = try? JSONEncoder().encode(formatted),
-           let jsonStr = String(data: jsonData, encoding: .utf8) {
-            engine.document.setXData(for: handle, key: "dxf.formattedText", value: .string(jsonStr))
+            let formatted = FormattedText.plain(
+                text,
+                styleName: styleName,
+                font: fontName,
+                height: height)
+            if let jsonData = try? JSONEncoder().encode(formatted),
+               let jsonStr = String(data: jsonData, encoding: .utf8) {
+                engine.document.setXData(
+                    for: handle,
+                    key: "dxf.formattedText",
+                    value: .string(jsonStr))
+            }
+        } else if abs(height - originalHeight) > 1e-12,
+                  case .string(let json) = entity.xdata["dxf.formattedText"],
+                  let data = json.data(using: .utf8),
+                  var formatted = try? JSONDecoder().decode(FormattedText.self, from: data) {
+            let scale = height / max(originalHeight, 1e-12)
+            formatted.defaultHeight *= scale
+            for paragraphIndex in formatted.paragraphs.indices {
+                for runIndex in formatted.paragraphs[paragraphIndex].runs.indices {
+                    if let runHeight = formatted.paragraphs[paragraphIndex].runs[runIndex].height {
+                        formatted.paragraphs[paragraphIndex].runs[runIndex].height = runHeight * scale
+                    }
+                }
+            }
+            if let jsonData = try? JSONEncoder().encode(formatted),
+               let jsonStr = String(data: jsonData, encoding: .utf8) {
+                engine.document.setXData(
+                    for: handle,
+                    key: "dxf.formattedText",
+                    value: .string(jsonStr))
+            }
         }
 
         engine.tabManager.markActiveDirty()
