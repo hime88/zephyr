@@ -96,10 +96,15 @@ jobs:
           ln -sf "$FRAMEWORKS_DIR/SDL3_ttf.framework/SDL3_ttf" "$FRAMEWORKS_DIR/libSDL3_ttf.dylib"
 
           # Create header search structure for C module maps
-          mkdir -p "$FRAMEWORKS_DIR/include"
-          ln -sfn "$FRAMEWORKS_DIR/SDL3.framework/Headers" "$FRAMEWORKS_DIR/include/SDL3"
-          ln -sfn "$FRAMEWORKS_DIR/SDL3_image.framework/Headers" "$FRAMEWORKS_DIR/include/SDL3_image"
-          ln -sfn "$FRAMEWORKS_DIR/SDL3_ttf.framework/Headers" "$FRAMEWORKS_DIR/include/SDL3_ttf"
+          mkdir -p "$FRAMEWORKS_DIR/include/SDL3"
+          cp -RL "$FRAMEWORKS_DIR/SDL3.framework/Headers/"* "$FRAMEWORKS_DIR/include/SDL3/"
+          mkdir -p "$FRAMEWORKS_DIR/include/SDL3_image"
+          cp -RL "$FRAMEWORKS_DIR/SDL3_image.framework/Headers/"* "$FRAMEWORKS_DIR/include/SDL3_image/"
+          mkdir -p "$FRAMEWORKS_DIR/include/SDL3_ttf"
+          cp -RL "$FRAMEWORKS_DIR/SDL3_ttf.framework/Headers/"* "$FRAMEWORKS_DIR/include/SDL3_ttf/"
+
+          echo "Verify SDL.h exists in include:"
+          ls -l "$FRAMEWORKS_DIR/include/SDL3/SDL.h"
 
           echo "Framework architectures:"
           lipo -info "$FRAMEWORKS_DIR/SDL3.framework/SDL3"
@@ -207,11 +212,24 @@ jobs:
           export SDL3_FRAMEWORK_DIR="$FRAMEWORKS_DIR"
           export ZLIB_NG_INCLUDE="$ZLIB_NG_ROOT/include"
           export ZLIB_NG_LIB="$ZLIB_NG_ROOT/lib"
+          export CPATH="$FRAMEWORKS_DIR/include:$ZLIB_NG_ROOT/include"
+          export LIBRARY_PATH="$FRAMEWORKS_DIR:$ZLIB_NG_ROOT/lib"
           export MACOSX_DEPLOYMENT_TARGET=12.0
 
           if [ -d "$PDFIUM_ROOT/include" ]; then
             export PDFIUM_INCLUDE="$PDFIUM_ROOT/include"
+            export CPATH="$CPATH:$PDFIUM_ROOT/include"
           fi
+
+          SWIFT_FLAGS=(
+            -Xswiftc -I"$FRAMEWORKS_DIR/include"
+            -Xswiftc -F"$FRAMEWORKS_DIR"
+            -Xcc -I"$FRAMEWORKS_DIR/include"
+            -Xcc -F"$FRAMEWORKS_DIR"
+            -Xlinker -F"$FRAMEWORKS_DIR"
+            -Xlinker -L"$FRAMEWORKS_DIR"
+            -Xlinker -L"$ZLIB_NG_ROOT/lib"
+          )
 
           cd Engine/EngineAsBuilt
           rm -rf ~/Library/Caches/org.swift.swiftpm
@@ -219,10 +237,10 @@ jobs:
           rm -rf .build
 
           echo "=== Building Engine (arm64) ==="
-          swift build -c "$CONFIG" --arch arm64 --build-path .build/arm64
+          swift build -c "$CONFIG" --arch arm64 --build-path .build/arm64 "${SWIFT_FLAGS[@]}"
 
           echo "=== Building Engine (x86_64) ==="
-          swift build -c "$CONFIG" --arch x86_64 --build-path .build/x86_64
+          swift build -c "$CONFIG" --arch x86_64 --build-path .build/x86_64 "${SWIFT_FLAGS[@]}"
 
           EXEC_ARM64=$(find .build/arm64 -name "Zephyr" -type f | grep -v "\.dSYM" | head -n 1)
           EXEC_X64=$(find .build/x86_64 -name "Zephyr" -type f | grep -v "\.dSYM" | head -n 1)
