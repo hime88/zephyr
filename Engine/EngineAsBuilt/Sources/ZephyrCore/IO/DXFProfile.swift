@@ -4,8 +4,10 @@ import Foundation
 // MARK: - DXF import profiling (TEMPORARY)
 // =========================================================================
 //
-// TEMP-INSTRUMENTATION: delete this file and its call sites once the DXF import
-// phase breakdown has been recorded. Enable with `ZEPHYR_DXF_PROFILE=1`.
+// Kept deliberately: it is how the 1.3 s per-entity string format was found, and the
+// remaining hotspot (parseSections) is next. Enable with `ZEPHYR_DXF_PROFILE=1`; when
+// enabled it prints to stderr, when disabled the cost is one cached-Bool check per
+// phase. Delete it and the `DXFProfile.` call sites once DXF import work is finished.
 //
 // Deliberately dumb: env-gated timestamps that print to stderr, so a normal build
 // pays one cached-Bool check per phase and produces no output. Phase marks report
