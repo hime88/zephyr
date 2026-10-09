@@ -515,10 +515,12 @@ public enum PenStrokeSplineFitter {
                 result.append(vertex)
             } else {
                 // Keep the newest tablet metadata even when geometry did not move.
-                result[result.count - 1].pressure = vertex.pressure
-                result[result.count - 1].xtilt = vertex.xtilt
-                result[result.count - 1].ytilt = vertex.ytilt
-                result[result.count - 1].rotation = vertex.rotation
+                // Scoped to this branch: the other branch appends, which would conflict with a borrow.
+                var last = MutableRef(&result[result.count - 1])
+                last.value.pressure = vertex.pressure
+                last.value.xtilt = vertex.xtilt
+                last.value.ytilt = vertex.ytilt
+                last.value.rotation = vertex.rotation
             }
         }
         return result

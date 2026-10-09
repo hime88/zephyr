@@ -216,10 +216,13 @@ public enum DataTableEditor {
                 data.headerRowCount += 1
             }
             for mergeIndex in merges.indices {
-                if insertionIndex <= merges[mergeIndex].row {
-                    merges[mergeIndex].row += 1
-                } else if insertionIndex < merges[mergeIndex].row + merges[mergeIndex].rowSpan {
-                    merges[mergeIndex].rowSpan += 1
+                // The element is read twice and written once; a single binding removes the repeated
+                // `merges[mergeIndex]` expression from the condition and both branches.
+                var merge = MutableRef(&merges[mergeIndex])
+                if insertionIndex <= merge.value.row {
+                    merge.value.row += 1
+                } else if insertionIndex < merge.value.row + merge.value.rowSpan {
+                    merge.value.rowSpan += 1
                 }
             }
             applyMergeRegions(merges, to: &data)

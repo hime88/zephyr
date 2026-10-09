@@ -150,6 +150,7 @@ enum Cases {
             ("shx-render", try shxRenderDigest(path: font)),
             ("vertex-build", vertexBuildDigest()),
             ("nurbs", nurbsDigest()),
+            ("dxf-roundtrip", try dxfRoundtripDigest(directory: directory)),
         ]
     }
 

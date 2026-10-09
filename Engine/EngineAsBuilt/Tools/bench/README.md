@@ -32,6 +32,9 @@ Commands:
 | `eab-roundtrip` | Serializes a document covering every primitive kind, reads it back, prints a UUID-free digest of the result. |
 | `shx-render <font>` | Parses an SHX font and digests the geometry rendered for a fixed string. |
 
+**Digests are identical in debug and release**, so iterate with a debug build (~25 s) and only use
+`-c release` when you need the timings.
+
 ## The borrow-accessor benchmark
 
 ```bash
@@ -54,6 +57,8 @@ check. Ten checks run under `dxf-goldens`:
 | `eab-roundtrip` | EAB serialization or deserialization changed what a document round-trips to. |
 | `shx-render` | SHX font parsing or glyph rendering changed. |
 | `vertex-build` | Vertex tessellation changed (entity-index tagging and batch layout included). |
+| `nurbs` | Any NURBS evaluator changed its result (all four public entry points + `findClosestParameter`). |
+| `dxf-roundtrip` | DXF **export** changed: each fixture is imported, exported, re-imported and digested. |
 
 ## Adding a golden fixture
 

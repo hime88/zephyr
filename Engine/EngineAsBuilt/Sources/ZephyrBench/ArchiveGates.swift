@@ -250,6 +250,45 @@ extension Cases {
         return lines.joined(separator: "\n")
     }
 
+    // MARK: - DXF export round-trip
+
+    /// Imports each fixture, exports it with `DXFExporter`, re-imports the result and digests that.
+    ///
+    /// Covers the writer side (`DXFWriter` / `DXFWriterBridge`), which the import-only gates never
+    /// touch. The export is compared through a round-trip rather than byte-for-byte because exported
+    /// handles are derived from per-import UUIDs; `exportLineCount`/`exportBytes` still pin the layout.
+    static func dxfRoundtripDigest(directory: String) throws -> String {
+        let url = URL(fileURLWithPath: directory)
+        let fixtures = ((try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension.lowercased() == "dxf" }
+            .sorted { $0.path < $1.path }
+
+        var lines: [String] = ["fixtures: \(fixtures.count)"]
+        for fixture in fixtures {
+            let imported = try DXFImporter.importDXFViews(filePath: fixture.path)
+            let document = CADDocument()
+            document.importLayersBlocksEntities(
+                layers: imported.layers, blocks: imported.blocks, entities: imported.entities)
+
+            let exported = FileManager.default.temporaryDirectory
+                .appendingPathComponent("zephyr-bench-\(UUID().uuidString).dxf")
+            defer { try? FileManager.default.removeItem(at: exported) }
+            try DXFExporter.export(document: document, to: exported)
+
+            let exportedData = try Data(contentsOf: exported)
+            let reimported = try DXFImporter.importDXFViews(filePath: exported.path)
+
+            lines.append("fixture: \(fixture.lastPathComponent)")
+            lines.append("exportBytes: \(exportedData.count)")
+            lines.append("exportLineCount: \(exportedData.reduce(0) { $1 == 0x0A ? $0 + 1 : $0 })")
+            lines.append(contentsOf: canonicalDocumentLines(
+                layers: reimported.layers,
+                blocks: reimported.blocks,
+                entities: reimported.entities))
+        }
+        return lines.joined(separator: "\n")
+    }
+
     // MARK: - NURBS evaluation
 
     /// Deterministic spline used by the NURBS gate and the timings case.

@@ -500,11 +500,14 @@ public struct CADPolyline: Hashable, Sendable, RandomAccessCollection, MutableCo
         let widthScale = (abs(transform.scale.x) + abs(transform.scale.y)) * 0.5
         var result = self
         for index in result.vertices.indices {
-            result.vertices[index].position = transform.transformPoint(result.vertices[index].position)
-            result.vertices[index].startWidth *= widthScale
-            result.vertices[index].endWidth *= widthScale
+            // One binding instead of six `result.vertices[index]` expressions. The ref takes an
+            // exclusive borrow of that element for the body, so reads go through it too.
+            var vertex = MutableRef(&result.vertices[index])
+            vertex.value.position = transform.transformPoint(vertex.value.position)
+            vertex.value.startWidth *= widthScale
+            vertex.value.endWidth *= widthScale
             if reversesOrientation {
-                result.vertices[index].bulge = -result.vertices[index].bulge
+                vertex.value.bulge = -vertex.value.bulge
             }
         }
         result.hatchEdges = result.hatchEdges.map { $0.transformed(by: transform) }
