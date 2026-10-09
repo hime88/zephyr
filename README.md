@@ -10,7 +10,7 @@ Zephyr is a drafting app that runs natively on macOS (Metal) and Windows (Direct
 
 | Platform | Architecture | Download |
 |---|---|---|
-| macOS 11+ | Universal (Apple Silicon & Intel) | [Zephyr-macOS-Universal.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-macOS-Universal.zip) |
+| macOS 12+ | Universal (Apple Silicon & Intel) | [Zephyr-macOS-Universal.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-macOS-Universal.zip) |
 | Windows 10+ | ARM64 (Snapdragon / Surface) | [Zephyr-Windows-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-arm64.zip) |
 | Windows 10+ | x64 | [Zephyr-Windows-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-x64.zip) |
 

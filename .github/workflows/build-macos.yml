@@ -14,9 +14,13 @@ on:
         options:
           - debug
           - release
+  push:
+    branches: [ main, 'feature/swift-6.4' ]
+  pull_request:
+    branches: [ main ]
 
 env:
-  SWIFT_VERSION: "6.3.3"
+  SWIFT_VERSION: "6.4.0"
   PDFIUM_TAG: "chromium%2F7891"
   SDL3_VERSION: "3.4.12"
   SDL3_IMAGE_VERSION: "3.4.4"
@@ -45,7 +49,7 @@ jobs:
       - name: Install Swift
         uses: SwiftyLab/setup-swift@v1
         with:
-          swift-version: '6.3.3'
+          swift-version: '6.4.0'
 
       # ------------------------------------------------------------------
       # 3. Download Official SDL3 Frameworks (Universal: ARM64 + x64)
@@ -260,6 +264,45 @@ jobs:
           lipo -info .build/universal/Zephyr
 
       # ------------------------------------------------------------------
+      # 6b. Swift 6.4 canary + perf baseline (host arch only)
+      # ------------------------------------------------------------------
+      - name: Swift 6.4 canary and perf baseline
+        run: |
+          CONFIG="${{ inputs.configuration || 'release' }}"
+          FRAMEWORKS_DIR="$HOME/dev/Frameworks"
+          ZLIB_NG_ROOT="$HOME/dev/zlib-ng"
+
+          export SDL3_INCLUDE="$FRAMEWORKS_DIR/include"
+          export SDL3_LIB="$FRAMEWORKS_DIR"
+          export SDL3_IMAGE_INCLUDE="$FRAMEWORKS_DIR/include"
+          export SDL3_IMAGE_LIB="$FRAMEWORKS_DIR"
+          export SDL3_TTF_INCLUDE="$FRAMEWORKS_DIR/include"
+          export SDL3_TTF_LIB="$FRAMEWORKS_DIR"
+          export SDL3_FRAMEWORK_DIR="$FRAMEWORKS_DIR"
+          export ZLIB_NG_INCLUDE="$ZLIB_NG_ROOT/include"
+          export ZLIB_NG_LIB="$ZLIB_NG_ROOT/lib"
+          export DYLD_FRAMEWORK_PATH="$FRAMEWORKS_DIR"
+          export DYLD_LIBRARY_PATH="$FRAMEWORKS_DIR:$ZLIB_NG_ROOT/lib"
+
+          cd Engine/EngineAsBuilt
+          BENCH=$(find .build/arm64 -name "ZephyrBench" -type f | head -n 1)
+          if [ -z "$BENCH" ]; then
+            echo "::warning::ZephyrBench binary not found - skipping canary and perf baseline"
+            exit 0
+          fi
+
+          echo "=== Swift 6.4 feature canary (macOS, deployment target 12.0) ==="
+          "$BENCH" canary
+
+          echo "=== DXF parser golden digests ==="
+          "$BENCH" dxf-goldens Tools/bench/golden
+
+          echo "=== Perf baseline (macOS arm64) ==="
+          "$BENCH" nurbs || true
+          SHX=$(ls Fonts/*.SHX 2>/dev/null | head -n 1)
+          if [ -n "$SHX" ]; then "$BENCH" shx "$SHX" || true; fi
+
+      # ------------------------------------------------------------------
       # 7. Create .app Bundle
       # ------------------------------------------------------------------
       - name: Create .app Bundle
@@ -376,6 +419,10 @@ jobs:
       # 9. Upload to Nightly Release
       # ------------------------------------------------------------------
       - name: Upload to Nightly Release
+        # Only publish from `main`. The workflow now also runs on branch pushes and pull requests
+        # (see the `on:` block), and without this guard a branch build would move the `nightly`
+        # tag and overwrite the public download with unreleased code.
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: nightly

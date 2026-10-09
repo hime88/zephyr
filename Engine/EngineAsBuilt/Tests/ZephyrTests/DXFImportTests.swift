@@ -1,5 +1,4 @@
 import XCTest
-import CDXFRW
 @testable import ZephyrCore
 
 // Large-file design note:
@@ -8,6 +7,7 @@ import CDXFRW
 // construction should move to a focused fixture factory. See
 // Documentation/LargeFileRefactoring.md.
 
+@MainActor
 final class DXFImportTests: XCTestCase {
 
     @MainActor
@@ -234,8 +234,9 @@ final class DXFImportTests: XCTestCase {
         XCTAssertEqual(tableEntity.resolvedGeometry(in: doc)?.count, tableBlock.geometry.count)
 
         try EABWriter.write(document: doc, to: eabURL)
-        let (_, savedBlocks, savedEntities, _, _, _) =
-            try EABReader.readDocument(from: eabURL)
+        let saved = try EABReader.readDocument(from: eabURL)
+        let savedBlocks = saved.blocks
+        let savedEntities = saved.entities
         let savedTable = try XCTUnwrap(savedBlocks.first { $0.name == "*T1" })
         XCTAssertEqual(savedTable.geometry.count, tableBlock.geometry.count)
         XCTAssertTrue(savedEntities.contains { $0.blockID == savedTable.handle })
@@ -1457,38 +1458,6 @@ final class DXFImportTests: XCTestCase {
         XCTAssertGreaterThan(wrappedYValues.count, singleYValues.count)
     }
 
-    func testAnalyzeA_000217() throws {
-        let path = "C:/dev/as-built/A_000217.dxf"
-        var result = DXFRW_Result()
-        let ok = path.withCString { pathPtr in
-            dxfrw_read(pathPtr, &result)
-        }
-        guard ok != 0, result.success != 0 else {
-            return
-        }
-        defer { dxfrw_result_free(&result) }
-
-        print("--- testAnalyzeA_000217 ---")
-        var veluxEntities = 0
-        for i in 0..<Int(result.entityCount) {
-            let ent = result.entities[i]
-            let layerName = ent.layerName.map { String(cString: $0) } ?? ""
-            if layerName.uppercased().contains("VELUX") {
-                veluxEntities += 1
-                var coordsStr = "base=(\(ent.basePoint.x), \(ent.basePoint.y))"
-                if ent.type == DXFRW_ET_LINE || ent.type == DXFRW_ET_SOLID || ent.type == DXFRW_ET_3DFACE {
-                    coordsStr += ", sec=(\(ent.secPoint.x), \(ent.secPoint.y))"
-                }
-                if ent.type == DXFRW_ET_SOLID || ent.type == DXFRW_ET_3DFACE {
-                    coordsStr += ", third=(\(ent.thirdPoint.x), \(ent.thirdPoint.y)), four=(\(ent.fourPoint.x), \(ent.fourPoint.y))"
-                }
-                print("Entity \(veluxEntities): type=\(ent.type), layer=\(layerName), \(coordsStr), color=\(ent.color), blockName=\(ent.blockName.map { String(cString: $0) } ?? "nil"), parentBlockName=\(ent.parentBlockName.map { String(cString: $0) } ?? "nil")")
-            }
-        }
-        print("Total Velux entities: \(veluxEntities)")
-        XCTAssert(true)
-    }
-
     func testImportDXFWithPolylineBulge() throws {
         let dxf = """
         0
@@ -1832,7 +1801,7 @@ final class DXFImportTests: XCTestCase {
         )
         
         // Compute PrimitiveSpecs
-        let results = await CADRendererBridge.computeSpecs(fromSnapshot: snapshot)
+        let results = await CADRendererBridge.computeSpecs(fromSnapshot: snapshot, simplifyComplexBlocks: false)
         XCTAssertEqual(results.count, 1)
         
         if let result = results.first {
@@ -1909,7 +1878,7 @@ final class DXFImportTests: XCTestCase {
             textStyleFonts: [:]
         )
         
-        let results = await CADRendererBridge.computeSpecs(fromSnapshot: snapshot)
+        let results = await CADRendererBridge.computeSpecs(fromSnapshot: snapshot, simplifyComplexBlocks: false)
         XCTAssertEqual(results.count, 1)
         
         if let result = results.first {
@@ -1925,7 +1894,7 @@ final class DXFImportTests: XCTestCase {
             print("Skipping testMergedVeluxLogoHatch: file not present.")
             return
         }
-        let (_, blocks, _, _, _) = try DXFImporter.importDXF(filePath: filePath)
+        let (_, blocks, _, _, _, _) = try DXFImporter.importDXF(filePath: filePath)
         
         let logoBlock = blocks.first(where: { $0.name == "VELUX_LOGO_ARKITEKT" })
         XCTAssertNotNil(logoBlock)
@@ -1965,7 +1934,7 @@ final class DXFImportTests: XCTestCase {
                 )
                 
                 print("--- RUNNING BRIDGE SPECS FOR VELUX HATCH ---")
-                let results = await CADRendererBridge.computeSpecs(fromSnapshot: snapshot)
+                let results = await CADRendererBridge.computeSpecs(fromSnapshot: snapshot, simplifyComplexBlocks: false)
                 XCTAssertEqual(results.count, 1)
                 print("Bridge compute completed.")
                 
@@ -2159,7 +2128,7 @@ final class DXFImportTests: XCTestCase {
             print("Skipping testDumpLosAngelesLayers: los-angeles.dxf not found.")
             return
         }
-        let (layers, _, entities, _, _) = try DXFImporter.importDXF(filePath: filePath)
+        let (layers, _, entities, _, _, _) = try DXFImporter.importDXF(filePath: filePath)
         print("--- los-angeles.dxf LAYERS ---")
         for layer in layers {
             print("Layer name: \(layer.name), lineWeight: \(layer.lineWeight), color: \(layer.color)")

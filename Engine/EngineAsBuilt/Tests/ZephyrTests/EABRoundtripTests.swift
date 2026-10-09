@@ -1,6 +1,7 @@
 import XCTest
 @testable import ZephyrCore
 
+@MainActor
 final class EABRoundtripTests: XCTestCase {
 
     func testEABRoundtripWithColorsAndText() throws {
@@ -74,7 +75,10 @@ final class EABRoundtripTests: XCTestCase {
         try EABWriter.write(document: doc, to: tempURL)
 
         // 6. Deserialize
-        let (readLayers, readBlocks, readEntities, _, _, _) = try EABReader.readDocument(from: tempURL)
+        let read = try EABReader.readDocument(from: tempURL)
+        let readLayers = read.layers
+        let readBlocks = read.blocks
+        let readEntities = read.entities
 
         // 7. Verify Results
         XCTAssertEqual(readLayers.count, doc.allLayers.count)

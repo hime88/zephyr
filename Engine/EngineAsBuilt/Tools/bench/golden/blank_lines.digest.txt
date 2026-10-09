@@ -1,0 +1,9 @@
+file: blank_lines.dxf
+pairCount: 10
+layerCount: 1
+layer: 0 c=255,255,255,255 lw=0.25 lt=CONTINUOUS vis=true op=1.0
+blockCount: 0
+entityCount: 1
+entity: kind=line layer=0 block=- geomCount=1 transform=8b68b521a35ec8d5 geometry=4fb3b2160e8ff065
+primitiveKind: line count=1
+DIGEST: 41da50034ea19241
