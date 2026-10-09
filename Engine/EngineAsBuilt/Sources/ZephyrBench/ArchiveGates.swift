@@ -250,6 +250,70 @@ extension Cases {
         return lines.joined(separator: "\n")
     }
 
+    // MARK: - NURBS evaluation
+
+    /// Deterministic spline used by the NURBS gate and the timings case.
+    ///
+    /// Degree 3 over 12 control points with a clamped uniform knot vector — the shape the DXF importer
+    /// produces for a SPLINE entity. A degree-p NURBS over n+1 control points needs n+p+2 knots
+    /// (here 11 + 3 + 2 = 16: four 0s, eight interior values, four 1s).
+    static func nurbsInputs() -> (degree: Int, knots: [Double], controlPoints: [Vector3], weights: [Double]) {
+        let degree = 3
+        let controlPoints = (0..<12).map { index in
+            Vector3(x: Double(index), y: sin(Double(index) * 0.7) * 3.0, z: Double(index % 3) * 0.5)
+        }
+        let interiorCount = controlPoints.count - degree - 1
+        let knots: [Double] =
+            [Double](repeating: 0, count: degree + 1)
+            + (1...interiorCount).map { Double($0) / Double(interiorCount + 1) }
+            + [Double](repeating: 1, count: degree + 1)
+        let weights = controlPoints.indices.map { 1.0 + Double($0 % 3) * 0.25 }   // rational, non-uniform
+        return (degree, knots, controlPoints, weights)
+    }
+
+    /// Digests every public evaluation entry point, because they all funnel through the internal basis
+    /// routine that Phase 3 rewrites (`evaluateAtInternal`).
+    static func nurbsDigest() -> String {
+        let (degree, knots, controlPoints, weights) = nurbsInputs()
+        var lines: [String] = []
+
+        let polyline = NURBSEvaluator.evaluate(
+            degree: degree, knots: knots, controlPoints: controlPoints,
+            weights: weights, segments: 64)
+        lines.append("evaluate: \(polyline.count) points hash=\(Self.fnv(String(describing: polyline)))")
+
+        var samples: [Vector3] = []
+        for step in 0...128 {
+            let t = Double(step) / 128.0
+            if let point = NURBSEvaluator.evaluateAt(
+                degree: degree, knots: knots, controlPoints: controlPoints,
+                weights: weights, at: t) {
+                samples.append(point)
+            }
+        }
+        lines.append("evaluateAt: \(samples.count) samples hash=\(Self.fnv(String(describing: samples)))")
+
+        let byKnotSpans = NURBSEvaluator.evaluateByKnotSpans(
+            degree: degree, knots: knots, controlPoints: controlPoints, weights: weights)
+        lines.append("evaluateByKnotSpans: \(byKnotSpans.count) points hash=\(Self.fnv(String(describing: byKnotSpans)))")
+
+        let adaptive = NURBSEvaluator.evaluateAdaptiveByKnotSpans(
+            degree: degree, knots: knots, controlPoints: controlPoints, weights: weights)
+        lines.append("evaluateAdaptiveByKnotSpans: \(adaptive.count) points hash=\(Self.fnv(String(describing: adaptive)))")
+
+        // findClosestParameter is the interactive path (snapping / hit-testing) and calls the internal
+        // evaluator in a loop, so it is the caller most affected by the scratch-buffer change.
+        for probeIndex in 0..<4 {
+            let probe = Vector3(x: Double(probeIndex) * 3.0 - 1.0, y: 0.75, z: 0.0)
+            let found = NURBSEvaluator.findClosestParameter(
+                degree: degree, knots: knots, controlPoints: controlPoints,
+                weights: weights, to: probe)
+            lines.append("closest(\(probeIndex)): t=\(found)")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
     // MARK: - SHX rendering
 
     /// Parses a shape font and digests the geometry it renders for a fixed string.

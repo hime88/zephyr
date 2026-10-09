@@ -149,6 +149,7 @@ enum Cases {
             ("eab-roundtrip", try eabRoundtripDigest()),
             ("shx-render", try shxRenderDigest(path: font)),
             ("vertex-build", vertexBuildDigest()),
+            ("nurbs", nurbsDigest()),
         ]
     }
 
