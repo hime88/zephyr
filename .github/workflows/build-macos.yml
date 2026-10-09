@@ -113,21 +113,41 @@ jobs:
         run: |
           ZLIB_NG_ROOT="$HOME/dev/zlib-ng"
           ZLIB_NG_SRC="$RUNNER_TEMP/zlib-ng-src"
-          ZLIB_NG_BUILD="$RUNNER_TEMP/zlib-ng-build"
           mkdir -p "$ZLIB_NG_ROOT"
 
           git clone --depth 1 --branch "$ZLIB_NG_VERSION" https://github.com/zlib-ng/zlib-ng.git "$ZLIB_NG_SRC"
 
-          cmake -S "$ZLIB_NG_SRC" -B "$ZLIB_NG_BUILD" \
+          # 1. Build ARM64 slice & install headers
+          echo "=== Building zlib-ng (arm64) ==="
+          cmake -S "$ZLIB_NG_SRC" -B "$RUNNER_TEMP/zlib-ng-arm64" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
-            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_ARCHITECTURES="arm64" \
             -DBUILD_SHARED_LIBS=OFF \
             -DZLIB_COMPAT=OFF \
-            -DZLIB_ENABLE_TESTS=OFF \
+            -DBUILD_TESTING=OFF \
             -DCMAKE_INSTALL_PREFIX="$ZLIB_NG_ROOT"
 
-          cmake --build "$ZLIB_NG_BUILD" --config Release --target install
+          cmake --build "$RUNNER_TEMP/zlib-ng-arm64" --config Release --target install
+
+          # 2. Build x86_64 slice
+          echo "=== Building zlib-ng (x86_64) ==="
+          cmake -S "$ZLIB_NG_SRC" -B "$RUNNER_TEMP/zlib-ng-x64" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            -DCMAKE_OSX_ARCHITECTURES="x86_64" \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DZLIB_COMPAT=OFF \
+            -DBUILD_TESTING=OFF
+
+          cmake --build "$RUNNER_TEMP/zlib-ng-x64" --config Release
+
+          # 3. Merge thin static archives into a universal fat archive using lipo
+          LIB_ARM64=$(find "$RUNNER_TEMP/zlib-ng-arm64" -name "libz-ng.a" -print -quit)
+          LIB_X64=$(find "$RUNNER_TEMP/zlib-ng-x64" -name "libz-ng.a" -print -quit)
+
+          echo "Merging $LIB_ARM64 and $LIB_X64 into $ZLIB_NG_ROOT/lib/libz-ng.a..."
+          lipo -create -output "$ZLIB_NG_ROOT/lib/libz-ng.a" "$LIB_ARM64" "$LIB_X64"
 
           echo "Universal zlib-ng static library:"
           ls -lh "$ZLIB_NG_ROOT/lib/libz-ng.a"
@@ -210,7 +230,7 @@ jobs:
           PDFIUM_ROOT="$HOME/dev/pdfium"
 
           cd Engine/EngineAsBuilt
-          EXEC=$(find .build -name Zephyr -type f -perm +111 | grep -v "\.dSYM" | head -n 1)
+          EXEC=$(find .build -name "Zephyr" -type f | grep -v "\.dSYM" | head -n 1)
           if [ -z "$EXEC" ] || [ ! -f "$EXEC" ]; then
             echo "ERROR: Zephyr executable not found in .build"
             exit 1
@@ -305,7 +325,7 @@ jobs:
         run: |
           CONFIG="${{ inputs.configuration || 'release' }}"
           cd Engine/EngineAsBuilt
-          EXEC=$(find .build -name Zephyr -type f -perm +111 | grep -v "\.dSYM" | head -n 1)
+          EXEC=$(find .build -name "Zephyr" -type f | grep -v "\.dSYM" | head -n 1)
           BUILD_DIR="$(dirname "$EXEC")"
           ZIP_NAME="Zephyr-macOS-Universal.zip"
 
