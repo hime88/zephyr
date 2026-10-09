@@ -10,8 +10,7 @@ Zephyr is a drafting app that runs natively on macOS (Metal) and Windows (Direct
 
 | Platform | Architecture | Download |
 |---|---|---|
-| macOS 11+ | ARM64 (Apple Silicon) | [Zephyr-macOS-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-macOS-arm64.zip) |
-| macOS 11+ | x64 (Intel) | [Zephyr-macOS-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-macOS-x64.zip) |
+| macOS 11+ | Universal (Apple Silicon & Intel) | [Zephyr-macOS-Universal.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-macOS-Universal.zip) |
 | Windows 10+ | ARM64 (Snapdragon / Surface) | [Zephyr-Windows-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-arm64.zip) |
 | Windows 10+ | x64 | [Zephyr-Windows-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-x64.zip) |
 
@@ -275,12 +274,11 @@ Adaptive subdivision keyed to screen pixels. Curves stay smooth at any zoom, bou
 
 ## Nightly Builds
 
-Same links as above — all four platform/architecture combinations updated on every push.
+Same links as above — updated on every push.
 
 | Platform | Architecture | Download |
 |---|---|---|
-| macOS | ARM64 | [Zephyr-macOS-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-macOS-arm64.zip) |
-| macOS | x64 | [Zephyr-macOS-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-macOS-x64.zip) |
+| macOS | Universal (Apple Silicon & Intel) | [Zephyr-macOS-Universal.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-macOS-Universal.zip) |
 | Windows | ARM64 | [Zephyr-Windows-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-arm64.zip) |
 | Windows | x64 | [Zephyr-Windows-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-x64.zip) |
 
