@@ -411,6 +411,13 @@ struct ZephyrBench {
                 index += 1
                 let path = index < arguments.count ? arguments[index] : ""
                 run("dxf-digest") { _ = try Cases.dxfDigest(path: path) }
+            case "dxf-profile":
+                index += 1
+                let path = index < arguments.count ? arguments[index] : ""
+                run("dxf-profile") {
+                    let result = try DXFImporter.importDXFViews(filePath: path)
+                    print("entities: \(result.entities.count)")
+                }
             case "dxf-compare":
                 index += 1
                 let path = index < arguments.count ? arguments[index] : ""

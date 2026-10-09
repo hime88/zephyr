@@ -132,6 +132,7 @@ public class DXFReader {
     /// / Latin-1 drawings keep decoding exactly as before (accented layer names must not degrade into
     /// replacement characters).
     public func readData(_ data: Data, mode: DXFPairParsingMode = .automatic) throws -> DXFReader {
+        DXFProfile.reset("DXFReader.readData")
         let scannedPairs = mode == .legacyStrings ? nil : parsePairsFromBytes(data)
         if let scannedPairs {
             pairs = scannedPairs
@@ -143,11 +144,15 @@ public class DXFReader {
             }
             pairs = try parsePairs(content)
         }
+        DXFProfile.mark("tokenize pairs")
         pos = 0
         try parseSections()
+        DXFProfile.mark("parseSections")
         resolveTableStyles()
         resolveTableObjectGraphs()
         resolveImageReferences()
+        DXFProfile.mark("resolve styles/graphs/images")
+        DXFProfile.dump("DXFReader total")
         return self
     }
 
