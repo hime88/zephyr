@@ -1,25 +1,17 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
-// Swift 6.4 features used by this branch that are still gated behind an experimental flag:
+// Swift 6.4 feature flags used by this branch.
 //
-// * LifetimeDependence — lets a property or method return a `Span` (a `~Escapable` value). With this
-//   flag the dependency on `self` is *inferred*, so the common case needs no annotation at all:
-//       var bytes: Span<UInt8> { borrow { return storage.span } }
-// * Lifetimes — enables the explicit `@_lifetime(...)` spelling, which the compiler still requires for
-//   some derived results, e.g. a *method* returning a slice it computed rather than a stored value:
-//       @_lifetime(borrow self) func slice(_ r: Range<Int>) -> Span<UInt8>
-//   (The prettier `@lifetime(borrow self)` is accepted but warns: "Unsupported use of @lifetime,
-//   use @_lifetime" — so we use the spelling the compiler actually supports.)
+// Currently empty on purpose. `LifetimeDependence` + `Lifetimes` were enabled to write `@_lifetime`-
+// annotated accessors that vend a `Span`, which turned out to be unusable here for two independent
+// reasons: a `borrow` accessor may only return a stored property (SE-0507), and `Array.span` itself
+// needs macOS 26 — see Sources/ZephyrCore/Swift64FeatureCanary.swift for the full availability matrix.
+// `borrow`/`mutate` accessors and `Span`/`RawSpan` need no flag, so nothing here is gated.
 //
-// Both flags are unstable: CI pins the toolchain to Swift 6.4.0 and `Swift64FeatureCanary.swift`
-// fails the build if a toolchain renames, re-gates, or removes either one. The parser keeps its hot
-// loop on plain index arithmetic, so only a handful of accessors depend on these features.
-// See plans/swift-6.4-adoption.md.
-let zephyrSwiftSettings: [SwiftSetting] = [
-    .enableExperimentalFeature("LifetimeDependence"),
-    .enableExperimentalFeature("Lifetimes"),
-]
+// Re-add the flags only if an explicitly annotated lifetime-dependent result becomes necessary again:
+//   .enableExperimentalFeature("LifetimeDependence"), .enableExperimentalFeature("Lifetimes"),
+let zephyrSwiftSettings: [SwiftSetting] = []
 
 let package = Package(
     name: "Zephyr",

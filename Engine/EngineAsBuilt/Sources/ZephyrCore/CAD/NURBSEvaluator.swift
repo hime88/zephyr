@@ -404,9 +404,11 @@ public enum NURBSEvaluator {
         // function's ~150 ns per call, and `findClosestParameter` calls it in a loop, so this is hit on
         // every interactive snap. Layout: [ N (stride) | left (stride) | right (stride) ].
         let stride = p + 1
-        return withTemporaryAllocation(of: Double.self, capacity: 3 * stride) { scratch in
-            for _ in 0..<(3 * stride) { scratch.append(0) }
-            var workspace = scratch.mutableSpan
+        // `withUnsafeTemporaryAllocation` (Swift 5.6) rather than `withTemporaryAllocation`: the latter
+        // is `OutputSpan`-based and not usable at the macOS 12 deployment target. The buffer arrives
+        // initialized, so the workspaces can be written by index straight away.
+        return withUnsafeTemporaryAllocation(of: Double.self, capacity: 3 * stride) { workspace in
+            for index in 0..<(3 * stride) { workspace[index] = 0 }
             let leftBase = stride
             let rightBase = 2 * stride
 

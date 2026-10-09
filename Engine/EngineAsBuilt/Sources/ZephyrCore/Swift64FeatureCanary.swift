@@ -4,44 +4,44 @@ import Foundation
 // MARK: - Swift 6.4 feature canary
 // =========================================================================
 //
-// This branch adopts Swift 6.4 APIs that are either brand new or gated behind an unstable
-// experimental feature. If a toolchain update renames, removes, or re-gates any of them, the
-// failure must show up here — in CI, on the platform we ship — rather than halfway through a
-// later refactor.
+// Why this file exists: every "new Swift API" the 6.4 release notes advertise is *not* usable on a
+// macOS 12 deployment target, and a Windows toolchain cannot tell you that — Windows does not do Apple
+// availability checking, so code compiles locally and only breaks in the macOS CI job. That happened
+// once (the first macOS build of this branch failed with ~90 availability errors), so the rule is
+// written down here and the subset we *can* use is compile-checked and run.
+//
+// ── Availability on Apple platforms (Swift 6.4 / Xcode 26-era toolchain) ────────────────────────
+//
+// Usable with deployment target macOS 12:
+//   * `borrow` / `mutate` accessors          — language feature (SE-0507), no OS availability
+//   * `Span`, `RawSpan`, `MutableSpan` types — back-deployed to macOS 10.14.4 via the
+//                                              SwiftCompatibilitySpan library; obtain them from
+//                                              `Data.withUnsafeBytes` + `Span(_unsafeStart:count:)`
+//   * `RawSpan.load(fromByteOffset:as:)`     — the safe loading API, same back-deployment
+//   * `withUnsafeTemporaryAllocation`        — Swift 5.6+
+//
+// NOT usable (compile error: "only available in macOS N.0 or newer"):
+//   * `Array.span`, `Array.mutableSpan`, `Data.span`, `String.utf8.span`  → macOS 26.0
+//     (the vending properties need stdlib/Foundation bridging that cannot be back-deployed)
+//   * `InlineArray`                                                        → macOS 26.0
+//   * `UniqueArray`, `UniqueBox`, `Ref`, `MutableRef`, `Iterable`          → macOS 27.0
+//   * `withTemporaryAllocation` (the `OutputSpan`-based one)               → treat as unavailable;
+//                                                                            use the Unsafe variant
+//
+// So: `Span` is reachable, the ergonomic ways to *get* one are not. See plans/swift-6.4-adoption.md.
 //
 // Two levels of protection:
-//
-//   1. Compile-time: this file must build on every supported deployment target. The macOS job
-//      builds with MACOSX_DEPLOYMENT_TARGET=12.0, which is what proves these APIs are actually
-//      available on our floor. Anything here that turns out to need macOS 13+ has to be dropped
-//      (Phase 1 only strictly needs `Span` + a `Data` slice).
-//   2. Runtime: `Swift64FeatureCanary.run()` exercises each API and returns the names of the
-//      checks that failed. `Swift64FeatureCanaryTests` asserts the list is empty.
-//
-// ── The rule that cost the most time to pin down ────────────────────────────────────────────────
-//
-// SE-0507 restricts what a `borrow` accessor may return: *stored properties, computed properties
-// that themselves have `borrow` accessors, or global `let` declarations*. `Array.span` is neither,
-// so this is **invalid** — even though `swiftc -typecheck` accepts it, because the diagnostic is
-// emitted during SILGen and `-typecheck` never runs SILGen:
-//
-//     var bytes: Span<UInt8> { borrow { return storage.span } }   // ❌ invalid return value
-//
-// It only surfaces in a real compile, which is why `swift test`/`swift build` catch it and a
-// type-check-only probe does not. The working shapes are:
-//
-//     @_lifetime(borrow self) func view() -> Span<UInt8> { storage.span }   // ✅ method
-//     func withBytes<R>(_ body: (Span<UInt8>) throws -> R) rethrows -> R    // ✅ closure
-//     let s = storage.span                                                  // ✅ local
-//
-// `borrow`/`mutate` accessors remain the right tool for the case SE-0507 actually targets: a
-// passthrough to a *stored* property (see `StoredStorage` below).
-//
-// See plans/swift-6.4-adoption.md for the feature list and the macOS 12 go/no-go.
+//   1. Compile-time: this file must build for the macOS 12 deployment target. Anything added here that
+//      silently requires a newer OS fails the macOS job, which is the whole point.
+//   2. Runtime: `Swift64FeatureCanary.run()` exercises each API and returns failed check names.
 public enum Swift64FeatureCanary {
 
-    /// Valid use of `borrow`/`mutate`: a passthrough to a stored property, so a large value is
-    /// exposed in place instead of being copied out by `get` and written back by `set`.
+    /// Valid use of `borrow`/`mutate`: a passthrough to a stored property, so a large value is exposed
+    /// in place instead of being copied out by `get` and written back by `set`.
+    ///
+    /// Note what this does *not* do: a `borrow` accessor may only return a stored property, a property
+    /// with its own `borrow` accessor, or a global `let` — so it cannot vend a computed `Span`, and
+    /// `borrow { return storage.span }` is rejected by SILGen (`Array.span` is macOS 26 anyway).
     public struct StoredStorage {
         private var value: [UInt8]
 
@@ -55,7 +55,8 @@ public enum Swift64FeatureCanary {
         }
     }
 
-    /// Byte storage that vends `Span` views — the shapes that survive a real compile.
+    /// Byte storage that vends a `Span` the way that works on macOS 12: the type is back-deployed, the
+    /// `Array.span` property is not.
     public struct BorrowedBytes {
         private var storage: [UInt8]
 
@@ -65,35 +66,25 @@ public enum Swift64FeatureCanary {
 
         public var count: Int { storage.count }
 
-        /// Method form: the explicit `@_lifetime(borrow self)` is what the compiler asks for when
-        /// the result is computed rather than a stored value. Enabled by the `Lifetimes` feature.
-        @_lifetime(borrow self)
-        public func view() -> Span<UInt8> {
-            storage.span
-        }
-
-        /// Closure form: no lifetime annotations and no `~Escapable` result crossing a boundary.
+        /// Borrows the array's buffer for the duration of `body`. The `Span` never escapes the closure,
+        /// which is what keeps this sound without an escaping-pointer pattern.
         public func withBytes<R>(_ body: (Span<UInt8>) throws -> R) rethrows -> R {
-            try body(storage.span)
+            try storage.withUnsafeBufferPointer { buffer in
+                try body(Span(_unsafeStart: buffer.baseAddress!, count: buffer.count))
+            }
         }
 
-        /// The Phase 1 shape: a local span cursor over stored bytes.
+        /// The Phase 1 shape: a `Span` cursor over a mapped byte buffer.
         public func sumOfFirst(_ count: Int) -> Int {
-            let bytes = storage.span
-            var total = 0
-            for index in 0..<Swift.min(count, bytes.count) { total += Int(bytes[index]) }
-            return total
+            withBytes { bytes in
+                var total = 0
+                for index in 0..<Swift.min(count, bytes.count) { total += Int(bytes[index]) }
+                return total
+            }
         }
     }
 
-    /// Compile-time check for `Iterable` (SE-0516). Never called: the generic constraint is what
-    /// has to resolve, since `Iterable` only constrains the declaration.
-    @inline(never)
-    public static func requiresIterable<T: Iterable>(_ value: borrowing T) -> Bool {
-        true
-    }
-
-    /// Exercised by the test target. Returns the names of failed checks (empty == everything works).
+    /// Exercised by the test target and by `ZephyrBench canary`. Returns failed check names.
     public static func run() -> [String] {
         var failures: [String] = []
 
@@ -107,27 +98,10 @@ public enum Swift64FeatureCanary {
         stored.bytes = [7, 8]
         check("mutate accessor write", stored.bytes == [7, 8])
 
-        // --- Span views: method, closure, and local cursor -------------------------------------
+        // --- Span, obtained the only way that works at macOS 12 --------------------------------
         let borrowed = BorrowedBytes([1, 2, 3, 4, 5])
-        check("Span from method", borrowed.view().count == 5 && borrowed.view()[2] == 3)
-        check("Span via closure", borrowed.withBytes { $0.count } == 5)
-        check("Span local cursor", borrowed.sumOfFirst(3) == 6)
-
-        // --- Slice extraction + decoding (the Phase 1 value-view shape) ------------------------
-        let source = Data([0x31, 0x32, 0x33, 0x34])   // "1234"
-        let valueBytes = source.span
-        check("Data.span", valueBytes.count == 4)
-        check("Span.extracting", valueBytes.extracting(1..<3).count == 2)
-        check("Data slice decode", String(decoding: source[1..<3], as: UTF8.self) == "23")
-
-        // --- Array.span / Array.mutableSpan (the property, not a with-style function) ----------
-        var array = [10, 20, 30]
-        check("Array.span", array.span.count == 3)
-        do {
-            var mutable = array.mutableSpan
-            mutable[0] = 99
-        }
-        check("Array.mutableSpan write-through", array[0] == 99)
+        check("Span via Data/Array buffer", borrowed.withBytes { $0.count } == 5)
+        check("Span cursor", borrowed.sumOfFirst(3) == 6)
 
         // --- RawSpan + the safe loading API (SE-0525) ------------------------------------------
         let data = Data([0x01, 0x00, 0x00, 0x00, 0xFF])
@@ -137,43 +111,14 @@ public enum Swift64FeatureCanary {
         check("RawSpan.load", loaded == 1)
         check("RawSpan.byteCount", data.withUnsafeBytes { RawSpan(_unsafeBytes: $0).byteCount } == 5)
 
-        // --- InlineArray: fixed-size inline storage -------------------------------------------
-        var inline = InlineArray<4, Int>(repeating: 0)
-        inline[1] = 7
-        check("InlineArray", inline.count == 4 && inline[1] == 7 && inline.span.count == 4)
-
-        // --- UniqueArray / UniqueBox: ownership without reference counting or CoW --------------
-        var unique = UniqueArray<Int>()
-        unique.append(3)
-        unique.append(4)
-        check("UniqueArray", unique.count == 2 && unique.span[1] == 4)
-
-        let boxed = UniqueBox(41)
-        check("UniqueBox", boxed.value == 41)
-        var boxedMutable = UniqueBox(1)
-        boxedMutable.value = 2
-        check("UniqueBox mutation", boxedMutable.value == 2)
-
-        // --- Ref / MutableRef: scoped borrows (SE-0519) ---------------------------------------
-        var counter = 5
-        let readOnly = Ref(counter)
-        check("Ref", readOnly.value == 5)
-        var mutable = MutableRef(&counter)
-        mutable.value = 6
-        check("MutableRef write-through", counter == 6)
-
-        // --- withTemporaryAllocation: scratch buffer that is initialized and cleaned up -------
-        // Note: the closure receives an `OutputSpan`, whose `count` starts at 0 — you fill it with
-        // `append` (up to `capacity`), and `span` exposes what was appended. It is not a
-        // pre-initialized indexed buffer.
-        let scratchSum = withTemporaryAllocation(of: Int.self, capacity: 8) { buffer -> Int in
-            for index in 0..<8 { buffer.append(index * 2) }
+        // --- withUnsafeTemporaryAllocation: scratch buffer that is cleaned up for us -----------
+        let scratchSum = withUnsafeTemporaryAllocation(of: Int.self, capacity: 8) { buffer -> Int in
+            for index in 0..<buffer.count { buffer[index] = index * 2 }
             var sum = 0
-            for index in 0..<buffer.span.count { sum += buffer.span[index] }
+            for index in 0..<buffer.count { sum += buffer[index] }
             return sum
         }
-        check("withTemporaryAllocation", scratchSum == 56)
-        check("withTemporaryAllocation capacity", withTemporaryAllocation(of: Int.self, capacity: 3) { $0.capacity } == 3)
+        check("withUnsafeTemporaryAllocation", scratchSum == 56)
 
         return failures
     }

@@ -709,11 +709,12 @@ public final class CADVertexBufferBuilder {
                 let start = Int(firstVtx)
                 let end = vertices.count
                 if start < end {
-                    // `MutableSpan` keeps the loop shape of the old raw-pointer version but is a safe
-                    // API and takes a real exclusive borrow of `vertices` for this scope.
-                    var spanned = vertices.mutableSpan
-                    for j in start..<end {
-                        spanned[j].entityIndex = eIdx
+                    // `Array.mutableSpan` is macOS 26+, so this stays on the raw-pointer API. The loop
+                    // is a plain exclusive write of one field across a contiguous range.
+                    vertices.withUnsafeMutableBufferPointer { buffer in
+                        for j in start..<end {
+                            buffer[j].entityIndex = eIdx
+                        }
                     }
                 }
             }

@@ -1813,13 +1813,10 @@ public enum DXFWriterBridge {
         let reversesOrientation = axisX.cross(axisY).z < 0
         var result = path
         for index in result.vertices.indices {
-            // Single-element focus: one index expression instead of eight, and the ref's exclusive
-            // borrow keeps the read of `path.vertices[index]` (the untouched original) explicit.
-            var vertex = MutableRef(&result.vertices[index])
-            vertex.value.position = transform.transformPoint(path.vertices[index].position)
-            vertex.value.startWidth = path.vertices[index].startWidth * widthScale
-            vertex.value.endWidth = path.vertices[index].endWidth * widthScale
-            vertex.value.bulge = reversesOrientation
+            result.vertices[index].position = transform.transformPoint(path.vertices[index].position)
+            result.vertices[index].startWidth = path.vertices[index].startWidth * widthScale
+            result.vertices[index].endWidth = path.vertices[index].endWidth * widthScale
+            result.vertices[index].bulge = reversesOrientation
                 ? -path.vertices[index].bulge
                 : path.vertices[index].bulge
         }

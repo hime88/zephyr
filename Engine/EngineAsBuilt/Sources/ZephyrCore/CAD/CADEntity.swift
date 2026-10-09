@@ -499,15 +499,14 @@ public struct CADPolyline: Hashable, Sendable, RandomAccessCollection, MutableCo
         let reversesOrientation = transform.scale.x * transform.scale.y < 0
         let widthScale = (abs(transform.scale.x) + abs(transform.scale.y)) * 0.5
         var result = self
+        // Written element-wise rather than through `MutableRef`: that type is macOS 27+, and this is on
+        // the transform path used by every block insert and export.
         for index in result.vertices.indices {
-            // One binding instead of six `result.vertices[index]` expressions. The ref takes an
-            // exclusive borrow of that element for the body, so reads go through it too.
-            var vertex = MutableRef(&result.vertices[index])
-            vertex.value.position = transform.transformPoint(vertex.value.position)
-            vertex.value.startWidth *= widthScale
-            vertex.value.endWidth *= widthScale
+            result.vertices[index].position = transform.transformPoint(result.vertices[index].position)
+            result.vertices[index].startWidth *= widthScale
+            result.vertices[index].endWidth *= widthScale
             if reversesOrientation {
-                vertex.value.bulge = -vertex.value.bulge
+                result.vertices[index].bulge = -result.vertices[index].bulge
             }
         }
         result.hatchEdges = result.hatchEdges.map { $0.transformed(by: transform) }

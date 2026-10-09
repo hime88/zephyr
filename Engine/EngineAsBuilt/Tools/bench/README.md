@@ -20,7 +20,7 @@ Commands:
 
 | Command | Purpose |
 |---|---|
-| `canary` | Compile-time + runtime check of every Swift 6.4 feature this branch relies on. Exits non-zero on failure. Both CI jobs run this. |
+| `canary` | Compile-time + runtime check of the Swift 6.4 features usable at a **macOS 12** deployment target. This is the guard against a Windows-only build passing while macOS fails: the Windows toolchain does not check Apple availability. Exits non-zero on failure; both CI jobs run it. The exported availability matrix lives in `Sources/ZephyrCore/Swift64FeatureCanary.swift`. |
 | `dxf <file>` | Timings + peak RSS for `DXFReader` and `DXFImporter`. |
 | `shx <file>` | Timings for SHX font parse and glyph rendering. |
 | `nurbs` | Timings for the NURBS evaluator. |
