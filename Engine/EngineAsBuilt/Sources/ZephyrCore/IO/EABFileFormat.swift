@@ -35,16 +35,14 @@ enum LittleEndianBytes {
         withUnsafeBytes(of: value) { Data($0) }
     }
 
-    /// Reads a scalar at `offset` through the safe loading API (SE-0525).
+    /// Reads a scalar at `offset`.
     ///
-    /// `RawSpan.load` performs the same unaligned load as the old `loadUnaligned` call, but it is not
-    /// `Unsafe`-annotated and traps on a short buffer rather than reading past it. Callers still guard
-    /// with `canRead(_:)`, so the trap only ever fires on a genuine bounds bug.
+    /// Deliberately `loadUnaligned` rather than the safer `RawSpan.load` from SE-0525: that API was
+    /// added in Swift 6.4, which means macOS 27 on Apple platforms, and this app targets macOS 12. The
+    /// `loadUnaligned` form is what this code used before and it is available everywhere we ship.
     @inline(__always)
-    static func read<Value: ConvertibleFromBytes>(_ type: Value.Type, from data: Data, at offset: Int) -> Value {
-        data.withUnsafeBytes { raw in
-            RawSpan(_unsafeBytes: raw).load(fromByteOffset: offset, as: Value.self)
-        }
+    static func read<Value>(_ type: Value.Type, from data: Data, at offset: Int) -> Value {
+        data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: Value.self) }
     }
 }
 

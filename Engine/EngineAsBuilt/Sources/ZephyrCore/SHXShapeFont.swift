@@ -83,21 +83,16 @@ public final class SHXShapeFont: @unchecked Sendable {
             return val
         }
 
-        /// Safe loading API (SE-0525): `RawSpan.load` performs the same unaligned little-endian read as
-        /// the old `loadUnaligned` call, but it is not `Unsafe`-annotated and traps on a short buffer
-        /// instead of reading past it.
+        // `loadUnaligned`, not `RawSpan.load`: the latter is a Swift 6.4 API (macOS 27 on Apple
+        // platforms) and this app targets macOS 12. See LittleEndianBytes.read for the same note.
         mutating func readUInt16() -> UInt16 {
-            let value = data.withUnsafeBytes { raw in
-                RawSpan(_unsafeBytes: raw).load(fromByteOffset: pos, as: UInt16.self)
-            }
+            let value = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: pos, as: UInt16.self) }
             pos += 2
             return UInt16(littleEndian: value)
         }
 
         mutating func readUInt32() -> UInt32 {
-            let value = data.withUnsafeBytes { raw in
-                RawSpan(_unsafeBytes: raw).load(fromByteOffset: pos, as: UInt32.self)
-            }
+            let value = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: pos, as: UInt32.self) }
             pos += 4
             return UInt32(littleEndian: value)
         }

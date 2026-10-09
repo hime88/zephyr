@@ -17,16 +17,21 @@ import Foundation
 //   * `Span`, `RawSpan`, `MutableSpan` types — back-deployed to macOS 10.14.4 via the
 //                                              SwiftCompatibilitySpan library; obtain them from
 //                                              `Data.withUnsafeBytes` + `Span(_unsafeStart:count:)`
-//   * `RawSpan.load(fromByteOffset:as:)`     — the safe loading API, same back-deployment
-//   * `withUnsafeTemporaryAllocation`        — Swift 5.6+
+//   * `withTemporaryAllocation`               — annotated `SwiftCompatibilitySpan 5.0`, i.e. macOS
+//                                              10.14.4+, contrary to first assumption
+//   * `withUnsafeTemporaryAllocation`         — compiler builtin, no availability gate
+//
+// NOT usable, even though the *type* it hangs off is back-deployed:
+//   * `RawSpan.load(fromByteOffset:as:)`      — SE-0525, added in Swift 6.4 → macOS 27. Use
+//                                               `loadUnaligned` (what this code did before).
 //
 // NOT usable (compile error: "only available in macOS N.0 or newer"):
 //   * `Array.span`, `Array.mutableSpan`, `Data.span`, `String.utf8.span`  → macOS 26.0
 //     (the vending properties need stdlib/Foundation bridging that cannot be back-deployed)
 //   * `InlineArray`                                                        → macOS 26.0
 //   * `UniqueArray`, `UniqueBox`, `Ref`, `MutableRef`, `Iterable`          → macOS 27.0
-//   * `withTemporaryAllocation` (the `OutputSpan`-based one)               → treat as unavailable;
-//                                                                            use the Unsafe variant
+//   * `withTemporaryAllocation`'s `OutputSpan.mutableSpan`                → see above; the function
+//                                                                            itself is fine
 //
 // So: `Span` is reachable, the ergonomic ways to *get* one are not. See plans/swift-6.4-adoption.md.
 //
@@ -103,13 +108,13 @@ public enum Swift64FeatureCanary {
         check("Span via Data/Array buffer", borrowed.withBytes { $0.count } == 5)
         check("Span cursor", borrowed.sumOfFirst(3) == 6)
 
-        // --- RawSpan + the safe loading API (SE-0525) ------------------------------------------
+        // --- RawSpan: the *type* is back-deployed, its 6.4 loading API is not -------------------
         let data = Data([0x01, 0x00, 0x00, 0x00, 0xFF])
-        let loaded: UInt32 = data.withUnsafeBytes { raw in
-            RawSpan(_unsafeBytes: raw).load(fromByteOffset: 0, as: UInt32.self)
-        }
-        check("RawSpan.load", loaded == 1)
         check("RawSpan.byteCount", data.withUnsafeBytes { RawSpan(_unsafeBytes: $0).byteCount } == 5)
+        // `RawSpan.load(fromByteOffset:as:)` (SE-0525) is deliberately *not* used: it is a Swift 6.4
+        // addition (macOS 27). Scalar loads go through `loadUnaligned`, as in LittleEndianBytes.read.
+        let loaded: UInt32 = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self) }
+        check("loadUnaligned", loaded == 1)
 
         // --- withUnsafeTemporaryAllocation: scratch buffer that is cleaned up for us -----------
         let scratchSum = withUnsafeTemporaryAllocation(of: Int.self, capacity: 8) { buffer -> Int in
