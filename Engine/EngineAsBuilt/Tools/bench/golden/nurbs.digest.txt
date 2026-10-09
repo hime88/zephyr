@@ -1,0 +1,9 @@
+evaluate: 65 points hash=2347920e2607a632
+evaluateAt: 129 samples hash=e74c0c9db461605a
+evaluateByKnotSpans: 109 points hash=b04523fef31d133d
+evaluateAdaptiveByKnotSpans: 56 points hash=38d8f0787077c203
+closest(0): t=0.0027819129150290123
+closest(1): t=0.029827130091894638
+closest(2): t=0.35150745568263436
+closest(3): t=0.8910165317782532
+DIGEST: be2cb42b6788d39
