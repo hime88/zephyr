@@ -517,6 +517,53 @@ jobs:
             Write-Warning "pdfium.dll not found."
           }
 
+          # Swift runtime DLLs. Windows Swift has no static stdlib, so the
+          # runtime must be redistributed next to the exe or the app fails
+          # with 0xC0000135 (STATUS_DLL_NOT_FOUND) on machines without Swift.
+          $swiftExe = (Get-Command swift.exe -ErrorAction SilentlyContinue).Source
+          if (-not $swiftExe) { throw "swift.exe not found on PATH - cannot locate Swift runtime DLLs" }
+          $swiftBin  = Split-Path $swiftExe -Parent   # <SwiftRoot>\Toolchains\<tc>\usr\bin
+          $swiftRoot = Split-Path (Split-Path (Split-Path (Split-Path $swiftBin -Parent) -Parent) -Parent) -Parent
+          $runtimeCandidates = @()
+          if (Test-Path "$swiftRoot\Runtimes") {
+            $runtimeCandidates += @(Get-ChildItem "$swiftRoot\Runtimes" -Directory -ErrorAction SilentlyContinue)
+          }
+          foreach ($rt in @(
+            "$env:ProgramFiles\Swift\Runtimes",
+            "$env:LOCALAPPDATA\Programs\Swift\Runtimes",
+            "C:\Library\Developer\Runtimes"
+          )) {
+            if (Test-Path $rt) { $runtimeCandidates += @(Get-ChildItem $rt -Directory -ErrorAction SilentlyContinue) }
+          }
+          $runtimeBin = $runtimeCandidates |
+            ForEach-Object { Join-Path $_.FullName "usr\bin" } |
+            Where-Object { Test-Path (Join-Path $_ "swiftCore.dll") } |
+            Sort-Object -Descending |
+            Select-Object -First 1
+          if (-not $runtimeBin) { throw "Swift runtime DLLs not found (swiftCore.dll missing) - cannot produce standalone zip" }
+          Write-Host "Swift runtime DLLs from: $runtimeBin"
+          foreach ($dll in @(
+            # stdlib core
+            "swiftCore.dll", "swiftCRT.dll", "swift_Concurrency.dll", "swiftSwiftOnoneSupport.dll",
+            # concurrency / dispatch
+            "swiftDispatch.dll", "dispatch.dll", "BlocksRuntime.dll",
+            # Foundation (Foundation.dll pulls the rest transitively)
+            "Foundation.dll", "FoundationEssentials.dll", "FoundationInternationalization.dll", "_FoundationICU.dll",
+            # overlays pulled in transitively
+            "swift_StringProcessing.dll", "swift_RegexParser.dll", "swiftSynchronization.dll",
+            "swiftObservation.dll", "swiftWinSDK.dll",
+            # VC++ runtime - not guaranteed present on a clean Windows box
+            "VCRUNTIME140.dll"
+          )) {
+            $src = Join-Path $runtimeBin $dll
+            if (Test-Path $src) {
+              Copy-Item -Path $src -Destination $dllDest -Force
+              Write-Host "  $dll"
+            } else {
+              Write-Warning "Swift runtime DLL missing from $runtimeBin : $dll"
+            }
+          }
+
           # Copy fonts (SHX/TTF/OTF)
           $fontSource = "$swiftDir\Fonts"
           if (Test-Path $fontSource) {
@@ -549,6 +596,52 @@ jobs:
 
           Write-Host "--- DLLs in output ---"
           Get-ChildItem $dllDest -Filter "*.dll" | ForEach-Object { Write-Host "  $($_.Name)" }
+
+      # ------------------------------------------------------------------
+      # 9b. Verify standalone: every non-OS import must resolve from the
+      #     output directory (no Swift/VC dirs on PATH for end users)
+      # ------------------------------------------------------------------
+      - name: Verify Standalone DLLs
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $config = "${{ inputs.configuration || 'debug' }}"
+          $binDir = "${{ github.workspace }}\Engine\EngineAsBuilt\.build\${{ matrix.swift-triple }}\$config"
+          $vcvarsPath = "${{ steps.tools.outputs.vcvarspath }}"
+
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $msvcDir = Get-ChildItem "$vsPath\VC\Tools\MSVC" -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          $dumpbin = "$($msvcDir.FullName)\bin\Hostx64\${{ matrix.arch }}\dumpbin.exe"
+
+          $depsOut = "$env:TEMP\zephyr-deps-${{ matrix.arch }}.txt"
+          $tmpBatch = "$env:TEMP\zephyr-deps-${{ matrix.arch }}.cmd"
+          Set-Content -Path $tmpBatch -Encoding ASCII -Value @(
+            "@echo off",
+            "call `"$vcvarsPath`" ${{ matrix.vcvars-arch }} >nul 2>&1",
+            "if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%",
+            "`"$dumpbin`" /dependents `"$binDir\Zephyr.exe`" > `"$depsOut`" 2>&1",
+            "if %ERRORLEVEL% neq 0 exit /b %ERRORLEVEL%"
+          )
+          cmd.exe /c $tmpBatch
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed with exit code $LASTEXITCODE" }
+
+          $deps = @(Get-Content $depsOut | ForEach-Object {
+            if ($_ -match '^\s+(\S+\.dll)') { $Matches[1] }
+          }) | Sort-Object -Unique
+
+          $osWhitelist = @('KERNEL32','USER32','ADVAPI32','SHELL32','IMM32','DWMAPI','OLE32',
+            'OLEAUT32','WS2_32','GDI32','COMCTL32','SHLWAPI','WINMM','VERSION','SETUPAPI',
+            'PSAPI','DBGHELP','UXTHEME','D3D11','DXGI','DCOMP','OPENGL32','NTDLL','MPR')
+          $missing = @($deps | Where-Object {
+            $name = $_.ToLower()
+            if ($name -like 'api-ms-win*') { return $false }
+            if ($osWhitelist -contains $_.ToUpper()) { return $false }
+            -not (Test-Path (Join-Path $binDir $_))
+          })
+          if ($missing.Count -gt 0) {
+            throw "Standalone check failed - DLLs not bundled next to Zephyr.exe: $($missing -join ', ')"
+          }
+          Write-Host "Standalone check OK - all $($deps.Count) imports resolve from the output directory or the OS."
 
       # ------------------------------------------------------------------
       # 10. Package for distribution
