@@ -635,7 +635,7 @@ jobs:
           $missing = @($deps | Where-Object {
             $name = $_.ToLower()
             if ($name -like 'api-ms-win*') { return $false }
-            if ($osWhitelist -contains $_.ToUpper()) { return $false }
+            if ($osWhitelist -contains [IO.Path]::GetFileNameWithoutExtension($_).ToUpper()) { return $false }
             -not (Test-Path (Join-Path $binDir $_))
           })
           if ($missing.Count -gt 0) {
