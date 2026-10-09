@@ -1,5 +1,5 @@
-import Foundation  // Required for ProcessInfo
 // swift-tools-version: 6.3
+import Foundation  // Required for ProcessInfo
 import PackageDescription
 
 // --- Read Environment Variables ---

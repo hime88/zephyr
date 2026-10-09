@@ -26,7 +26,7 @@ env:
 jobs:
   build:
     name: Universal (ARM64 + x64)
-    runs-on: macos-14
+    runs-on: macos-15
 
     defaults:
       run:
@@ -216,9 +216,30 @@ jobs:
           cd Engine/EngineAsBuilt
           rm -rf ~/Library/Caches/org.swift.swiftpm
           rm -rf ~/.swiftpm
+          rm -rf .build
 
-          echo "Building universal binary for arm64 and x86_64..."
-          swift build -c "$CONFIG" --arch arm64 --arch x86_64
+          echo "=== Building Engine (arm64) ==="
+          swift build -c "$CONFIG" --arch arm64 --build-path .build/arm64
+
+          echo "=== Building Engine (x86_64) ==="
+          swift build -c "$CONFIG" --arch x86_64 --build-path .build/x86_64
+
+          EXEC_ARM64=$(find .build/arm64 -name "Zephyr" -type f | grep -v "\.dSYM" | head -n 1)
+          EXEC_X64=$(find .build/x86_64 -name "Zephyr" -type f | grep -v "\.dSYM" | head -n 1)
+
+          if [ -z "$EXEC_ARM64" ] || [ -z "$EXEC_X64" ]; then
+            echo "ERROR: Failed to locate Zephyr binaries for both architectures"
+            echo "ARM64: $EXEC_ARM64"
+            echo "x64: $EXEC_X64"
+            exit 1
+          fi
+
+          echo "Merging $EXEC_ARM64 and $EXEC_X64 into universal binary..."
+          mkdir -p .build/universal
+          lipo -create -output .build/universal/Zephyr "$EXEC_ARM64" "$EXEC_X64"
+
+          echo "Universal binary created successfully:"
+          lipo -info .build/universal/Zephyr
 
       # ------------------------------------------------------------------
       # 7. Create .app Bundle
@@ -230,16 +251,13 @@ jobs:
           PDFIUM_ROOT="$HOME/dev/pdfium"
 
           cd Engine/EngineAsBuilt
-          EXEC=$(find .build -name "Zephyr" -type f | grep -v "\.dSYM" | head -n 1)
-          if [ -z "$EXEC" ] || [ ! -f "$EXEC" ]; then
-            echo "ERROR: Zephyr executable not found in .build"
+          EXEC=".build/universal/Zephyr"
+          if [ ! -f "$EXEC" ]; then
+            echo "ERROR: Universal Zephyr executable not found at $EXEC"
             exit 1
           fi
 
-          echo "Found binary at: $EXEC"
-          lipo -info "$EXEC"
-
-          BUILD_DIR="$(dirname "$EXEC")"
+          BUILD_DIR=".build/universal"
           APP_NAME="Zephyr"
           APP_ROOT="$BUILD_DIR/$APP_NAME.app"
           APP_MACOS="$APP_ROOT/Contents/MacOS"
@@ -323,10 +341,8 @@ jobs:
       # ------------------------------------------------------------------
       - name: Package .app
         run: |
-          CONFIG="${{ inputs.configuration || 'release' }}"
           cd Engine/EngineAsBuilt
-          EXEC=$(find .build -name "Zephyr" -type f | grep -v "\.dSYM" | head -n 1)
-          BUILD_DIR="$(dirname "$EXEC")"
+          BUILD_DIR=".build/universal"
           ZIP_NAME="Zephyr-macOS-Universal.zip"
 
           cd "$BUILD_DIR"
