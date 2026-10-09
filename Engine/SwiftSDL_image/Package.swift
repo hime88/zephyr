@@ -25,6 +25,13 @@ var linkerSettings: [LinkerSetting] = []
 
 // --- Platform Specific Settings ---
 #if os(macOS) || os(iOS) || os(tvOS)
+    if let frameworkPath = env["SDL3_FRAMEWORK_DIR"] {
+        csdl3ImageCSettings.append(.unsafeFlags(["-F", frameworkPath]))
+        swiftSettings.append(.unsafeFlags(["-Xcc", "-F\(frameworkPath)"]))
+        swiftTargetSettings.append(.unsafeFlags(["-Xcc", "-F\(frameworkPath)"]))
+        linkerSettings.append(.unsafeFlags(["-F\(frameworkPath)"]))
+    }
+
     // --- Core SDL3 Paths ---
     if let includePath = sdlIncludePath {
         csdl3ImageCSettings.append(.unsafeFlags(["-I", includePath]))

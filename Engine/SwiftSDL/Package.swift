@@ -21,6 +21,13 @@ var swiftTargetSettings: [SwiftSetting] = []
 
 // --- Platform Specific Settings ---
 #if os(macOS) || os(iOS) || os(tvOS)
+    if let frameworkPath = env["SDL3_FRAMEWORK_DIR"] {
+        csdl3CSettings.append(.unsafeFlags(["-F", frameworkPath]))
+        swiftSettings.append(.unsafeFlags(["-Xcc", "-F\(frameworkPath)"]))
+        swiftTargetSettings.append(.unsafeFlags(["-Xcc", "-F\(frameworkPath)"]))
+        linkerSettings.append(.unsafeFlags(["-F\(frameworkPath)"]))
+    }
+
     // Use environment variables for include and library paths
     if let includePath = sdlIncludePath {
         csdl3CSettings.append(.unsafeFlags(["-I", includePath]))

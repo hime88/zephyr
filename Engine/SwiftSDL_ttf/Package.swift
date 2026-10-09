@@ -25,6 +25,13 @@ var linkerSettings: [LinkerSetting] = []
 
 // --- Platform Specific Settings ---
 #if os(macOS) || os(iOS) || os(tvOS)
+    if let frameworkPath = env["SDL3_FRAMEWORK_DIR"] {
+        csdl3TtfCSettings.append(.unsafeFlags(["-F", frameworkPath]))
+        swiftSettings.append(.unsafeFlags(["-Xcc", "-F\(frameworkPath)"]))
+        swiftTargetSettings.append(.unsafeFlags(["-Xcc", "-F\(frameworkPath)"]))
+        linkerSettings.append(.unsafeFlags(["-F\(frameworkPath)"]))
+    }
+
     // --- Core SDL3 Paths ---
     if let includePath = sdlIncludePath {
         csdl3TtfCSettings.append(.unsafeFlags(["-I", includePath]))
@@ -84,9 +91,11 @@ var linkerSettings: [LinkerSetting] = []
         .linkedFramework("AppKit"),
         .linkedFramework("Security"),
     ])
-    // Use env var for brew lib path; default to /opt/homebrew/lib (Apple Silicon) or /usr/local/lib (Intel)
-    let brewPrefix = ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"] ?? "/opt/homebrew"
-    linkerSettings.append(.unsafeFlags(["-L\(brewPrefix)/lib"]))
+    // Fallback to Homebrew lib path only if neither explicit lib path nor framework dir is set
+    if sdlTtfLibraryPath == nil && env["SDL3_FRAMEWORK_DIR"] == nil {
+        let brewPrefix = ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"] ?? "/opt/homebrew"
+        linkerSettings.append(.unsafeFlags(["-L\(brewPrefix)/lib"]))
+    }
     // Note: brew's SDL3_ttf dylib already links freetype/harfbuzz internally,
     // so we intentionally omit explicit .linkedLibrary("freetype") / .linkedLibrary("harfbuzz") here.
 
