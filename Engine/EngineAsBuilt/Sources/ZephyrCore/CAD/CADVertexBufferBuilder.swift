@@ -709,10 +709,11 @@ public final class CADVertexBufferBuilder {
                 let start = Int(firstVtx)
                 let end = vertices.count
                 if start < end {
-                    vertices.withUnsafeMutableBufferPointer { buffer in
-                        for j in start..<end {
-                            buffer[j].entityIndex = eIdx
-                        }
+                    // `MutableSpan` keeps the loop shape of the old raw-pointer version but is a safe
+                    // API and takes a real exclusive borrow of `vertices` for this scope.
+                    var spanned = vertices.mutableSpan
+                    for j in start..<end {
+                        spanned[j].entityIndex = eIdx
                     }
                 }
             }

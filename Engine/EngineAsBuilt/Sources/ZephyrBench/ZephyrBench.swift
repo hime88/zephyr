@@ -105,7 +105,6 @@ enum Cases {
         // Uses the non-isolated importer entry point (not `CADDocument.importDXF`, which is
         // `@MainActor`) so the harness stays callable from anywhere.
         let imported = try DXFImporter.importDXFViews(filePath: path)
-        let layerNamesByID = Dictionary(uniqueKeysWithValues: imported.layers.map { ($0.handle, $0.name) })
 
         var lines: [String] = []
         func add(_ text: String) { lines.append(text) }
@@ -113,44 +112,11 @@ enum Cases {
         add("file: \((path as NSString).lastPathComponent)")
         add("pairCount: \(reader.pairCount)")
 
-        // Layers, sorted by name.
-        let layers = imported.layers.sorted { $0.name < $1.name }
-        add("layerCount: \(layers.count)")
-        for layer in layers {
-            add("layer: \(layer.name) c=\(layer.color.r),\(layer.color.g),\(layer.color.b),\(layer.color.a)"
-                + " lw=\(layer.lineWeight) lt=\(layer.lineType) vis=\(layer.isVisible) op=\(layer.opacity)")
-        }
-
-        // Blocks: name, geometry count, structural hash of the geometry.
-        let blocks = imported.blocks.sorted { $0.name < $1.name }
-        add("blockCount: \(blocks.count)")
-        for block in blocks {
-            add("block: \(block.name) geometry=\(block.geometry.count) hash=\(Self.fnv(String(describing: block.geometry)))")
-        }
-
-        // Entities. Every UUID is deliberately excluded: handles are generated per import, so a digest
-        // containing them would differ on every run and could never serve as a regression baseline.
-        let blockNamesByID = Dictionary(uniqueKeysWithValues: imported.blocks.map { ($0.handle, $0.name) })
-        var entityLines: [String] = []
-        var byPrimitive: [String: Int] = [:]
-        for entity in imported.entities {
-            let kind = entity.localGeometry?.first.map { Self.primitiveCaseName($0) } ?? "block-instance"
-            byPrimitive[kind, default: 0] += 1
-            let geometry = entity.localGeometry.map { String(describing: $0) } ?? "<block-instance>"
-            entityLines.append(
-                "entity: kind=\(kind)"
-                + " layer=\(layerNamesByID[entity.layerID] ?? "?")"
-                + " block=\(entity.blockID.flatMap { blockNamesByID[$0] } ?? "-")"
-                + " geomCount=\(entity.localGeometry?.count ?? 0)"
-                + " transform=\(Self.fnv(String(describing: entity.transform)))"
-                + " geometry=\(Self.fnv(geometry))")
-        }
-        entityLines.sort()
-        add("entityCount: \(imported.entities.count)")
-        lines.append(contentsOf: entityLines)
-        for (kind, count) in byPrimitive.sorted(by: { $0.key < $1.key }) {
-            add("primitiveKind: \(kind) count=\(count)")
-        }
+        // Layers / blocks / entities — shared with the EAB gate so both describe a document the same way.
+        lines.append(contentsOf: canonicalDocumentLines(
+            layers: imported.layers,
+            blocks: imported.blocks,
+            entities: imported.entities))
 
         return lines.joined(separator: "\n")
     }
@@ -174,9 +140,22 @@ enum Cases {
 
 
 
-    /// Compares every `*.dxf` in a directory against the `*.digest.txt` captured next to it.
-    /// Returns true when all match. This is the Phase 1 regression gate; it runs anywhere the bench
-    /// binary runs, which matters because the XCTest suite cannot execute on Windows (see `dxfDigest`).
+    /// Non-DXF gates: a fixed golden name and the digest the current build computes for it.
+    /// `shx-render` uses the shape font checked into `Tools/bench/golden/`, so it is self-contained.
+    static func builtinGateBodies(directory: String) throws -> [(name: String, body: String)] {
+        let font = URL(fileURLWithPath: directory).appendingPathComponent("simplex8.SHX").path
+        return [
+            ("eab-scalars", eabScalarsDigest()),
+            ("eab-roundtrip", try eabRoundtripDigest()),
+            ("shx-render", try shxRenderDigest(path: font)),
+            ("vertex-build", vertexBuildDigest()),
+        ]
+    }
+
+    /// Compares every `*.dxf` in a directory against the `*.digest.txt` captured next to it, plus the
+    /// built-in EAB/SHX gates. Returns true when all match. This is the Phase 1/2 regression gate; it
+    /// runs anywhere the bench binary runs, which matters because the XCTest suite cannot execute on
+    /// Windows (see `dxfDigest`).
     static func checkGoldens(directory: String, write: Bool = false) throws -> Bool {
         let url = URL(fileURLWithPath: directory)
         let contents = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
@@ -187,33 +166,44 @@ enum Cases {
         }
 
         var failures = 0
-        for fixture in fixtures {
-            let goldenURL = fixture.deletingPathExtension().appendingPathExtension("digest.txt")
+        var checked = 0
 
+        func compare(name: String, goldenURL: URL, body: () throws -> String) throws {
+            checked += 1
+            let bodyText = try body()
+            let digest = Self.fnv(bodyText)
             if write {
-                let body = try dxfDigestBody(path: fixture.path)
-                let text = body + "\nDIGEST: " + Self.fnv(body) + "\n"
-                try text.write(to: goldenURL, atomically: true, encoding: .utf8)
-                print("WROTE  \(fixture.lastPathComponent)  \(Self.fnv(body))")
-                continue
+                try (bodyText + "\nDIGEST: " + digest + "\n").write(to: goldenURL, atomically: true, encoding: .utf8)
+                print("WROTE  \(name)  \(digest)")
+                return
             }
-
             guard let expectedText = checkGoldensReadText(goldenURL),
                   let expectedDigest = checkGoldensDigestLine(expectedText) else {
-                print("MISSING GOLDEN  \(fixture.lastPathComponent)  (expected \(goldenURL.path))")
+                print("MISSING GOLDEN  \(name)  (expected \(goldenURL.path))")
                 failures += 1
-                continue
+                return
             }
-            let actualDigest = try dxfDigest(path: fixture.path, printDigest: false)
-            if actualDigest == expectedDigest {
-                print("PASS  \(fixture.lastPathComponent)  \(actualDigest)")
+            if digest == expectedDigest {
+                print("PASS  \(name)  \(digest)")
             } else {
-                print("FAIL  \(fixture.lastPathComponent)  got \(actualDigest), expected \(expectedDigest)")
+                print("FAIL  \(name)  got \(digest), expected \(expectedDigest)")
                 failures += 1
             }
         }
+
+        for fixture in fixtures {
+            try compare(
+                name: fixture.lastPathComponent,
+                goldenURL: fixture.deletingPathExtension().appendingPathExtension("digest.txt")
+            ) { try dxfDigestBody(path: fixture.path) }
+        }
+        for gate in try builtinGateBodies(directory: directory) {
+            let goldenURL = url.appendingPathComponent("\(gate.name).digest.txt")
+            try compare(name: gate.name, goldenURL: goldenURL) { gate.body }
+        }
+
         if !write {
-            print(failures == 0 ? "goldens: all \(fixtures.count) matched" : "goldens: \(failures) of \(fixtures.count) FAILED")
+            print(failures == 0 ? "goldens: all \(checked) matched" : "goldens: \(failures) of \(checked) FAILED")
         }
         return failures == 0
     }
@@ -389,7 +379,7 @@ struct ZephyrBench {
         print("")
 
         guard !arguments.isEmpty else {
-            print("usage: ZephyrBench [canary] [dxf <file>] [shx <file>] [nurbs] [dxf-digest <file>] [dxf-compare <file>] [dxf-goldens <dir>] [all <dxf> <shx>]")
+            print("usage: ZephyrBench [canary] [dxf <file>] [shx <file>] [nurbs] [dxf-digest <file>] [dxf-compare <file>] [dxf-goldens <dir>] [dxf-goldens-write <dir>] [eab-scalars] [eab-roundtrip] [all <dxf> <shx>]")
             return
         }
 
@@ -431,6 +421,14 @@ struct ZephyrBench {
                 index += 1
                 let directory = index < arguments.count ? arguments[index] : "Tools/bench/golden"
                 run("dxf-goldens-write") { _ = try Cases.checkGoldens(directory: directory, write: true) }
+            case "eab-scalars":
+                run("eab-scalars") { print(Cases.eabScalarsDigest()) }
+            case "eab-roundtrip":
+                run("eab-roundtrip") { try print(Cases.eabRoundtripDigest()) }
+            case "shx-render":
+                index += 1
+                let path = index < arguments.count ? arguments[index] : ""
+                run("shx-render") { try print(Cases.shxRenderDigest(path: path)) }
             case "all":
                 let dxf = index + 1 < arguments.count ? arguments[index + 1] : ""
                 let shx = index + 2 < arguments.count ? arguments[index + 2] : ""

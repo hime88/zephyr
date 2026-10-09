@@ -1,0 +1,6 @@
+font: simplex8.SHX
+sampleCharacters: 76
+primitiveCount: 757
+primitiveKind: line count=757
+geometryHash: 15af9a26fa907624
+DIGEST: d4bfb89cffb0e42b

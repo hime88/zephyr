@@ -219,7 +219,7 @@ public enum EABReader {
 
     /// Scan raw data for V6 documents (magic = EABMagic) and recover them as DrawingViews.
     private static func recoverV6Documents(data: Data) throws -> [DrawingView]? {
-        let magicBytes = withUnsafeBytes(of: EABMagic.littleEndian) { Data($0) }
+        let magicBytes = LittleEndianBytes.data(EABMagic.littleEndian)
         var views: [DrawingView] = []
         var searchStart = 20  // Skip V7 header region
 

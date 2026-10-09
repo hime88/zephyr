@@ -201,10 +201,10 @@ public enum EABWriter {
 
         // 4. Fill header
         var data = w.build()
-        data.replaceSubrange(0..<4, with: withUnsafeBytes(of: EABArchiveMagic.littleEndian) { Data($0) })
-        data.replaceSubrange(4..<8, with: withUnsafeBytes(of: EABVersion.littleEndian) { Data($0) })
-        data.replaceSubrange(8..<12, with: withUnsafeBytes(of: UInt32(views.count).littleEndian) { Data($0) })
-        data.replaceSubrange(12..<20, with: withUnsafeBytes(of: directoryOffset.littleEndian) { Data($0) })
+        LittleEndianBytes.patch(EABArchiveMagic.littleEndian, into: &data, at: 0)
+        LittleEndianBytes.patch(EABVersion.littleEndian, into: &data, at: 4)
+        LittleEndianBytes.patch(UInt32(views.count).littleEndian, into: &data, at: 8)
+        LittleEndianBytes.patch(directoryOffset.littleEndian, into: &data, at: 12)
 
         return data
     }
@@ -267,10 +267,10 @@ public enum EABWriter {
 
         // 4. Fill header
         var data = w.build()
-        data.replaceSubrange(0..<4, with: withUnsafeBytes(of: EABArchiveMagic.littleEndian) { Data($0) })
-        data.replaceSubrange(4..<8, with: withUnsafeBytes(of: EABVersion.littleEndian) { Data($0) })
-        data.replaceSubrange(8..<12, with: withUnsafeBytes(of: UInt32(snapshots.count).littleEndian) { Data($0) })
-        data.replaceSubrange(12..<20, with: withUnsafeBytes(of: directoryOffset.littleEndian) { Data($0) })
+        LittleEndianBytes.patch(EABArchiveMagic.littleEndian, into: &data, at: 0)
+        LittleEndianBytes.patch(EABVersion.littleEndian, into: &data, at: 4)
+        LittleEndianBytes.patch(UInt32(snapshots.count).littleEndian, into: &data, at: 8)
+        LittleEndianBytes.patch(directoryOffset.littleEndian, into: &data, at: 12)
 
         return data
     }
@@ -453,18 +453,13 @@ public enum EABWriter {
     // MARK: - Header
 
     private static func writeHeader(_ h: EABHeader, into data: inout Data, at offset: Int) {
-        data.replaceSubrange(offset..<offset+4,
-            with: withUnsafeBytes(of: h.magic.littleEndian) { Data($0) })
-        data.replaceSubrange(offset+4..<offset+8,
-            with: withUnsafeBytes(of: h.version.littleEndian) { Data($0) })
-        data.replaceSubrange(offset+8..<offset+12,
-            with: withUnsafeBytes(of: h.flags.littleEndian) { Data($0) })
+        LittleEndianBytes.patch(h.magic.littleEndian, into: &data, at: offset)
+        LittleEndianBytes.patch(h.version.littleEndian, into: &data, at: offset + 4)
+        LittleEndianBytes.patch(h.flags.littleEndian, into: &data, at: offset + 8)
         data[offset + 12] = h.unit.rawValue
         // 3 reserved bytes at offset 13-15
-        data.replaceSubrange(offset+16..<offset+24,
-            with: withUnsafeBytes(of: h.sectionTableOffset.littleEndian) { Data($0) })
-        data.replaceSubrange(offset+24..<offset+28,
-            with: withUnsafeBytes(of: h.fileCRC.littleEndian) { Data($0) })
+        LittleEndianBytes.patch(h.sectionTableOffset.littleEndian, into: &data, at: offset + 16)
+        LittleEndianBytes.patch(h.fileCRC.littleEndian, into: &data, at: offset + 24)
         // 4 reserved bytes at offset 28-31
     }
 
@@ -949,16 +944,16 @@ public enum EABWriter {
         var bytes: [UInt8] = []
         bytes.reserveCapacity(PVAVertex.stride)
         // position
-        bytes.append(contentsOf: withUnsafeBytes(of: v.px) { Array($0) })
-        bytes.append(contentsOf: withUnsafeBytes(of: v.py) { Array($0) })
-        bytes.append(contentsOf: withUnsafeBytes(of: v.pz) { Array($0) })
+        LittleEndianBytes.append(v.px, to: &bytes)
+        LittleEndianBytes.append(v.py, to: &bytes)
+        LittleEndianBytes.append(v.pz, to: &bytes)
         // normal
-        bytes.append(contentsOf: withUnsafeBytes(of: v.nx) { Array($0) })
-        bytes.append(contentsOf: withUnsafeBytes(of: v.ny) { Array($0) })
-        bytes.append(contentsOf: withUnsafeBytes(of: v.nz) { Array($0) })
+        LittleEndianBytes.append(v.nx, to: &bytes)
+        LittleEndianBytes.append(v.ny, to: &bytes)
+        LittleEndianBytes.append(v.nz, to: &bytes)
         // texCoord
-        bytes.append(contentsOf: withUnsafeBytes(of: v.u) { Array($0) })
-        bytes.append(contentsOf: withUnsafeBytes(of: v.v) { Array($0) })
+        LittleEndianBytes.append(v.u, to: &bytes)
+        LittleEndianBytes.append(v.v, to: &bytes)
         // color
         bytes.append(v.r); bytes.append(v.g); bytes.append(v.b); bytes.append(v.a)
         // padding to 56

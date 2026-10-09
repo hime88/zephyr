@@ -83,34 +83,47 @@ public final class SHXShapeFont: @unchecked Sendable {
             return val
         }
 
+        /// Safe loading API (SE-0525): `RawSpan.load` performs the same unaligned little-endian read as
+        /// the old `loadUnaligned` call, but it is not `Unsafe`-annotated and traps on a short buffer
+        /// instead of reading past it.
         mutating func readUInt16() -> UInt16 {
-            let val = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: pos, as: UInt16.self) }
+            let value = data.withUnsafeBytes { raw in
+                RawSpan(_unsafeBytes: raw).load(fromByteOffset: pos, as: UInt16.self)
+            }
             pos += 2
-            return UInt16(littleEndian: val)
+            return UInt16(littleEndian: value)
         }
 
         mutating func readUInt32() -> UInt32 {
-            let val = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: pos, as: UInt32.self) }
+            let value = data.withUnsafeBytes { raw in
+                RawSpan(_unsafeBytes: raw).load(fromByteOffset: pos, as: UInt32.self)
+            }
             pos += 4
-            return UInt32(littleEndian: val)
+            return UInt32(littleEndian: value)
         }
 
+        /// Reads to the next CR / LF / NUL. Decodes the scanned range in one step rather than
+        /// appending byte-by-byte into a scratch array.
         mutating func readString() -> String {
-            var bytes = [UInt8]()
+            let start = pos
             while pos < data.count {
                 let b = data[pos]
                 pos += 1
-                if b == 0x0D || b == 0x0A || b == 0x00 {
-                    break
-                }
-                bytes.append(b)
+                if b == 0x0D || b == 0x0A || b == 0x00 { break }
             }
-            return String(bytes: bytes, encoding: .ascii) ?? ""
+            var end = pos
+            if end > start, data[end - 1] == 0x0D || data[end - 1] == 0x0A || data[end - 1] == 0x00 {
+                end -= 1          // the terminator itself is not part of the string
+            }
+            guard end > start else { return "" }
+            return String(data: data[start..<end], encoding: .ascii) ?? ""
         }
 
+        /// Returns a copy, not a slice: callers index the result from zero (`decodeShape` is handed
+        /// `offset: 0`), and a `Data` slice keeps the original buffer's indices.
         mutating func readBytes(_ count: Int) -> Data {
             let start = pos
-            let end = pos + count
+            let end = min(pos + count, data.count)
             pos += count
             return data.subdata(in: start..<end)
         }
@@ -1498,7 +1511,7 @@ public final class SHXShapeFont: @unchecked Sendable {
     // MARK: - Helpers
 
     private func readUInt16(_ data: Data, at offset: Int) -> UInt16 {
-        data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt16.self) }
+        UInt16(littleEndian: LittleEndianBytes.read(UInt16.self, from: data, at: offset))
     }
 
     private static func stripGlyphHeader(_ glyphData: Data) -> Data {

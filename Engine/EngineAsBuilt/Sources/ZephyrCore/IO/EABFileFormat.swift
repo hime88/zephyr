@@ -1,6 +1,54 @@
 import Foundation
 
 // =========================================================================
+// MARK: - Little-endian byte helpers
+// =========================================================================
+
+/// The one place that turns a scalar into its little-endian byte representation for the EAB format.
+///
+/// Every fixed-width write used to spell the conversion out inline, allocating a throwaway `Data`
+/// (`withUnsafeBytes(of: v) { Data($0) }`) or `[UInt8]` (`… { Array($0) }`) per field. The byte order
+/// and width now live here, so a reader can check the format's endianness in one place instead of 22.
+///
+/// The buffers are handed straight to `Data`/`Array`, so no intermediate container is allocated.
+enum LittleEndianBytes {
+    @inline(__always)
+    static func append<Value>(_ value: Value, to data: inout Data) {
+        withUnsafeBytes(of: value) { data.append(contentsOf: $0) }
+    }
+
+    @inline(__always)
+    static func append<Value>(_ value: Value, to bytes: inout [UInt8]) {
+        withUnsafeBytes(of: value) { bytes.append(contentsOf: $0) }
+    }
+
+    @inline(__always)
+    static func patch<Value>(_ value: Value, into data: inout Data, at offset: Int) {
+        withUnsafeBytes(of: value) {
+            data.replaceSubrange(offset..<(offset + $0.count), with: $0)
+        }
+    }
+
+    /// A `Data` containing just the little-endian bytes of a scalar.
+    @inline(__always)
+    static func data<Value>(_ value: Value) -> Data {
+        withUnsafeBytes(of: value) { Data($0) }
+    }
+
+    /// Reads a scalar at `offset` through the safe loading API (SE-0525).
+    ///
+    /// `RawSpan.load` performs the same unaligned load as the old `loadUnaligned` call, but it is not
+    /// `Unsafe`-annotated and traps on a short buffer rather than reading past it. Callers still guard
+    /// with `canRead(_:)`, so the trap only ever fires on a genuine bounds bug.
+    @inline(__always)
+    static func read<Value: ConvertibleFromBytes>(_ type: Value.Type, from data: Data, at offset: Int) -> Value {
+        data.withUnsafeBytes { raw in
+            RawSpan(_unsafeBytes: raw).load(fromByteOffset: offset, as: Value.self)
+        }
+    }
+}
+
+// =========================================================================
 // MARK: - EABFileFormat
 //
 // Defines the Zephyr Binary (EAB) file format structures.
@@ -223,20 +271,23 @@ public final class BinaryWriter {
 
     public var count: Int { data.count }
 
+    /// The bytes written so far. Exposed for the verification harness (`ZephyrBench eab-scalars`).
+    public var bytes: Data { data }
+
     // MARK: Fixed-width writes
 
     @inline(__always)
-    public func writeUInt8(_ v: UInt8) { data.append(contentsOf: [v]) }
+    public func writeUInt8(_ v: UInt8) { data.append(v) }
 
     @inline(__always)
     public func writeUInt16(_ v: UInt16) {
-        withUnsafeBytes(of: v.littleEndian) { data.append(contentsOf: $0) }
+        LittleEndianBytes.append(v.littleEndian, to: &data)
         checkProgress()
     }
 
     @inline(__always)
     public func writeUInt32(_ v: UInt32) {
-        withUnsafeBytes(of: v.littleEndian) { data.append(contentsOf: $0) }
+        LittleEndianBytes.append(v.littleEndian, to: &data)
         checkProgress()
     }
 
@@ -247,24 +298,24 @@ public final class BinaryWriter {
 
     @inline(__always)
     public func writeUInt64(_ v: UInt64) {
-        withUnsafeBytes(of: v.littleEndian) { data.append(contentsOf: $0) }
+        LittleEndianBytes.append(v.littleEndian, to: &data)
         checkProgress()
     }
 
     @inline(__always)
     public func writeFloat32(_ v: Float) {
-        withUnsafeBytes(of: v) { data.append(contentsOf: $0) }
+        LittleEndianBytes.append(v, to: &data)
         checkProgress()
     }
 
     @inline(__always)
     public func writeFloat64(_ v: Double) {
-        withUnsafeBytes(of: v) { data.append(contentsOf: $0) }
+        LittleEndianBytes.append(v, to: &data)
         checkProgress()
     }
 
     public func writeUUID(_ uuid: UUID) {
-        withUnsafeBytes(of: uuid.uuid) { data.append(contentsOf: $0) }  // 16 bytes
+        LittleEndianBytes.append(uuid.uuid, to: &data)   // 16 bytes
         checkProgress()
     }
 
@@ -317,20 +368,17 @@ public final class BinaryWriter {
 
     /// Fill a size placeholder at the given offset.
     public func fillUInt32(at offset: Int, value: UInt32) {
-        let bytes = withUnsafeBytes(of: value.littleEndian) { Data($0) }
-        data.replaceSubrange(offset..<offset+4, with: bytes)
+        LittleEndianBytes.patch(value.littleEndian, into: &data, at: offset)
     }
 
     /// Fill a UInt64 placeholder at the given offset.
     public func fillUInt64(at offset: Int, value: UInt64) {
-        let bytes = withUnsafeBytes(of: value.littleEndian) { Data($0) }
-        data.replaceSubrange(offset..<offset+8, with: bytes)
+        LittleEndianBytes.patch(value.littleEndian, into: &data, at: offset)
     }
 
     /// Fill a Float64 placeholder at the given offset.
     public func fillFloat64(at offset: Int, value: Double) {
-        let bytes = withUnsafeBytes(of: value) { Data($0) }
-        data.replaceSubrange(offset..<offset+8, with: bytes)
+        LittleEndianBytes.patch(value, into: &data, at: offset)
     }
 
     public func build() -> Data { data }
@@ -371,14 +419,14 @@ public final class BinaryReader {
 
     public func readUInt16() -> UInt16 {
         guard canRead(2) else { return 0 }
-        let v = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cursor, as: UInt16.self) }
+        let v = LittleEndianBytes.read(UInt16.self, from: data, at: cursor)
         cursor += 2
         return UInt16(littleEndian: v)
     }
 
     public func readUInt32() -> UInt32 {
         guard canRead(4) else { return 0 }
-        let v = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cursor, as: UInt32.self) }
+        let v = LittleEndianBytes.read(UInt32.self, from: data, at: cursor)
         cursor += 4
         return UInt32(littleEndian: v)
     }
@@ -389,21 +437,21 @@ public final class BinaryReader {
 
     public func readUInt64() -> UInt64 {
         guard canRead(8) else { return 0 }
-        let v = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cursor, as: UInt64.self) }
+        let v = LittleEndianBytes.read(UInt64.self, from: data, at: cursor)
         cursor += 8
         return UInt64(littleEndian: v)
     }
 
     public func readFloat32() -> Float {
         guard canRead(4) else { return 0 }
-        let v = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cursor, as: Float.self) }
+        let v = LittleEndianBytes.read(Float.self, from: data, at: cursor)
         cursor += 4
         return v
     }
 
     public func readFloat64() -> Double {
         guard canRead(8) else { return 0 }
-        let v = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cursor, as: Double.self) }
+        let v = LittleEndianBytes.read(Double.self, from: data, at: cursor)
         cursor += 8
         return v
     }

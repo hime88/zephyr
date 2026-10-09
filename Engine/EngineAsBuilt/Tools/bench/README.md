@@ -26,8 +26,11 @@ Commands:
 | `nurbs` | Timings for the NURBS evaluator. |
 | `dxf-digest <file>` | Prints a canonical, UUID-free digest of everything the importer produces from a file, plus its hash. |
 | `dxf-compare <file>` | Parses the same file with **both** pair parsers (byte scanner and the legacy decode-then-split) and reports whether their pair sequences are identical, with timings. This is the equivalence proof for the Phase 1 tokenizer swap. |
-| `dxf-goldens [dir]` | Compares every `*.dxf` in `dir` (default `Tools/bench/golden`) against its `*.digest.txt`. Exits non-zero on any mismatch. CI runs this. |
-| `dxf-goldens-write [dir]` | **Re-blesses** the golden files from the current parser. Only run this after inspecting the diff — it is the "accept new behaviour" button. |
+| `dxf-goldens [dir]` | Compares every `*.dxf` in `dir` (default `Tools/bench/golden`) **plus the built-in gates** (`eab-scalars`, `eab-roundtrip`, `shx-render`, `vertex-build`) against their `*.digest.txt`. Exits non-zero on any mismatch. CI runs this. |
+| `dxf-goldens-write [dir]` | **Re-blesses** the golden files from the current build. Only run this after inspecting the diff — it is the "accept new behaviour" button. |
+| `eab-scalars` | Prints the exact bytes `BinaryWriter` produces for a fixed scalar sequence (byte order / width / reserve-fill pin). |
+| `eab-roundtrip` | Serializes a document covering every primitive kind, reads it back, prints a UUID-free digest of the result. |
+| `shx-render <font>` | Parses an SHX font and digests the geometry rendered for a fixed string. |
 
 ## The borrow-accessor benchmark
 
@@ -38,6 +41,19 @@ swiftc -O -parse-as-library -swift-version 6 borrow-accessors.swift -o borrow-ac
 Results and the assembly-level explanation live in `plans/swift-6.4-baseline.md`. Headline: `mutate` on a
 single-element write into 8 KB of inline storage is ~197× faster than the `get`+`set` round trip
 (0.92 ns vs 181 ns); `borrow` on `Array` only removes a retain/release.
+
+## Golden fixtures and gates
+
+`golden/` holds the DXF fixtures, the SHX font used by the `shx-render` gate, and one `*.digest.txt` per
+check. Ten checks run under `dxf-goldens`:
+
+| Gate | What a change in it means |
+|---|---|
+| 6 × `*.dxf` fixtures | The DXF parser or importer changed its output (LF/CRLF/CR, indented codes, padded values, blank lines, stray code lines). |
+| `eab-scalars` | An EAB scalar changed width, byte order, or the reserve/fill patching. |
+| `eab-roundtrip` | EAB serialization or deserialization changed what a document round-trips to. |
+| `shx-render` | SHX font parsing or glyph rendering changed. |
+| `vertex-build` | Vertex tessellation changed (entity-index tagging and batch layout included). |
 
 ## Adding a golden fixture
 
