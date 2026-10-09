@@ -173,4 +173,4 @@ foreach ($asset in @("Fonts", "Plot Styles", "Patterns")) {
     }
 }
 
-Write-Host "`n### Build complete. Run with: .\$dllDest\Zephyr.exe ###" -ForegroundColor Green
+Write-Host "`n### Build complete. Run: cd `"$dllDest`" ; .\Zephyr.exe ###" -ForegroundColor Green

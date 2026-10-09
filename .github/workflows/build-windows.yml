@@ -555,6 +555,53 @@ jobs:
             Write-Warning "pdfium.dll not found."
           }
 
+          # Swift runtime DLLs. Windows Swift has no static stdlib, so the
+          # runtime must be redistributed next to the exe or the app fails
+          # with 0xC0000135 (STATUS_DLL_NOT_FOUND) on machines without Swift.
+          $swiftExe = (Get-Command swift.exe -ErrorAction SilentlyContinue).Source
+          if (-not $swiftExe) { throw "swift.exe not found on PATH - cannot locate Swift runtime DLLs" }
+          $swiftBin  = Split-Path $swiftExe -Parent   # <SwiftRoot>\Toolchains\<tc>\usr\bin
+          $swiftRoot = Split-Path (Split-Path (Split-Path (Split-Path $swiftBin -Parent) -Parent) -Parent) -Parent
+          $runtimeCandidates = @()
+          if (Test-Path "$swiftRoot\Runtimes") {
+            $runtimeCandidates += @(Get-ChildItem "$swiftRoot\Runtimes" -Directory -ErrorAction SilentlyContinue)
+          }
+          foreach ($rt in @(
+            "$env:ProgramFiles\Swift\Runtimes",
+            "$env:LOCALAPPDATA\Programs\Swift\Runtimes",
+            "C:\Library\Developer\Runtimes"
+          )) {
+            if (Test-Path $rt) { $runtimeCandidates += @(Get-ChildItem $rt -Directory -ErrorAction SilentlyContinue) }
+          }
+          $runtimeBin = $runtimeCandidates |
+            ForEach-Object { Join-Path $_.FullName "usr\bin" } |
+            Where-Object { Test-Path (Join-Path $_ "swiftCore.dll") } |
+            Sort-Object -Descending |
+            Select-Object -First 1
+          if (-not $runtimeBin) { throw "Swift runtime DLLs not found (swiftCore.dll missing) - cannot produce standalone zip" }
+          Write-Host "Swift runtime DLLs from: $runtimeBin"
+          foreach ($dll in @(
+            # stdlib core
+            "swiftCore.dll", "swiftCRT.dll", "swift_Concurrency.dll", "swiftSwiftOnoneSupport.dll",
+            # concurrency / dispatch
+            "swiftDispatch.dll", "dispatch.dll", "BlocksRuntime.dll",
+            # Foundation (Foundation.dll pulls the rest transitively)
+            "Foundation.dll", "FoundationEssentials.dll", "FoundationInternationalization.dll", "_FoundationICU.dll",
+            # overlays pulled in transitively
+            "swift_StringProcessing.dll", "swift_RegexParser.dll", "swiftSynchronization.dll",
+            "swiftObservation.dll", "swiftWinSDK.dll",
+            # VC++ runtime - not guaranteed present on a clean Windows box
+            "VCRUNTIME140.dll"
+          )) {
+            $src = Join-Path $runtimeBin $dll
+            if (Test-Path $src) {
+              Copy-Item -Path $src -Destination $dllDest -Force
+              Write-Host "  $dll"
+            } else {
+              Write-Warning "Swift runtime DLL missing from $runtimeBin : $dll"
+            }
+          }
+
           # Copy fonts (SHX/TTF/OTF)
           $fontSource = "$swiftDir\Fonts"
           if (Test-Path $fontSource) {
@@ -589,6 +636,26 @@ jobs:
           Get-ChildItem $dllDest -Filter "*.dll" | ForEach-Object { Write-Host "  $($_.Name)" }
 
       # ------------------------------------------------------------------
+      # 9b. Verify standalone launch (no Swift/VC dirs on PATH)
+      # ------------------------------------------------------------------
+      - name: Verify Standalone Launch
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $config = "${{ inputs.configuration || 'debug' }}"
+          $binDir = "${{ github.workspace }}\Engine\EngineAsBuilt\.build\${{ matrix.swift-triple }}\$config"
+
+          # Strip toolchain dirs from PATH so the loader must resolve every
+          # dependency from the exe directory - exactly what an end-user
+          # machine without Swift installed sees.
+          $env:PATH = "C:\Windows\System32;C:\Windows"
+          & "$binDir\ZephyrBench.exe" canary
+          if ($LASTEXITCODE -ne 0) {
+            throw "ZephyrBench.exe failed to launch standalone (exit code $LASTEXITCODE). Missing DLL?"
+          }
+          Write-Host "Standalone launch OK - all dependencies resolve from the output directory."
+
+      # ------------------------------------------------------------------
       # 10. Package for distribution
       # ------------------------------------------------------------------
       - name: Package Build
@@ -599,7 +666,7 @@ jobs:
           $zipName  = "Zephyr-Windows-${{ matrix.arch }}.zip"
           $zipPath  = "$env:RUNNER_TEMP\$zipName"
 
-          # Stage only runtime-required files (skip .build dirs, index/, Modules/, ModuleCache/) 
+          # Stage only runtime-required files (skip .build dirs, index/, Modules/, ModuleCache/)
           $stageDir = "$env:RUNNER_TEMP\pkg-${{ matrix.arch }}"
           New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
