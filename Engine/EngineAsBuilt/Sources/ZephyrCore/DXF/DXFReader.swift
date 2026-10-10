@@ -774,7 +774,8 @@ extension DXFReader {
             case 90: e.vertexCount = i(v)
             case 10:
                 if let pending = current { vertices.append(pending) }
-                var fresh = DXFVertex2D()
+                // `DXFVertex2D` is a class, so the binding itself is never mutated.
+                let fresh = DXFVertex2D()
                 fresh.x = d(v)
                 current = fresh
             case 20: current?.y = d(v)
