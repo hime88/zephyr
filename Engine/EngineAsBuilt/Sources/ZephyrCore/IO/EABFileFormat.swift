@@ -37,12 +37,17 @@ enum LittleEndianBytes {
 
     /// Reads a scalar at `offset`.
     ///
-    /// Deliberately `loadUnaligned` rather than the safer `RawSpan.load` from SE-0525: that API was
-    /// added in Swift 6.4, which means macOS 27 on Apple platforms, and this app targets macOS 12. The
-    /// `loadUnaligned` form is what this code used before and it is available everywhere we ship.
+    /// Uses the safe `RawSpan.load` (SE-0525). Despite being a Swift 6.4 proposal, the plain
+    /// `load(fromByteOffset:as:)` sits in an extension annotated
+    /// `@available(SwiftCompatibilitySpan 5.0, *)` — macOS 10.14.4+ — alongside the rest of the Span
+    /// family, so it is usable at our macOS 12 floor. (Only the `ByteOrder` overload is gated at
+    /// `StdlibDeploymentTarget 6.4`.) An earlier revision used `loadUnaligned` on the mistaken belief
+    /// that this needed macOS 27.
     @inline(__always)
-    static func read<Value>(_ type: Value.Type, from data: Data, at offset: Int) -> Value {
-        data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: Value.self) }
+    static func read<Value: ConvertibleFromBytes>(_ type: Value.Type, from data: Data, at offset: Int) -> Value {
+        data.withUnsafeBytes { raw in
+            RawSpan(_unsafeBytes: raw).load(fromByteOffset: offset, as: Value.self)
+        }
     }
 }
 

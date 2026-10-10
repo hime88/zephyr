@@ -83,18 +83,18 @@ public final class SHXShapeFont: @unchecked Sendable {
             return val
         }
 
-        // `loadUnaligned`, not `RawSpan.load`: the latter is a Swift 6.4 API (macOS 27 on Apple
-        // platforms) and this app targets macOS 12. See LittleEndianBytes.read for the same note.
+        // `RawSpan.load` (SE-0525) — safe loading, and available at macOS 10.14.4+ via
+        // SwiftCompatibilitySpan despite the 6.4 proposal number. See LittleEndianBytes.read.
         mutating func readUInt16() -> UInt16 {
-            let value = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: pos, as: UInt16.self) }
+            let value = UInt16(littleEndian: LittleEndianBytes.read(UInt16.self, from: data, at: pos))
             pos += 2
-            return UInt16(littleEndian: value)
+            return value
         }
 
         mutating func readUInt32() -> UInt32 {
-            let value = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: pos, as: UInt32.self) }
+            let value = UInt32(littleEndian: LittleEndianBytes.read(UInt32.self, from: data, at: pos))
             pos += 4
-            return UInt32(littleEndian: value)
+            return value
         }
 
         /// Reads to the next CR / LF / NUL. Decodes the scanned range in one step rather than
