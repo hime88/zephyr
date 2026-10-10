@@ -10,6 +10,11 @@ deps
 PLAN.md
 profile.trace
 *.dxf
+# ...except the DXF parser's golden fixtures, which are hand-written, a few
+# hundred bytes each, and required by `ZephyrBench dxf-goldens` in CI. Without
+# this exemption the fixtures are missing from a clean checkout and the gate
+# reports "no .dxf fixtures found".
+!Engine/EngineAsBuilt/Tools/bench/golden/*.dxf
 *.eab
 *.obj
 repomix-output.*

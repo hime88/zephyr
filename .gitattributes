@@ -1,0 +1,11 @@
+# The DXF golden fixtures exist precisely to pin the parser's behaviour on
+# specific line endings: minimal_lf (LF), minimal_crlf (CRLF) and minimal_cr
+# (lone CR). `core.autocrlf=true` - the default on Windows checkouts - already
+# rewrote the CRLF fixture to LF on commit once, which would have left two of the
+# three fixtures byte-identical and quietly dropped that coverage (the digests
+# would still match, so nothing would have complained).
+#
+# `-text` disables all EOL conversion for these paths, so what is committed is
+# what is checked out, on every platform.
+Engine/EngineAsBuilt/Tools/bench/golden/*.dxf -text
+Engine/EngineAsBuilt/Tools/bench/golden/*.SHX -text

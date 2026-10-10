@@ -163,7 +163,21 @@ enum Cases {
         let contents = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
         let fixtures = contents.filter { $0.pathExtension.lowercased() == "dxf" }.sorted { $0.path < $1.path }
         guard !fixtures.isEmpty else {
+            // This failed in CI once because `*.dxf` is in .gitignore: the fixtures existed locally, the
+            // commit silently skipped them, and the gate reported only "no .dxf fixtures found".
+            let present = contents.map(\.lastPathComponent).sorted()
             print("no .dxf fixtures found in \(directory)")
+            if present.isEmpty {
+                print("  the directory is empty or does not exist")
+            } else {
+                print("  found instead: \(present.joined(separator: ", "))")
+                if present.contains(where: { $0.hasSuffix(".digest.txt") }) {
+                    print("  digest files without fixtures means they are missing from this checkout:")
+                    print("  *.dxf is in .gitignore, so the fixtures need the exemption added there,")
+                    print("  and must be committed with -text (see .gitattributes — EOL conversion would")
+                    print("  rewrite the LF/CRLF fixtures and quietly drop that coverage).")
+                }
+            }
             return false
         }
 
