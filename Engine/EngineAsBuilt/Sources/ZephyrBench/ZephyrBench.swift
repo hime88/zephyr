@@ -411,6 +411,10 @@ struct ZephyrBench {
                 index += 1
                 let path = index < arguments.count ? arguments[index] : ""
                 run("dxf-digest") { _ = try Cases.dxfDigest(path: path) }
+            case "value-parse":
+                index += 1
+                let path = index < arguments.count ? arguments[index] : ""
+                run("value-parse") { Cases.valueParseBenchmark(path: path) }
             case "dxf-profile":
                 index += 1
                 let path = index < arguments.count ? arguments[index] : ""

@@ -529,25 +529,29 @@ public class DXFReader {
         // payload with opaque group codes that look like normal MTEXT placement
         // fields; ignore that payload so later 10/20/40 codes do not overwrite
         // the real insertion point or text height.
-        var props: [(Int, String)] = []
+        let __ptCollect = DXFProfile.tic()
+        // One array, built in order: the entity type first, then its pairs. The previous shape built
+        // `props` and then copied the whole thing into `allPairs` with an insert-at-0 shift — two
+        // allocations and an O(n) memmove per entity, for 75,942 entities.
+        var allPairs: [(Int, String)] = []
+        allPairs.reserveCapacity(24)
+        allPairs.append((0, typeName))
+        let isMTEXT = (typeName == "MTEXT")   // hoisted: this was a String compare per pair
         var idx = startPos + 1
         var skippingEmbeddedMTextObject = false
         while idx < pairs.count {
             let (c, v) = pairs[idx]
             if c == 0 { break }
-            if typeName == "MTEXT", c == 101, v.uppercased() == "EMBEDDED OBJECT" {
+            if isMTEXT, c == 101, v.uppercased() == "EMBEDDED OBJECT" {
                 skippingEmbeddedMTextObject = true
                 idx += 1
                 continue
             }
-            if !skippingEmbeddedMTextObject { props.append((c, v)) }
+            if !skippingEmbeddedMTextObject { allPairs.append((c, v)) }
             idx += 1
         }
         startPos = idx  // advance to next 0
-
-        // Also store all pairs including the type for convenience
-        var allPairs = props
-        allPairs.insert((0, typeName), at: 0)
+        DXFProfile.toc(__ptCollect, "    parseEntity: collect pairs")
 
         switch typeName {
         case "POINT":    return parsePoint(allPairs)
@@ -743,9 +747,24 @@ extension DXFReader {
     }
 
     func parseLWPolyline(_ pairs: [(Int, String)]) -> DXFLWPolylineEntity {
+        let __ptLw = DXFProfile.tic()
+        defer { DXFProfile.toc(__ptLw, "    parseLWPolyline body") }
         let e = DXFLWPolylineEntity()
         applyCommon(pairs, to: e)
-        var vertex: DXFVertex2D?
+
+        // Vertices are assembled in a local array and handed to the entity once.
+        //
+        // The previous shape appended a fresh vertex on every code 10 and then located it again for
+        // each of 20/40/41/42 via `e.vertices.last?.…` — four optional-chained writes through a class
+        // property per vertex, plus array growth. Reserving from the number of code-10 pairs removes
+        // the regrowth, and a local `current` removes the re-lookup. Measured at 3.59 us per polyline
+        // over 75,939 entities (~78% of parseSections on the 23 MB reference drawing).
+        var vertexCapacity = 0
+        for (c, _) in pairs where c == 10 { vertexCapacity += 1 }
+        var vertices: [DXFVertex2D] = []
+        vertices.reserveCapacity(vertexCapacity)
+        var current: DXFVertex2D?
+
         for (c, v) in pairs {
             switch c {
             case 38: e.elevation = d(v)
@@ -754,19 +773,22 @@ extension DXFReader {
             case 70: e.flags = i(v)
             case 90: e.vertexCount = i(v)
             case 10:
-                vertex = DXFVertex2D()
-                vertex!.x = d(v)
-                if let vt = vertex { e.vertices.append(vt) }
-            case 20: e.vertices.last?.y = d(v)
-            case 40: e.vertices.last?.startWidth = d(v)
-            case 41: e.vertices.last?.endWidth = d(v)
-            case 42: e.vertices.last?.bulge = d(v)
+                if let pending = current { vertices.append(pending) }
+                var fresh = DXFVertex2D()
+                fresh.x = d(v)
+                current = fresh
+            case 20: current?.y = d(v)
+            case 40: current?.startWidth = d(v)
+            case 41: current?.endWidth = d(v)
+            case 42: current?.bulge = d(v)
             case 210: e.extPoint.x = d(v)
             case 220: e.extPoint.y = d(v)
             case 230: e.extPoint.z = d(v)
             default: break
             }
         }
+        if let pending = current { vertices.append(pending) }
+        e.vertices = vertices
         return e
     }
 
@@ -2859,6 +2881,8 @@ extension DXFReader {
     // MARK: - Helpers
 
     func applyCommon(_ pairs: [(Int, String)], to entity: DXFEntity) {
+        let __ptCommon = DXFProfile.tic()
+        defer { DXFProfile.toc(__ptCommon, "    applyCommon (shared attributes)") }
         var inAppData = false
         var currentAppBlock: [(code: Int, value: Any)] = []
         var groupTransparency: Int32?
