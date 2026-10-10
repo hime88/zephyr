@@ -404,12 +404,15 @@ public enum NURBSEvaluator {
         // function's ~150 ns per call, and `findClosestParameter` calls it in a loop, so this is hit on
         // every interactive snap. Layout: [ N (stride) | left (stride) | right (stride) ].
         let stride = p + 1
-        // `withUnsafeTemporaryAllocation` rather than the `OutputSpan`-based `withTemporaryAllocation`:
-        // the Unsafe variant is a compiler builtin with no availability annotation at all, so there is
-        // nothing to check against the macOS 12 deployment target, and the buffer arrives initialized
-        // (the workspaces can be written by index straight away).
-        return withUnsafeTemporaryAllocation(of: Double.self, capacity: 3 * stride) { workspace in
-            for index in 0..<(3 * stride) { workspace[index] = 0 }
+        // `withTemporaryAllocation` (SE-0524) rather than the `withUnsafe…` variant: same stack
+        // allocation, but the storage arrives as an `OutputSpan` so initialization is tracked by the
+        // standard library instead of by hand. Both `withTemporaryAllocation` and `OutputSpan` are
+        // annotated `@available(SwiftCompatibilitySpan 5.0, *)` — macOS 10.14.4+ — so this is available
+        // at our macOS 12 floor (the `OutputSpan: Iterable` conformance is the 6.4-gated part, and is
+        // not used here). Swift64FeatureCanary exercises this so the macOS job keeps checking it.
+        return withTemporaryAllocation(of: Double.self, capacity: 3 * stride) { output in
+            for _ in 0..<(3 * stride) { output.append(0) }
+            var workspace = output.mutableSpan
             let leftBase = stride
             let rightBase = 2 * stride
 

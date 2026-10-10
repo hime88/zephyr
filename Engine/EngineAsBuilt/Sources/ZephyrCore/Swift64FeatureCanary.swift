@@ -30,8 +30,8 @@ import Foundation
 //     (the vending properties need stdlib/Foundation bridging that cannot be back-deployed)
 //   * `InlineArray`                                                        → macOS 26.0
 //   * `UniqueArray`, `UniqueBox`, `Ref`, `MutableRef`, `Iterable`          → macOS 27.0
-//   * `withTemporaryAllocation`'s `OutputSpan.mutableSpan`                → see above; the function
-//                                                                            itself is fine
+//   * `OutputSpan`'s `Iterable` conformance                                  → macOS 27 (the type itself
+//                                                                            is macOS 10.14.4+, see above)
 //
 // So: `Span` is reachable, the ergonomic ways to *get* one are not. See plans/swift-6.4-adoption.md.
 //
@@ -89,6 +89,19 @@ public enum Swift64FeatureCanary {
         }
     }
 
+    /// Compile-time guard that `OutputSpan` itself is available at our deployment target.
+    ///
+    /// The *function* `withTemporaryAllocation` being available is not the interesting part — its
+    /// parameter type is. `OutputSpan` is annotated `@available(SwiftCompatibilitySpan 5.0, *)`
+    /// (macOS 10.14.4+), but a future toolchain could gate the type higher the way it gates the
+    /// `OutputSpan: Iterable` conformance (macOS 27). Naming it in a signature is enough to fail the
+    /// macOS build if that happens, and unlike an explicit closure parameter annotation this does not
+    /// trip the SILGen crash noted in `run()`.
+    @inline(never)
+    public static func requiresOutputSpan(_ span: borrowing OutputSpan<Int>) -> Bool {
+        true
+    }
+
     /// Exercised by the test target and by `ZephyrBench canary`. Returns failed check names.
     public static func run() -> [String] {
         var failures: [String] = []
@@ -116,14 +129,31 @@ public enum Swift64FeatureCanary {
         let loaded: UInt32 = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self) }
         check("loadUnaligned", loaded == 1)
 
-        // --- withUnsafeTemporaryAllocation: scratch buffer that is cleaned up for us -----------
-        let scratchSum = withUnsafeTemporaryAllocation(of: Int.self, capacity: 8) { buffer -> Int in
+        // --- withTemporaryAllocation: scratch buffer with initialization tracked by the library -----
+        // Two swift-frontend 6.4 SILGen crashes live in this shape, both worth upstream reports:
+        //   * naming the closure parameter `(buffer: inout OutputSpan<Int>)` explicitly, and
+        //   * touching `buffer.mutableSpan` inside the loop condition/body (a fresh temporary
+        //     `~Escapable` per iteration)
+        // both fail the assertion `value->getOwnershipKind() == OwnershipKind::Guaranteed`
+        // (SILGen/ManagedValue.h:183). Inferring the closure parameter and binding `mutableSpan`
+        // once — the shape the evaluator uses — compiles cleanly.
+        let scratchSum = withTemporaryAllocation(of: Int.self, capacity: 8) { output -> Int in
+            for index in 0..<8 { output.append(index * 2) }
+            var workspace = output.mutableSpan
+            var sum = 0
+            for index in 0..<workspace.count { sum += workspace[index] }
+            return sum
+        }
+        check("withTemporaryAllocation + OutputSpan", scratchSum == 56)
+
+        // --- withUnsafeTemporaryAllocation: still fine, and what the render/vertex path uses ------
+        let unsafeScratchSum = withUnsafeTemporaryAllocation(of: Int.self, capacity: 8) { buffer -> Int in
             for index in 0..<buffer.count { buffer[index] = index * 2 }
             var sum = 0
             for index in 0..<buffer.count { sum += buffer[index] }
             return sum
         }
-        check("withUnsafeTemporaryAllocation", scratchSum == 56)
+        check("withUnsafeTemporaryAllocation", unsafeScratchSum == 56)
 
         return failures
     }
