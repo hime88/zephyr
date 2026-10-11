@@ -5,9 +5,9 @@ param (
 $ErrorActionPreference = "Stop"
 
 # Version Definitions
-$SDL3_VERSION = "3.4.12"
+$SDL3_VERSION = "3.4.18"
 $SDL3_TTF_VERSION = "3.2.2"
-$SDL3_IMAGE_VERSION = "3.4.4"
+$SDL3_IMAGE_VERSION = "3.4.8"
 $ZLIB_NG_VERSION = "2.3.3"
 $PDFIUM_TAG = "chromium%2F7891"
 
