@@ -18,6 +18,7 @@ profile.trace
 *.eab
 *.obj
 repomix-output.*
+*.snap
 plans
 Engine/EngineAsBuilt/cleanup-2.lsp
 Docs/cleanup.lsp

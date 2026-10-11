@@ -106,7 +106,7 @@ tar zxf swiftly-$(uname -m).tar.gz && \
 ./swiftly init --quiet-shell-followup && \
 . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh" && \
 hash -r
-swiftly install 6.3.3
+swiftly install 6.4.0
 ```
 
 ### 2. Run the automated setup script
@@ -153,4 +153,49 @@ The script exports the `SDL3_*`/`ZLIB_NG_*` paths, runs `swift build`,
 compiles the HLSL shaders to SPIR-V with DXC, and stages the `.so` files,
 shaders, fonts, plot styles, and patterns next to the `Zephyr` binary (which
 finds them via `$ORIGIN` rpath, so no `LD_LIBRARY_PATH` is needed to run it).
+
+### 4. Snap packaging
+
+`snap/snapcraft.yaml` builds a strictly-confined snap for amd64 and arm64 on
+a `core24` (Ubuntu 24.04) base. It drives the same `compile-linux.sh` CI uses,
+so there is no second build path to keep in sync — only the pinned versions
+(SDL3, Swift, DXC, PDFium), which must match `build-linux.yml`.
+
+```bash
+sudo snap install snapcraft --classic   # one-time provision
+snapcraft                               # builds for the host arch
+sudo snap install --dangerous zephyr_1.0_amd64.snap
+```
+
+Then run `zephyr` from any terminal, or launch it from the app grid. To open
+drawings from USB drives and other mounts outside `$HOME`:
+
+```bash
+sudo snap connect zephyr:removable-media
+```
+
+Publishing to the Snap Store (name `zephyr` is currently unregistered):
+
+```bash
+snapcraft login
+snapcraft register zephyr
+snapcraft upload zephyr_1.0_amd64.snap --release=edge
+```
+
+Notes:
+
+- Build one snap per architecture on native hardware (or matching CI
+  runners); the Swift toolchain, DXC-vs-glslang choice, and PDFium asset are
+  selected per target arch inside the snap file.
+- The snap bundles the Swift runtime and the SDL3/zlib-ng/PDFium libraries;
+  system libraries (X11/Wayland clients, audio, Vulkan loader, image codecs)
+  come from `stage-packages`, whose list was audited against the built
+  binaries with `readelf`/`strings` — re-run that audit if SDL is upgraded.
+- Settings and `imgui.ini` live under the snap's private data dir
+  (`~/snap/zephyr/...`), so the read-only squashfs is never written to.
+- The in-app ODA File Converter installer downloads and executes an external
+  installer, which strict confinement blocks; that menu action reports an
+  error inside the snap. Everything else is unaffected.
+- `snap/gui/zephyr.png` is a placeholder badge until the real logo lands;
+  `snap/gui/zephyr.svg` next to it is the editable source.
 ```

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Placeholder icon: rounded-square badge with a "Z" in Zephyr's amber accent.
+       Replace with the real logo when available (keep snap/gui/zephyr.desktop in sync). -->
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="#14304a"/>
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="none" stroke="#0c1e30" stroke-width="6"/>
+  <path d="M74 72 H182 V102 L110 154 H182 V184 H74 V154 L146 102 H74 Z"
+        fill="none" stroke="#f0a832" stroke-width="26"
+        stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,314 @@
+# Snap packaging for Zephyr CAD (Ubuntu-first Linux distribution).
+#
+# Build:   snapcraft            # native arch (amd64 or arm64)
+# Install: sudo snap install --dangerous zephyr_1.0_amd64.snap
+#
+# Design notes:
+# - Single source of build truth is still Engine/EngineAsBuilt/compile-linux.sh,
+#   the same script CI runs. This file only provisions its inputs (toolchain,
+#   DEV_ROOT dependencies, shader compiler) and collects its outputs.
+# - Versions are pinned to match .github/workflows/build-linux.yml; bump both.
+# - Everything the app needs at runtime sits in usr/bin next to the Zephyr
+#   binary, so its $ORIGIN RPATH keeps working unmodified.
+# - stage-packages is driven by a readelf/strings audit of the built SDL
+#   libraries (SDL3 dlopens nearly everything, so NEEDED alone undercounts).
+#   Every name below was verified against Ubuntu 24.04 (noble) archives.
+#   Deliberately omitted: tray libs (unused), gtk-3 (dialogs use the
+#   xdg-desktop-portal path), libsteam_api, libjpeg (no jpeg dlopen in audit).
+name: zephyr
+base: core24
+version: "1.0"
+summary: Fast 2D CAD viewer and editor for DXF drawings
+description: |
+  Zephyr is a fast 2D CAD application for viewing and editing DXF drawings,
+  with GPU-accelerated rendering, SHX shape fonts, and EAB project files.
+confinement: strict
+grade: stable
+license: GPL-3.0
+icon: snap/gui/zephyr.png
+
+website: https://joseph-montanez.github.io/as-built/
+issues: https://github.com/joseph-montanez/zephyr/issues
+source-code: https://github.com/joseph-montanez/zephyr.git
+
+platforms:
+  amd64:
+  arm64:
+
+apps:
+  zephyr:
+    command: usr/bin/Zephyr
+    plugs:
+      - desktop
+      - wayland
+      - x11
+      - opengl
+      - audio-playback
+      - network
+      - home
+      - removable-media
+
+parts:
+  sdl3:
+    plugin: cmake
+    source: https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz
+    source-type: tar
+    cmake-parameters:
+      - -DCMAKE_INSTALL_PREFIX=/sdlroot
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -DBUILD_SHARED_LIBS=ON
+      - -DSDL_SHARED=ON
+      - -DSDL_STATIC=OFF
+      - -DSDL_TESTS=OFF
+    build-packages: &sdl-dev
+      - build-essential
+      - cmake
+      - ninja-build
+      - pkg-config
+      - libasound2-dev
+      - libpulse-dev
+      - libaudio-dev
+      - libjack-dev
+      - libsndio-dev
+      - libx11-dev
+      - libxext-dev
+      - libxrandr-dev
+      - libxcursor-dev
+      - libxfixes-dev
+      - libxi-dev
+      - libxss-dev
+      - libxtst-dev
+      - libxkbcommon-dev
+      - libdrm-dev
+      - libgbm-dev
+      - libgl1-mesa-dev
+      - libgles2-mesa-dev
+      - libegl1-mesa-dev
+      - libdbus-1-dev
+      - libibus-1.0-dev
+      - libthai-dev
+      - libudev-dev
+      - libusb-1.0-0-dev
+      - libfribidi-dev
+      - libpipewire-0.3-dev
+      - libwayland-dev
+      - wayland-protocols
+      - libdecor-0-dev
+      - liburing-dev
+      - libvulkan-dev
+      - libpng-dev
+      - libjpeg-dev
+      - libwebp-dev
+      - libtiff-dev
+      - libfreetype-dev
+      - libharfbuzz-dev
+    stage: [sdlroot]
+    prime: [-*]
+
+  sdl3-image:
+    plugin: cmake
+    source: https://github.com/libsdl-org/SDL_image/releases/download/release-3.4.8/SDL3_image-3.4.8.tar.gz
+    source-type: tar
+    after: [sdl3]
+    build-environment:
+      - CMAKE_PREFIX_PATH: $SNAPCRAFT_STAGE/sdlroot
+    cmake-parameters:
+      - -DCMAKE_INSTALL_PREFIX=/sdlroot
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -DBUILD_SHARED_LIBS=ON
+      - -DSDLIMAGE_VENDORED=OFF
+      - -DSDLIMAGE_AVIF=OFF
+      - -DSDLIMAGE_JXL=OFF
+    build-packages: *sdl-dev
+    stage: [sdlroot]
+    prime: [-*]
+
+  sdl3-ttf:
+    plugin: cmake
+    source: https://github.com/libsdl-org/SDL_ttf/releases/download/release-3.2.2/SDL3_ttf-3.2.2.tar.gz
+    source-type: tar
+    after: [sdl3]
+    build-environment:
+      - CMAKE_PREFIX_PATH: $SNAPCRAFT_STAGE/sdlroot
+    cmake-parameters:
+      - -DCMAKE_INSTALL_PREFIX=/sdlroot
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -DBUILD_SHARED_LIBS=ON
+      - -DSDLTTF_VENDORED=OFF
+      - -DSDLTTF_PLUTOSVG=OFF
+    build-packages: *sdl-dev
+    stage: [sdlroot]
+    prime: [-*]
+
+  zlib-ng:
+    plugin: cmake
+    source: https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.3.3.tar.gz
+    source-type: tar
+    cmake-parameters:
+      - -DCMAKE_INSTALL_PREFIX=/zlibroot
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -DBUILD_SHARED_LIBS=ON
+      - -DZLIB_COMPAT=OFF
+      - -DBUILD_TESTING=OFF
+      - -DWITH_GTEST=OFF
+    build-packages:
+      - build-essential
+      - cmake
+      - ninja-build
+    stage: [zlibroot]
+    prime: [-*]
+
+  pdfium:
+    plugin: nil
+    override-build: |
+      set -e
+      case "$CRAFT_TARGET_ARCH" in
+        amd64) asset="pdfium-linux-x64.tgz" ;;
+        arm64) asset="pdfium-linux-arm64.tgz" ;;
+        *) echo "unsupported arch: $CRAFT_TARGET_ARCH" >&2; exit 1 ;;
+      esac
+      curl -sSL -o pdfium.tgz \
+        "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7891/$asset"
+      mkdir -p "$SNAPCRAFT_PART_INSTALL/pdfium"
+      tar xzf pdfium.tgz -C "$SNAPCRAFT_PART_INSTALL/pdfium"
+      find "$SNAPCRAFT_PART_INSTALL/pdfium" -name "libpdfium.so"
+    build-packages:
+      - curl
+      - ca-certificates
+    stage: [pdfium]
+    prime: [-*]
+
+  zephyr:
+    plugin: nil
+    source: .
+    after: [sdl3, sdl3-image, sdl3-ttf, zlib-ng, pdfium]
+    build-packages:
+      - build-essential
+      - curl
+      - xz-utils
+      - ca-certificates
+      - git
+      - python3
+      - pkg-config
+      - glslang-tools
+      - libicu74
+      - libcurl4t64
+      - libxml2
+      - libsqlite3-0
+    override-build: |
+      set -e
+      cd "$SNAPCRAFT_PART_BUILD"
+
+      # 1. Swift toolchain (pinned to SWIFT_VERSION in build-linux.yml).
+      case "$CRAFT_TARGET_ARCH" in
+        amd64) swift_url="https://download.swift.org/swift-6.4.0-release/ubuntu2404/swift-6.4.0-RELEASE/swift-6.4.0-RELEASE-ubuntu24.04.tar.gz" ;;
+        arm64) swift_url="https://download.swift.org/swift-6.4.0-release/ubuntu2404-aarch64/swift-6.4.0-RELEASE/swift-6.4.0-RELEASE-ubuntu24.04-aarch64.tar.gz" ;;
+        *) echo "unsupported arch: $CRAFT_TARGET_ARCH" >&2; exit 1 ;;
+      esac
+      curl -sSL -o swift.tar.gz "$swift_url"
+      mkdir -p swift-tc
+      tar xzf swift.tar.gz -C swift-tc --strip-components=1
+      export PATH="$SNAPCRAFT_PART_BUILD/swift-tc/usr/bin:$PATH"
+      swift --version
+
+      # 2. DXC shader compiler (amd64 only; arm64 uses the glslang fallback
+      #    built into compile-linux.sh, and glslang-tools is a build-package).
+      if [ "$CRAFT_TARGET_ARCH" = "amd64" ]; then
+        curl -sSL -o dxc.tar.gz \
+          "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/linux_dxc_2026_09_28.x86_x64.tar.gz"
+        mkdir -p dxc
+        tar xzf dxc.tar.gz -C dxc
+        export DXC="$(find dxc -name dxc -type f | head -n 1)"
+        [ -n "$DXC" ] || { echo "dxc binary not found" >&2; exit 1; }
+        chmod +x "$DXC"
+      fi
+
+      # 3. DEV_ROOT shim over the staged dependency parts.
+      mkdir -p devroot
+      ln -sfn "$SNAPCRAFT_STAGE/sdlroot" devroot/SDL3
+      ln -sfn "$SNAPCRAFT_STAGE/zlibroot" devroot/zlib-ng
+      ln -sfn "$SNAPCRAFT_STAGE/pdfium" devroot/pdfium
+
+      # 4. Build with the same script CI runs.
+      ./Engine/EngineAsBuilt/compile-linux.sh --release "$SNAPCRAFT_PART_BUILD/devroot"
+
+      # 5. Collect the binary, staged libs, shaders, and assets next to it
+      #    ($ORIGIN RPATH), plus the Swift runtime from the toolchain.
+      bin_path="$(find Engine/EngineAsBuilt/.build -name Zephyr -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n 1 | cut -d' ' -f2-)"
+      [ -n "$bin_path" ] || { echo "Zephyr binary not found under Engine/EngineAsBuilt/.build" >&2; exit 1; }
+      bin_dir="$(dirname "$bin_path")"
+      dest="$SNAPCRAFT_PART_INSTALL/usr/bin"
+      mkdir -p "$dest"
+      cp -L "$bin_dir/Zephyr" "$bin_dir"/libSDL3*.so* "$bin_dir"/libz-ng.so* "$dest/"
+      cp -L "$bin_dir"/libpdfium.so "$dest/" 2>/dev/null || echo "(no libpdfium.so staged)"
+      cp -L "$bin_dir"/*.spv "$dest/"
+      for asset in "Fonts" "Plot Styles" "Patterns"; do
+        if [ -d "$bin_dir/$asset" ]; then
+          cp -R "$bin_dir/$asset" "$dest/"
+        fi
+      done
+      cp -L swift-tc/usr/lib/swift/linux/libswift*.so \
+        swift-tc/usr/lib/swift/linux/libFoundation*.so \
+        swift-tc/usr/lib/swift/linux/libdispatch.so \
+        swift-tc/usr/lib/swift/linux/libBlocksRuntime.so \
+        swift-tc/usr/lib/swift/linux/lib_FoundationICU.so "$dest/"
+
+      echo "--- snap payload ---"
+      ls "$dest"
+      if ldd "$dest/Zephyr" | grep -q "not found"; then
+        echo "ERROR: unresolved libraries in snap payload:" >&2
+        ldd "$dest/Zephyr" | grep "not found" >&2
+        exit 1
+      fi
+    stage-packages:
+      # SDL3 dlopen set (audio/video/input backends + X11/Wayland clients)
+      - libasound2t64
+      - libdbus-1-3
+      - libdecor-0-0
+      - libdrm2
+      - libegl1
+      - libfribidi0
+      - libgbm1
+      - libgl1
+      - libgles1
+      - libgles2
+      - libibus-1.0-5
+      - libjack-jackd2-0
+      - libpipewire-0.3-0t64
+      - libpulse0
+      - libsndio7.0
+      - libthai0
+      - libudev1
+      - liburing2
+      - libusb-1.0-0
+      - libvulkan1
+      - libwayland-client0
+      - libwayland-cursor0
+      - libwayland-egl1
+      - libx11-6
+      - libx11-xcb1
+      - libxcb1
+      - libxcursor1
+      - libxext6
+      - libxfixes3
+      - libxi6
+      - libxkbcommon0
+      - libxrandr2
+      - libxss1
+      - libxtst6
+      # SDL3_image dlopen set (system image codecs)
+      - libpng16-16t64
+      - libtiff6
+      - libwebp7
+      - libwebpdemux2
+      - libwebpmux3
+      # SDL3_ttf linked set
+      - libfreetype6
+      - libharfbuzz0b
+      # Swift toolchain runtime (compiler + Foundation)
+      - libicu74
+      - libcurl4t64
+      - libxml2
+      - libsqlite3-0
+      # C++ runtime insurance (normally already in core24)
+      - libstdc++6
