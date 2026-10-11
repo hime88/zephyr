@@ -328,13 +328,11 @@ struct DataTablePanelUI {
                         engine.interaction.tableCellEditNeedsFocus = false
                     }
                     ImGuiPushItemWidth(-1)
-                    let submitted = igInputText(
-                        "##panelCell\(row)_\(column)",
-                        &engine.interaction.tableCellEditBuffer,
-                        4096,
-                        Int32(ImGuiInputTextFlags_EnterReturnsTrue.rawValue),
-                        nil,
-                        nil)
+                    let submitted = Self.inputText(
+                        id: "##panelCell\(row)_\(column)",
+                        value: &engine.interaction.tableCellEditBuffer,
+                        enterReturnsTrue: true,
+                        bufferSize: 4096)
                     ImGuiPopItemWidth()
                     let tabPressed = ImGuiIsKeyPressed(ImGuiKey_Tab, false)
                     let escapePressed = ImGuiIsKeyPressed(ImGuiKey_Escape, false)
@@ -371,29 +369,22 @@ struct DataTablePanelUI {
     }
 
 
-    private static func inputText(
+    static func inputText(
         id: String,
         value: inout String,
-        enterReturnsTrue: Bool
+        enterReturnsTrue: Bool,
+        bufferSize: Int = 1024
     ) -> Bool {
-        let bufferSize = 1024
-        var buffer = [CChar](repeating: 0, count: bufferSize)
-        let bytes = value.utf8CString
-        let copyCount = min(bytes.count, bufferSize - 1)
-        buffer.withUnsafeMutableBufferPointer { pointer in
-            _ = pointer.initialize(from: bytes.prefix(copyCount))
-        }
+        var buffer = DataTableEditor.makeCellEditBuffer(from: value, capacity: bufferSize)
         let flags = enterReturnsTrue
             ? Int32(ImGuiInputTextFlags_EnterReturnsTrue.rawValue)
             : 0
+        let capacity = buffer.count
         let submitted = buffer.withUnsafeMutableBufferPointer { pointer -> Bool in
             guard let base = pointer.baseAddress else { return false }
-            return igInputText(id, base, bufferSize, flags, nil, nil)
+            return igInputText(id, base, capacity, flags, nil, nil)
         }
-        value = buffer.withUnsafeBufferPointer { pointer in
-            guard let base = pointer.baseAddress else { return "" }
-            return String(cString: base)
-        }
+        value = DataTableEditor.readCellEditBuffer(buffer)
         return submitted
     }
 

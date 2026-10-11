@@ -271,13 +271,11 @@ struct DataTableRibbonUI {
                 engine.interaction.tableCellEditNeedsFocus = false
             }
             ImGuiPushItemWidth(-1)
-            let submitted = igInputText(
-                "##TableCellValue",
-                &engine.interaction.tableCellEditBuffer,
-                4096,
-                Int32(ImGuiInputTextFlags_EnterReturnsTrue.rawValue),
-                nil,
-                nil)
+            let submitted = DataTablePanelUI.inputText(
+                id: "##TableCellValue",
+                value: &engine.interaction.tableCellEditBuffer,
+                enterReturnsTrue: true,
+                bufferSize: 4096)
             ImGuiPopItemWidth()
 
             let tabPressed = ImGuiIsKeyPressed(ImGuiKey_Tab, false)

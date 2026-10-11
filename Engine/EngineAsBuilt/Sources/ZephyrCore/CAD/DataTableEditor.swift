@@ -129,6 +129,28 @@ public enum DataTableEditor {
         engine.interaction.tableCellEditBuffer = ""
     }
 
+    /// Builds a zero-filled C-string scratch buffer holding `value`,
+    /// truncated to `capacity - 1` bytes plus NUL. ImGui edits text in
+    /// place, so the buffer must be owned scratch memory — never a pointer
+    /// into a Swift String's storage.
+    nonisolated public static func makeCellEditBuffer(from value: String, capacity: Int) -> [CChar] {
+        var buffer = [CChar](repeating: 0, count: max(capacity, 1))
+        let bytes = value.utf8CString
+        let copyCount = min(bytes.count, buffer.count - 1)
+        buffer.withUnsafeMutableBufferPointer { pointer in
+            _ = pointer.initialize(from: bytes.prefix(copyCount))
+        }
+        return buffer
+    }
+
+    /// Reads edited text back from a scratch buffer made by `makeCellEditBuffer`.
+    nonisolated public static func readCellEditBuffer(_ buffer: [CChar]) -> String {
+        buffer.withUnsafeBufferPointer { pointer in
+            guard let base = pointer.baseAddress else { return "" }
+            return String(cString: base)
+        }
+    }
+
     public static func setCellText(
         handle: UUID,
         address: DataTableCellAddress,
