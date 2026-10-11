@@ -428,9 +428,10 @@ jobs:
 
           # Build inside MSVC environment (vcvarsall.bat sets INCLUDE/LIB/PATH for Clang)
           $swiftBuildDir = "${{ github.workspace }}\Engine\EngineAsBuilt"
-          # --triple is load-bearing: every downstream step expects the
-          # .build\<triple>\<config> layout, which plain `swift build` no longer
-          # produces as of Swift 6.4 (used to be the Windows default).
+          # NOTE: --triple is passed for determinism, but SwiftPM 6.4 elides
+          # the triple dir for host builds, so output is NOT under
+          # .build\<triple>\<config>. Downstream paths are being migrated to
+          # `swift build --show-bin-path` (see step 7a diagnostics).
           $buildCommand = "swift build -c $config --triple ${{ matrix.swift-triple }} -Xcc -I$($env:SDL3_INCLUDE -replace '\\','/')"
 
           Write-Host "Launching build via vcvarsall.bat ${{ matrix.vcvars-arch }}..."
@@ -454,16 +455,36 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $config = "${{ inputs.configuration || 'debug' }}"
-          $binDir = "${{ github.workspace }}\Engine\EngineAsBuilt\.build\${{ matrix.swift-triple }}\$config"
+          $pkgDir = "${{ github.workspace }}\Engine\EngineAsBuilt"
+          $binDir = "$pkgDir\.build\${{ matrix.swift-triple }}\$config"
           $exe = Join-Path $binDir "Zephyr.exe"
-          if (-not (Test-Path $exe)) {
-            Write-Host "::error::Zephyr.exe not found at $exe"
-            Write-Host "--- Actual .build layout ---"
-            Get-ChildItem "${{ github.workspace }}\Engine\EngineAsBuilt\.build" -Recurse -Depth 3 -ErrorAction SilentlyContinue |
-              Select-Object FullName
-            throw "Build output missing: downstream steps expect $exe (SwiftPM build-dir layout drift?)"
+          if (Test-Path $exe) {
+            Write-Host "Build output OK: $exe"
+            exit 0
           }
-          Write-Host "Build output OK: $exe"
+          Write-Host "::error::Zephyr.exe not found at $exe"
+          Write-Host "--- Level checks (loud: errors below are data) ---"
+          Write-Host "workspace:   ${{ github.workspace }} -> $(Test-Path '${{ github.workspace }}')"
+          Write-Host "engine dir:  $(Test-Path '${{ github.workspace }}\Engine')"
+          Write-Host "package dir: $(Test-Path "$pkgDir")"
+          Write-Host "build dir:   $(Test-Path "$pkgDir\.build")"
+          if (Test-Path "$pkgDir") {
+            Write-Host "--- Package dir top level ---"
+            Get-ChildItem "$pkgDir" -ErrorAction Continue | Select-Object Name
+            Write-Host "--- SwiftPM's own answer ---"
+            Push-Location "$pkgDir"
+            swift build -c $config --triple ${{ matrix.swift-triple }} --show-bin-path
+            Pop-Location
+            Write-Host "--- Zephyr.exe anywhere under package dir ---"
+            Get-ChildItem "$pkgDir" -Recurse -Depth 6 -Filter "Zephyr.exe" -ErrorAction Continue |
+              Select-Object FullName
+            if (Test-Path "$pkgDir\.build") {
+              Write-Host "--- .build tree (depth 4) ---"
+              Get-ChildItem "$pkgDir\.build" -Recurse -Depth 4 -ErrorAction Continue |
+                Select-Object FullName
+            }
+          }
+          throw "Build output missing: downstream steps expect $exe"
 
       # ------------------------------------------------------------------
       # 7b. Swift 6.4 canary + perf baseline
