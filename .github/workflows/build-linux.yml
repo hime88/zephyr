@@ -21,15 +21,28 @@ env:
   SDL3_IMAGE_VERSION: "3.4.8"
   ZLIB_NG_VERSION: "2.3.3"
   PDFIUM_TAG: "chromium%2F7891"
-  SWIFT_VERSION: "6.3.3"
+  SWIFT_VERSION: "6.4.0"
   DXC_VERSION: "v1.9.2609"
   DXC_ASSET: "linux_dxc_2026_09_28.x86_x64.tar.gz"
   DEV_ROOT: "~/dev"
 
 jobs:
   build:
-    name: x64
-    runs-on: ubuntu-24.04
+    name: ${{ matrix.arch }}
+    runs-on: ${{ matrix.runs-on }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runs-on: ubuntu-24.04
+            pdfium_asset: pdfium-linux-x64.tgz
+            zip_name: Zephyr-Linux-x64.zip
+          - arch: arm64
+            runs-on: ubuntu-24.04-arm
+            pdfium_asset: pdfium-linux-arm64.tgz
+            zip_name: Zephyr-Linux-arm64.zip
 
     defaults:
       run:
@@ -47,7 +60,11 @@ jobs:
       # ------------------------------------------------------------------
       - name: Install System Dependencies
         run: |
+          # ARM64 has no DXC binary, so compile-linux.sh falls back to glslangValidator.
+          EXTRA_PKGS=""
+          if [ "${{ matrix.arch }}" = "arm64" ]; then EXTRA_PKGS="glslang-tools"; fi
           sudo apt-get update
+          # shellcheck disable=SC2086
           sudo apt-get install -y \
             build-essential git cmake ninja-build pkg-config \
             libasound2-dev libpulse-dev libaudio-dev libjack-dev libsndio-dev \
@@ -60,7 +77,8 @@ jobs:
             libdecor-0-dev liburing-dev \
             libvulkan-dev \
             libpng-dev libjpeg-dev libwebp-dev libtiff-dev \
-            libfreetype-dev libharfbuzz-dev
+            libfreetype-dev libharfbuzz-dev \
+            $EXTRA_PKGS
 
       # ------------------------------------------------------------------
       # 3. Install Swift
@@ -68,7 +86,16 @@ jobs:
       - name: Install Swift
         uses: SwiftyLab/setup-swift@v1
         with:
-          swift-version: '6.3.3'
+          swift-version: ${{ env.SWIFT_VERSION }}
+
+      # ------------------------------------------------------------------
+      # 3b. Verify Swift toolchain (fail fast, not with 90 cryptic errors)
+      # ------------------------------------------------------------------
+      - name: Verify Swift Version
+        run: |
+          swift --version
+          swift --version 2>&1 | grep -q "Swift version ${SWIFT_VERSION%.*}" \
+            || { echo "ERROR: Zephyr requires Swift $SWIFT_VERSION (see SWIFT_VERSION env)"; exit 1; }
 
       # ------------------------------------------------------------------
       # 4. Build SDL3, SDL3_image, SDL3_ttf from pinned releases
@@ -144,14 +171,15 @@ jobs:
           PDFIUM_ROOT="$DEV_ROOT_EXPANDED/pdfium"
           mkdir -p "$PDFIUM_ROOT"
           curl -sSL -o "$RUNNER_TEMP/pdfium.tgz" \
-            "https://github.com/bblanchon/pdfium-binaries/releases/download/$PDFIUM_TAG/pdfium-linux-x64.tgz"
+            "https://github.com/bblanchon/pdfium-binaries/releases/download/$PDFIUM_TAG/${{ matrix.pdfium_asset }}"
           tar xzf "$RUNNER_TEMP/pdfium.tgz" -C "$PDFIUM_ROOT"
           find "$PDFIUM_ROOT" -name "libpdfium.so"
 
       # ------------------------------------------------------------------
-      # 7. Download DXC (HLSL -> SPIR-V shader compiler)
+      # 7. Download DXC (HLSL -> SPIR-V shader compiler; x64 only)
       # ------------------------------------------------------------------
       - name: Download DXC
+        if: matrix.arch == 'x64'
         run: |
           DEV_ROOT_EXPANDED="${DEV_ROOT/#\~/$HOME}"
           DXC_ROOT="$DEV_ROOT_EXPANDED/dxc"
@@ -181,6 +209,24 @@ jobs:
           ./Engine/EngineAsBuilt/compile-linux.sh $FLAGS "$DEV_ROOT_EXPANDED"
 
       # ------------------------------------------------------------------
+      # 8b. Swift 6.4 canary + DXF golden digests (mirrors win/mac 7b/6b)
+      # ------------------------------------------------------------------
+      - name: Swift 6.4 canary and DXF goldens
+        run: |
+          cd Engine/EngineAsBuilt
+          BENCH="$(find .build -name "ZephyrBench" -type f | head -n 1)"
+          if [ -z "$BENCH" ]; then
+            echo "::warning::ZephyrBench binary not found - skipping canary and goldens"
+            exit 0
+          fi
+
+          echo "=== Swift 6.4 feature canary (Linux ${{ matrix.arch }}) ==="
+          "$BENCH" canary
+
+          echo "=== DXF parser golden digests ==="
+          "$BENCH" dxf-goldens Tools/bench/golden
+
+      # ------------------------------------------------------------------
       # 9. Verify standalone: every dependency must resolve (bundled or OS)
       # ------------------------------------------------------------------
       - name: Verify Standalone Linking
@@ -204,8 +250,8 @@ jobs:
         run: |
           cd Engine/EngineAsBuilt
           BIN_DIR="$(swift build -c "${{ inputs.configuration || 'release' }}" --show-bin-path)"
-          ZIP_NAME="Zephyr-Linux-x64.zip"
-          STAGE_DIR="$RUNNER_TEMP/pkg-linux-x64"
+          ZIP_NAME="${{ matrix.zip_name }}"
+          STAGE_DIR="$RUNNER_TEMP/pkg-linux-${{ matrix.arch }}"
           rm -rf "$STAGE_DIR"
           mkdir -p "$STAGE_DIR"
 
@@ -239,7 +285,7 @@ jobs:
             Automated nightly builds from `main` branch.
 
             See [downloads page](https://joseph-montanez.github.io/as-built/#download) for all platforms.
-          files: ${{ runner.temp }}/Zephyr-Linux-x64.zip
+          files: ${{ runner.temp }}/${{ matrix.zip_name }}
           prerelease: true
           make_latest: true
         env:
