@@ -428,7 +428,10 @@ jobs:
 
           # Build inside MSVC environment (vcvarsall.bat sets INCLUDE/LIB/PATH for Clang)
           $swiftBuildDir = "${{ github.workspace }}\Engine\EngineAsBuilt"
-          $buildCommand = "swift build -c $config -Xcc -I$($env:SDL3_INCLUDE -replace '\\','/')"
+          # --triple is load-bearing: every downstream step expects the
+          # .build\<triple>\<config> layout, which plain `swift build` no longer
+          # produces as of Swift 6.4 (used to be the Windows default).
+          $buildCommand = "swift build -c $config --triple ${{ matrix.swift-triple }} -Xcc -I$($env:SDL3_INCLUDE -replace '\\','/')"
 
           Write-Host "Launching build via vcvarsall.bat ${{ matrix.vcvars-arch }}..."
           $cmdScriptPath = "$env:TEMP\swift-build-${{ matrix.arch }}.cmd"
@@ -442,6 +445,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Swift build failed with exit code $LASTEXITCODE" }
 
           Write-Host "Swift build succeeded."
+
+      # ------------------------------------------------------------------
+      # 7a. Verify build output layout (fail fast on SwiftPM dir drift)
+      # ------------------------------------------------------------------
+      - name: Verify Build Output Layout
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $config = "${{ inputs.configuration || 'debug' }}"
+          $binDir = "${{ github.workspace }}\Engine\EngineAsBuilt\.build\${{ matrix.swift-triple }}\$config"
+          $exe = Join-Path $binDir "Zephyr.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Host "::error::Zephyr.exe not found at $exe"
+            Write-Host "--- Actual .build layout ---"
+            Get-ChildItem "${{ github.workspace }}\Engine\EngineAsBuilt\.build" -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+              Select-Object FullName
+            throw "Build output missing: downstream steps expect $exe (SwiftPM build-dir layout drift?)"
+          }
+          Write-Host "Build output OK: $exe"
 
       # ------------------------------------------------------------------
       # 7b. Swift 6.4 canary + perf baseline
