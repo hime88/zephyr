@@ -200,6 +200,11 @@ public final class PhrostEngine {
     public let geometryManager: GeometryManager
     public private(set) var renderer: EngineRenderer!
 
+    /// Set once `init` runs to completion. A failable init that returns nil
+    /// still runs `deinit`, but unowned references to self are already
+    /// invalid there — so renderer teardown must be skipped on that path.
+    private var initCompleted = false
+
     // MARK: - Managers
     public let camera: EngineCameraManager
     public let interaction: EngineInteractionManager
@@ -734,7 +739,9 @@ public final class PhrostEngine {
     // MARK: Deinitialization
     deinit {
         MainActor.assumeIsolated {
-            renderer.performCleanup()
+            if initCompleted {
+                renderer.performCleanup()
+            }
             uiGlyphRangesStorage?.deinitialize(count: uiGlyphRangesStorageCount)
             uiGlyphRangesStorage?.deallocate()
             uiGlyphRangesStorage = nil
@@ -1039,6 +1046,8 @@ public final class PhrostEngine {
         }
         
         atlas.pointee.TexIsBuilt = true
+
+        self.initCompleted = true
     }
 
     /// Recompute UI scale and rebuild font atlas if display scale or framebuffer density changes.

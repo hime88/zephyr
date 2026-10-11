@@ -139,7 +139,7 @@ public enum Swift64FeatureCanary {
         // once — the shape the evaluator uses — compiles cleanly.
         let scratchSum = withTemporaryAllocation(of: Int.self, capacity: 8) { output -> Int in
             for index in 0..<8 { output.append(index * 2) }
-            var workspace = output.mutableSpan
+            let workspace = output.mutableSpan
             var sum = 0
             for index in 0..<workspace.count { sum += workspace[index] }
             return sum
