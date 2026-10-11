@@ -1809,9 +1809,9 @@ final class DXFImportTests: XCTestCase {
             // Since lineType is DASHED, the line is subdivided into multiple dash segments
             XCTAssertGreaterThan(specs.count, 1, "Dashed line should be subdivided into multiple specs")
             for spec in specs {
-                // computeSpecs produces .line specs with lineWeight metadata.
+                // computeSpecs produces .lines specs with lineWeight metadata.
                 // The actual thick-quad expansion happens at render time in Engine+Loop.
-                XCTAssertEqual(spec.type, .line)
+                XCTAssertEqual(spec.type, .lines)
                 XCTAssertEqual(spec.points.count, 2, "Each dash segment should have 2 points")
                 XCTAssertEqual(spec.lineWeight, 0.35, accuracy: 0.001, "Line weight should be inherited from layer")
             }

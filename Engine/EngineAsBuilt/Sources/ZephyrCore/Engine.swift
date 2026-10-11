@@ -453,12 +453,9 @@ public final class PhrostEngine {
         }
         #endif
 
-        // Initialize GPU Device
-        #if os(macOS) || os(iOS)
-            let formats = SDL_GPU_SHADERFORMAT_MSL
-        #else
-            let formats = SDL_GPU_SHADERFORMAT_DXIL
-        #endif
+        // Initialize GPU Device. The format follows the platform
+        // convention shared with the shader loader (SPIR-V on Linux).
+        let formats = EngineRenderer.gpuShaderConvention().format
         let gpuDevicePtr = SDL_CreateGPUDevice(formats, true, nil)
 
         guard let gpuDevice = gpuDevicePtr else {

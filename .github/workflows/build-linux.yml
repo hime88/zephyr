@@ -1,0 +1,246 @@
+name: Build Linux
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: 'Build configuration'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - debug
+          - release
+
+env:
+  SDL3_VERSION: "3.4.18"
+  SDL3_TTF_VERSION: "3.2.2"
+  SDL3_IMAGE_VERSION: "3.4.8"
+  ZLIB_NG_VERSION: "2.3.3"
+  PDFIUM_TAG: "chromium%2F7891"
+  SWIFT_VERSION: "6.3.3"
+  DXC_VERSION: "v1.9.2609"
+  DXC_ASSET: "linux_dxc_2026_09_28.x86_x64.tar.gz"
+  DEV_ROOT: "~/dev"
+
+jobs:
+  build:
+    name: x64
+    runs-on: ubuntu-24.04
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Checkout
+      # ------------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # ------------------------------------------------------------------
+      # 2. Install system build dependencies
+      # ------------------------------------------------------------------
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git cmake ninja-build pkg-config \
+            libasound2-dev libpulse-dev libaudio-dev libjack-dev libsndio-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
+            libxi-dev libxss-dev libxtst-dev libxkbcommon-dev \
+            libdrm-dev libgbm-dev libgl1-mesa-dev libgles2-mesa-dev \
+            libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev libthai-dev \
+            libudev-dev libusb-1.0-0-dev libfribidi-dev \
+            libpipewire-0.3-dev libwayland-dev wayland-protocols \
+            libdecor-0-dev liburing-dev \
+            libvulkan-dev \
+            libpng-dev libjpeg-dev libwebp-dev libtiff-dev \
+            libfreetype-dev libharfbuzz-dev
+
+      # ------------------------------------------------------------------
+      # 3. Install Swift
+      # ------------------------------------------------------------------
+      - name: Install Swift
+        uses: SwiftyLab/setup-swift@v1
+        with:
+          swift-version: '6.3.3'
+
+      # ------------------------------------------------------------------
+      # 4. Build SDL3, SDL3_image, SDL3_ttf from pinned releases
+      # ------------------------------------------------------------------
+      - name: Build SDL3
+        run: |
+          DEV_ROOT_EXPANDED="${DEV_ROOT/#\~/$HOME}"
+          SDL_ROOT="$DEV_ROOT_EXPANDED/SDL3"
+          mkdir -p "$SDL_ROOT"
+          # Let SDL_image/SDL_ttf find the just-built SDL3
+          export CMAKE_PREFIX_PATH="$SDL_ROOT"
+
+          build_sdl() {
+            local repo="$1" asset="$2" version="$3" extra_flags="$4"
+            local tarball="$RUNNER_TEMP/${asset}-${version}.tar.gz"
+            local srcdir="$RUNNER_TEMP/${asset}-${version}-src"
+            local builddir="$RUNNER_TEMP/${asset}-${version}-build"
+
+            echo "=== Building $asset $version ==="
+            curl -sSL -o "$tarball" \
+              "https://github.com/libsdl-org/${repo}/releases/download/release-${version}/${asset}-${version}.tar.gz"
+            rm -rf "$srcdir" "$builddir"
+            mkdir -p "$srcdir"
+            tar xzf "$tarball" -C "$srcdir" --strip-components=1
+            # shellcheck disable=SC2086
+            cmake -S "$srcdir" -B "$builddir" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX="$SDL_ROOT" \
+              -DBUILD_SHARED_LIBS=ON $extra_flags
+            cmake --build "$builddir"
+            cmake --install "$builddir"
+          }
+
+          build_sdl "SDL" "SDL3" "$SDL3_VERSION" "-DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF"
+          build_sdl "SDL_image" "SDL3_image" "$SDL3_IMAGE_VERSION" "-DSDLIMAGE_VENDORED=OFF -DSDLIMAGE_AVIF=OFF -DSDLIMAGE_JXL=OFF"
+          build_sdl "SDL_ttf" "SDL3_ttf" "$SDL3_TTF_VERSION" "-DSDLTTF_VENDORED=OFF -DSDLTTF_PLUTOSVG=OFF"
+
+          echo "--- SDL3 install contents ---"
+          ls "$SDL_ROOT/include" "$SDL_ROOT/lib"/libSDL3*.so*
+
+      # ------------------------------------------------------------------
+      # 5. Build zlib-ng from pinned release
+      # ------------------------------------------------------------------
+      - name: Build zlib-ng
+        run: |
+          DEV_ROOT_EXPANDED="${DEV_ROOT/#\~/$HOME}"
+          ZLIB_ROOT="$DEV_ROOT_EXPANDED/zlib-ng"
+          mkdir -p "$ZLIB_ROOT"
+
+          curl -sSL -o "$RUNNER_TEMP/zlib-ng.tar.gz" \
+            "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/$ZLIB_NG_VERSION.tar.gz"
+          rm -rf "$RUNNER_TEMP/zlib-ng-src" "$RUNNER_TEMP/zlib-ng-build"
+          mkdir -p "$RUNNER_TEMP/zlib-ng-src"
+          tar xzf "$RUNNER_TEMP/zlib-ng.tar.gz" -C "$RUNNER_TEMP/zlib-ng-src" --strip-components=1
+          cmake -S "$RUNNER_TEMP/zlib-ng-src" -B "$RUNNER_TEMP/zlib-ng-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$ZLIB_ROOT" \
+            -DBUILD_SHARED_LIBS=ON \
+            -DZLIB_COMPAT=OFF \
+            -DBUILD_TESTING=OFF \
+            -DWITH_GTEST=OFF
+          cmake --build "$RUNNER_TEMP/zlib-ng-build"
+          cmake --install "$RUNNER_TEMP/zlib-ng-build"
+
+          ls "$ZLIB_ROOT/lib"/libz-ng.so*
+
+      # ------------------------------------------------------------------
+      # 6. Download PDFium (runtime-optional, dlopen'd by the app)
+      # ------------------------------------------------------------------
+      - name: Download PDFium
+        run: |
+          DEV_ROOT_EXPANDED="${DEV_ROOT/#\~/$HOME}"
+          PDFIUM_ROOT="$DEV_ROOT_EXPANDED/pdfium"
+          mkdir -p "$PDFIUM_ROOT"
+          curl -sSL -o "$RUNNER_TEMP/pdfium.tgz" \
+            "https://github.com/bblanchon/pdfium-binaries/releases/download/$PDFIUM_TAG/pdfium-linux-x64.tgz"
+          tar xzf "$RUNNER_TEMP/pdfium.tgz" -C "$PDFIUM_ROOT"
+          find "$PDFIUM_ROOT" -name "libpdfium.so"
+
+      # ------------------------------------------------------------------
+      # 7. Download DXC (HLSL -> SPIR-V shader compiler)
+      # ------------------------------------------------------------------
+      - name: Download DXC
+        run: |
+          DEV_ROOT_EXPANDED="${DEV_ROOT/#\~/$HOME}"
+          DXC_ROOT="$DEV_ROOT_EXPANDED/dxc"
+          mkdir -p "$DXC_ROOT"
+          curl -sSL -o "$RUNNER_TEMP/dxc.tar.gz" \
+            "https://github.com/microsoft/DirectXShaderCompiler/releases/download/$DXC_VERSION/$DXC_ASSET"
+          tar xzf "$RUNNER_TEMP/dxc.tar.gz" -C "$DXC_ROOT"
+          DXC_BIN="$(find "$DXC_ROOT" -name dxc -type f | head -n 1)"
+          [ -n "$DXC_BIN" ] || { echo "dxc binary not found under $DXC_ROOT"; exit 1; }
+          chmod +x "$DXC_BIN"
+          echo "DXC_BIN=$DXC_BIN" >> "$GITHUB_ENV"
+          # dxc carries $ORIGIN/../lib RPATH, so no LD_LIBRARY_PATH is needed.
+          "$DXC_BIN" --version
+
+      # ------------------------------------------------------------------
+      # 8. Build Engine with compile-linux.sh
+      # ------------------------------------------------------------------
+      - name: Build Engine
+        run: |
+          DEV_ROOT_EXPANDED="${DEV_ROOT/#\~/$HOME}"
+          export DXC="$DXC_BIN"
+          FLAGS=""
+          if [ "${{ inputs.configuration || 'release' }}" = "release" ]; then
+            FLAGS="--release"
+          fi
+          # shellcheck disable=SC2086
+          ./Engine/EngineAsBuilt/compile-linux.sh $FLAGS "$DEV_ROOT_EXPANDED"
+
+      # ------------------------------------------------------------------
+      # 9. Verify standalone: every dependency must resolve (bundled or OS)
+      # ------------------------------------------------------------------
+      - name: Verify Standalone Linking
+        run: |
+          cd Engine/EngineAsBuilt
+          BIN_DIR="$(swift build -c "${{ inputs.configuration || 'release' }}" --show-bin-path)"
+          echo "Binary dir: $BIN_DIR"
+          MISSING="$(ldd "$BIN_DIR/Zephyr" | grep "not found" || true)"
+          if [ -n "$MISSING" ]; then
+            echo "Standalone check failed - unresolved libraries:"
+            echo "$MISSING"
+            exit 1
+          fi
+          echo "Standalone check OK - all libraries resolve."
+          ldd "$BIN_DIR/Zephyr" | grep -E "libSDL3|libz-ng" || true
+
+      # ------------------------------------------------------------------
+      # 10. Package for distribution
+      # ------------------------------------------------------------------
+      - name: Package Build
+        run: |
+          cd Engine/EngineAsBuilt
+          BIN_DIR="$(swift build -c "${{ inputs.configuration || 'release' }}" --show-bin-path)"
+          ZIP_NAME="Zephyr-Linux-x64.zip"
+          STAGE_DIR="$RUNNER_TEMP/pkg-linux-x64"
+          rm -rf "$STAGE_DIR"
+          mkdir -p "$STAGE_DIR"
+
+          echo "Staging from: $BIN_DIR"
+          cp "$BIN_DIR/Zephyr" "$STAGE_DIR/"
+          cp "$BIN_DIR"/libSDL3*.so* "$STAGE_DIR/"
+          cp "$BIN_DIR"/libz-ng.so* "$STAGE_DIR/"
+          cp "$BIN_DIR"/libpdfium.so "$STAGE_DIR/" 2>/dev/null || echo "(no libpdfium.so)"
+          cp "$BIN_DIR"/*.spv "$STAGE_DIR/"
+          for asset in "Fonts" "Plot Styles" "Patterns"; do
+            if [ -d "$BIN_DIR/$asset" ]; then
+              cp -R "$BIN_DIR/$asset" "$STAGE_DIR/"
+            fi
+          done
+
+          echo "--- Staged files ---"
+          find "$STAGE_DIR" -maxdepth 1 | sort
+
+          (cd "$STAGE_DIR" && zip -r "$RUNNER_TEMP/$ZIP_NAME" .)
+          ls -lh "$RUNNER_TEMP/$ZIP_NAME"
+
+      # ------------------------------------------------------------------
+      # 11. Upload to Nightly Release
+      # ------------------------------------------------------------------
+      - name: Upload to Nightly Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly Build
+          body: |
+            Automated nightly builds from `main` branch.
+
+            See [downloads page](https://joseph-montanez.github.io/as-built/#download) for all platforms.
+          files: ${{ runner.temp }}/Zephyr-Linux-x64.zip
+          prerelease: true
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

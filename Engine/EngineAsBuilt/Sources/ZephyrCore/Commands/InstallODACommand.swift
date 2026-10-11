@@ -1176,11 +1176,7 @@ public final class InstallODACommand: FeatureCommand {
         let key = "macos_x64"
         #endif
         #else
-        throw NSError(
-            domain: "InstallODA",
-            code: -1,
-            userInfo: [NSLocalizedDescriptionKey: "Unsupported platform"]
-        )
+        let key = "linux"
         #endif
 
         guard let string = Self.fallbackURLs[key], let url = URL(string: string) else {

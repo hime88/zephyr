@@ -92,10 +92,12 @@ var swiftTargetSettings: [SwiftSetting] = []
     }
     linkerSettings.append(.linkedLibrary("SDL3"))
 #elseif os(Linux)
-    // For Linux, rely on pkg-config by default or expect env vars if needed
+    // SDL3_INCLUDE must be absolute, so use -I (headerSearchPath only
+    // accepts target-relative paths and fails the build otherwise).
     if let includePath = sdlIncludePath {
-        csdl3CSettings.append(.headerSearchPath(includePath))
+        csdl3CSettings.append(.unsafeFlags(["-I", includePath]))
         swiftSettings.append(.unsafeFlags(["-Xcc", "-I\(includePath)"]))
+        swiftTargetSettings.append(.unsafeFlags(["-Xcc", "-I\(includePath)"]))
     }
     if let libPath = sdlLibraryPath {
         linkerSettings.append(.unsafeFlags(["-L\(libPath)"]))

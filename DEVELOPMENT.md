@@ -85,4 +85,72 @@ $env:SDL3_LIB = "C:\dev\SDL3\lib"
 
 # Launch build via vcvarsall.bat to ensure the MSVC linker is available
 cmd.exe /c "call `"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat`" x64 && swift build -c release -Xcc -I`"$env:SDL3_INCLUDE`""
+
+---
+
+## Linux (Ubuntu)
+
+Target: Ubuntu 24.04 LTS, x64. Other recent Ubuntu releases should work with
+the same steps. On WSL2, no extra X server is needed: WSLg runs Linux GUI apps
+(X11 and Wayland) out of the box after `wsl --update`, with GPU acceleration
+via your vendor's GPU driver.
+
+### 1. Install Swift
+
+Use Swiftly, the official Swift installer for Linux (see
+https://www.swift.org/install/linux/):
+
+```bash
+curl -O https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz && \
+tar zxf swiftly-$(uname -m).tar.gz && \
+./swiftly init --quiet-shell-followup && \
+. "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh" && \
+hash -r
+swiftly install 6.3.3
+```
+
+### 2. Run the automated setup script
+
+From the repo root (mirrors `setup-dev.ps1` on Windows). This installs system
+packages, verifies Swift, and builds SDL3 3.4.18, SDL3_image 3.4.8,
+SDL3_ttf 3.2.2, and zlib-ng 2.3.3 from their release tarballs into a dev root
+(default `$HOME/dev`), plus PDFium and DXC:
+
+```bash
+./setup-linux.sh            # provision $HOME/dev
+./setup-linux.sh ~/mydev    # override the dev root
+```
+
+If you already have the system packages (CI, containers), pass `--skip-apt`.
+On ARM64 there is no DXC binary (upstream ships Linux x86_64 only), so
+`compile-linux.sh` automatically falls back to `glslangValidator` (installed
+by the setup script) with an equivalent binding layout. DXC remains the
+reference compiler used by CI. If neither compiler is present, the build
+succeeds but GPU pipelines cannot be created until `.spv` files are staged.
+
+Manual reference (what the script does): `sudo apt-get install` build-essential,
+git, cmake, ninja-build, pkg-config, the SDL3 X11/Wayland/audio dependencies
+(`libx11-dev` … `libdecor-0-dev`, see `build-linux.yml` for the full list),
+`libvulkan-dev`, `libpng-dev libjpeg-dev libwebp-dev libtiff-dev`, and
+`libfreetype-dev libharfbuzz-dev`; then CMake-build each C dependency with
+`-DCMAKE_INSTALL_PREFIX=$HOME/dev/<name>` (exact flags in
+`.github/workflows/build-linux.yml`), download `pdfium-linux-x64.tgz` from
+https://github.com/bblanchon/pdfium-binaries/releases (tag `chromium/7891`)
+into `$HOME/dev/pdfium`, and download Linux DXC from
+https://github.com/microsoft/DirectXShaderCompiler/releases.
+
+### 3. Day-to-day compilation
+
+From `Engine/EngineAsBuilt`:
+
+```bash
+./compile-linux.sh            # debug build into .build
+./compile-linux.sh --release  # release build
+./compile-linux.sh ~/dev      # override the dev root
+```
+
+The script exports the `SDL3_*`/`ZLIB_NG_*` paths, runs `swift build`,
+compiles the HLSL shaders to SPIR-V with DXC, and stages the `.so` files,
+shaders, fonts, plot styles, and patterns next to the `Zephyr` binary (which
+finds them via `$ORIGIN` rpath, so no `LD_LIBRARY_PATH` is needed to run it).
 ```

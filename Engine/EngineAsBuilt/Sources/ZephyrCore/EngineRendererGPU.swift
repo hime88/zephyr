@@ -15,7 +15,7 @@ private let gpuSampleCount1 = SDL_GPUSampleCount(rawValue: 0)
 // MARK: - EngineRendererGPU
 //
 // GPU resource creation and destruction for the EngineRenderer. Handles:
-//   - Shader loading (MSL on Apple, DXIL on Windows)
+//   - Shader loading (MSL on Apple, DXIL on Windows, SPIR-V on Linux)
 //   - Graphics pipeline creation (CAD lines, points, triangles, AA,
 //     ID-buffer for entity picking)
 //   - ImGui rendering pipeline
@@ -32,8 +32,22 @@ extension EngineRenderer {
 
     // MARK: - GPU Shader Loading
 
+    /// Platform shader convention shared by GPU device creation and the
+    /// shader loader: file extension, SDL GPU format flag, and entry point.
+    /// MSL on Apple, DXIL on Windows, SPIR-V on Linux.
+    nonisolated static func gpuShaderConvention() -> (fileExt: String, format: UInt32, entrypoint: String) {
+        #if os(macOS) || os(iOS)
+        return (".msl", UInt32(SDL_GPU_SHADERFORMAT_MSL), "main0")
+        #elseif os(Linux)
+        return (".spv", UInt32(SDL_GPU_SHADERFORMAT_SPIRV), "main")
+        #else
+        return (".dxil", UInt32(SDL_GPU_SHADERFORMAT_DXIL), "main")
+        #endif
+    }
+
     /// Loads a compiled GPU shader from the app bundle. The shader file is
-    /// expected at `{basePath}/{name}.msl` (macOS/iOS) or `.dxil` (Windows).
+    /// expected at `{basePath}/{name}.msl` (macOS/iOS), `.dxil` (Windows),
+    /// or `.spv` (Linux).
     ///
     /// - Parameters:
     ///   - name: Shader file name without extension.
@@ -57,15 +71,10 @@ extension EngineRenderer {
         }
         let basePath = String(cString: basePathPtr)
 
-        #if os(macOS) || os(iOS)
-        let fileExt = ".msl"
-        let shaderFormat = SDL_GPU_SHADERFORMAT_MSL
-        let entrypoint = "main0"
-        #else
-        let fileExt = ".dxil"
-        let shaderFormat = SDL_GPU_SHADERFORMAT_DXIL
-        let entrypoint = "main"
-        #endif
+        let convention = Self.gpuShaderConvention()
+        let fileExt = convention.fileExt
+        let shaderFormat = convention.format
+        let entrypoint = convention.entrypoint
 
         let filePath = basePath + name + fileExt
 
@@ -541,8 +550,7 @@ extension EngineRenderer {
             return nil
         }
 
-        let mapped = SDL_MapGPUTransferBuffer(engine.gpuDevice, transferBuf, false)
-        if mapped == nil {
+        guard let mapped = SDL_MapGPUTransferBuffer(engine.gpuDevice, transferBuf, false) else {
             print("Failed to map transfer buffer, error: \(String(cString: SDL_GetError()))")
             SDL_ReleaseGPUTransferBuffer(engine.gpuDevice, transferBuf)
             SDL_ReleaseGPUTexture(engine.gpuDevice, texture)

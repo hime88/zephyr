@@ -74,11 +74,12 @@ final class EABRoundtripTests: XCTestCase {
 
         try EABWriter.write(document: doc, to: tempURL)
 
-        // 6. Deserialize
-        let read = try EABReader.readDocument(from: tempURL)
-        let readLayers = read.layers
-        let readBlocks = read.blocks
-        let readEntities = read.entities
+        // 6. Deserialize (write(document:) stores a view archive, so read it back as views)
+        let views = try EABReader.readViews(from: tempURL)
+        let readDoc = try XCTUnwrap(views.first).document
+        let readLayers = readDoc.allLayers
+        let readBlocks = readDoc.allBlocks
+        let readEntities = readDoc.allEntities
 
         // 7. Verify Results
         XCTAssertEqual(readLayers.count, doc.allLayers.count)

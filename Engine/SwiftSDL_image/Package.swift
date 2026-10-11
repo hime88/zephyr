@@ -131,6 +131,7 @@ var linkerSettings: [LinkerSetting] = []
     if let includePath = sdlIncludePath {
         csdl3ImageCSettings.append(.unsafeFlags(["-I", includePath]))
         swiftSettings.append(.unsafeFlags(["-Xcc", "-I\(includePath)"]))
+        swiftTargetSettings.append(.unsafeFlags(["-Xcc", "-I\(includePath)"]))
     }
     if let libPath = sdlLibraryPath {
         linkerSettings.append(.unsafeFlags(["-L\(libPath)"]))
@@ -138,6 +139,7 @@ var linkerSettings: [LinkerSetting] = []
     if let includePath = sdlImageIncludePath {
         csdl3ImageCSettings.append(.unsafeFlags(["-I", includePath]))
         swiftSettings.append(.unsafeFlags(["-Xcc", "-I\(includePath)"]))
+        swiftTargetSettings.append(.unsafeFlags(["-Xcc", "-I\(includePath)"]))
     }
     if let libPath = sdlImageLibraryPath {
         linkerSettings.append(.unsafeFlags(["-L\(libPath)"]))
