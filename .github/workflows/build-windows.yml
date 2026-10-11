@@ -479,6 +479,17 @@ jobs:
             Get-ChildItem "$pkgDir" -Recurse -Depth 6 -Filter "Zephyr.exe" -ErrorAction Continue |
               Select-Object FullName
             if (Test-Path "$pkgDir\.build") {
+              Write-Host "--- .build raw probe (no formatting, no suppression) ---"
+              Write-Host "now (utc): $((Get-Date).ToUniversalTime().ToString('o'))"
+              $buildInfo = Get-Item "$pkgDir\.build" -Force -ErrorAction Continue
+              if ($buildInfo) { Write-Host "created (utc): $($buildInfo.CreationTimeUtc.ToString('o'))" }
+              try {
+                $rawEntries = [System.IO.Directory]::GetFileSystemEntries("$pkgDir\.build")
+                Write-Host "raw entry count: $($rawEntries.Count)"
+                $rawEntries | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
+              } catch {
+                Write-Host "RAW LISTING FAILED: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
+              }
               Write-Host "--- .build tree (depth 4) ---"
               Get-ChildItem "$pkgDir\.build" -Recurse -Depth 4 -ErrorAction Continue |
                 Select-Object FullName
