@@ -499,6 +499,8 @@ public struct CADPolyline: Hashable, Sendable, RandomAccessCollection, MutableCo
         let reversesOrientation = transform.scale.x * transform.scale.y < 0
         let widthScale = (abs(transform.scale.x) + abs(transform.scale.y)) * 0.5
         var result = self
+        // Written element-wise rather than through `MutableRef`: that type is macOS 27+, and this is on
+        // the transform path used by every block insert and export.
         for index in result.vertices.indices {
             result.vertices[index].position = transform.transformPoint(result.vertices[index].position)
             result.vertices[index].startWidth *= widthScale

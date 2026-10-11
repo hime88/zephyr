@@ -370,15 +370,23 @@ public enum DXFImporter {
                 z: -modelCenter.z)))
     }
 
+    /// The `%.17g` dump of a transform used to tag projected geometry.
+    ///
+    /// Computed once per layout instead of once per entity: the value is identical for every entity
+    /// projected through the same transform, and formatting 16 doubles per entity was the single
+    /// largest cost in DXF import (~17 us x 75,938 entities on the 23 MB reference drawing).
+    private static func viewportProjectionString(_ projection: Transform3D) -> String {
+        projection.rawElements.map { String(format: "%.17g", $0) }.joined(separator: ",")
+    }
+
     private static func syntheticViewportXData(
         _ source: [String: XDataValue],
-        projection: Transform3D
+        projectionString: String
     ) -> [String: XDataValue] {
         var result = source
         result["dxf.viewport.projected"] = .bool(true)
         result["dxf.viewport.synthetic"] = .bool(true)
-        result["dxf.viewport.projection"] = .string(
-            projection.rawElements.map { String(format: "%.17g", $0) }.joined(separator: ","))
+        result["dxf.viewport.projection"] = .string(projectionString)
         return result
     }
 
@@ -394,6 +402,7 @@ public enum DXFImporter {
     }
 
     private static func convertDXFToCAD(reader: DXFReader) -> DXFImportResult {
+        DXFProfile.reset("convertDXFToCAD")
         let entityCount = reader.entities.count
         let blockCount = reader.blocks.count
         let totalBlockEntities = reader.blocks.reduce(0) { $0 + $1.entities.count }
@@ -547,6 +556,7 @@ public enum DXFImporter {
             if entry.handle != 0 { leaderStyleByHandle[entry.handle] = style }
         }
 
+        DXFProfile.mark("setup: layers/styles/leader/handle maps")
         var blockGeometryCache: [String: [StyledPrimitive]] = [:]
 
         func convertBlockGeometry(named name: String, visited: Set<String> = []) -> [StyledPrimitive] {
@@ -578,6 +588,7 @@ public enum DXFImporter {
                     }
                     for attribute in insert.attributes
                         where Self.shouldRenderAttributeEntity(attribute) {
+                        let __pt583 = DXFProfile.tic()
                         let values = DXFEntityConverter.convertEntityToPrimitives(
                             attribute,
                             bylayerColor: nil).map {
@@ -588,6 +599,7 @@ public enum DXFImporter {
                                         from: attribute,
                                         globalLineTypeScale: globalLineTypeScale))
                             }
+                        DXFProfile.toc(__pt583, "  -> convertEntityToPrimitives")
                         geometry.append(contentsOf: Self.transformStyledPrimitives(
                             values,
                             by: .identity,
@@ -606,10 +618,12 @@ public enum DXFImporter {
                 let xdata = Self.entityStyleXData(
                     from: entity,
                     globalLineTypeScale: globalLineTypeScale)
+                let __pt611 = DXFProfile.tic()
                 let primitives = DXFEntityConverter.convertEntityToPrimitives(
                     entity,
                     bylayerColor: nil,
                     showAttributeDefinitionTagWhenEmpty: entity.eType == .aTTDEF)
+                DXFProfile.toc(__pt611, "  -> convertEntityToPrimitives")
                 geometry.append(contentsOf: primitives.map {
                     StyledPrimitive(primitive: $0, style: style, xdata: xdata)
                 })
@@ -657,6 +671,7 @@ public enum DXFImporter {
             return leaderBlockByKey[Self.normalizedLeaderBlockKey(name)]
         }
 
+        DXFProfile.mark("block geometry conversion")
         let sortEntsFlags: Int = {
             if let value = reader.header.headerVars["$SORTENTS"] as? Int { return value }
             if let value = reader.header.headerVars["$SORTENTS"] as? Int32 { return Int(value) }
@@ -716,6 +731,7 @@ public enum DXFImporter {
             _ sourceEntities: [DXFEntity],
             ownerHandle: UInt32 = 0
         ) -> [CADEntity] {
+            DXFProfile.mark("  convertEntities: entry (idle before)")
             let orderedEntities = drawOrderedEntities(
                 sourceEntities,
                 ownerHandle: ownerHandle)
@@ -991,12 +1007,14 @@ public enum DXFImporter {
                                         return primitive
                                     }
                                 }
-                                return DXFEntityConverter
+                                let __pt999 = DXFProfile.tic()
+                                let convertedDefinition = DXFEntityConverter
                                     .convertEntityToPrimitives(
                                         definition,
                                         bylayerColor: nil,
                                         showAttributeDefinitionTagWhenEmpty: true)
-                                    .first
+                                DXFProfile.toc(__pt999, "  -> convertEntityToPrimitives")
+                                return convertedDefinition.first
                             }()
                             guard let definitionPrimitive,
                                   case .text(
@@ -1181,9 +1199,11 @@ public enum DXFImporter {
 
                     for attribute in insert.attributes
                         where Self.shouldRenderAttributeEntity(attribute) {
+                        let __pt1188 = DXFProfile.tic()
                         let primitives = DXFEntityConverter.convertEntityToPrimitives(
                             attribute,
                             bylayerColor: nil)
+                        DXFProfile.toc(__pt1188, "  -> convertEntityToPrimitives")
                         guard !primitives.isEmpty else { continue }
                         let normalized = Self.normalizedStandaloneTextGeometry(primitives)
                         let attributeLayerID = attribute.layer.isEmpty
@@ -1232,9 +1252,11 @@ public enum DXFImporter {
                         continue
                     }
 
+                    let __pt1239 = DXFProfile.tic()
                     let primitives = DXFEntityConverter.convertEntityToPrimitives(
                         entity,
                         bylayerColor: nil)
+                    DXFProfile.toc(__pt1239, "  -> convertEntityToPrimitives")
                     var cadEnt = CADEntity(
                         handle: UUID(),
                         layerID: layerID(for: entity),
@@ -1250,10 +1272,12 @@ public enum DXFImporter {
                     continue
                 }
 
+                let __pt1257 = DXFProfile.tic()
                 let primitives = DXFEntityConverter.convertEntityToPrimitives(
                     entity,
                     bylayerColor: nil,
                     showAttributeDefinitionTagWhenEmpty: entity.eType == .aTTDEF)
+                DXFProfile.toc(__pt1257, "  -> convertEntityToPrimitives")
                 guard !primitives.isEmpty || entity.eType == .pOINT else { continue }
                 let normalized = Self.normalizedStandaloneTextGeometry(primitives)
                 var cadEnt = CADEntity(
@@ -1269,6 +1293,7 @@ public enum DXFImporter {
                 converted.append(cadEnt)
             }
 
+            DXFProfile.mark("  convertEntities: draw-order + entity loop")
             return converted
         }
 
@@ -1325,6 +1350,8 @@ public enum DXFImporter {
             return result
         }
 
+        DXFProfile.mark("tail start (textStyles/linetypes)")
+        DXFProfile.dump("primitive accumulators so far")
         var textStyles: [String: CADTextStyle] = ["Standard": .standard]
         for entry in reader.textstyles where !entry.name.isEmpty {
             let style = CADTextStyle(
@@ -1435,6 +1462,7 @@ public enum DXFImporter {
                     layout: layout,
                     modelEntities: modelEntities,
                     header: reader.header) {
+                    let projectionString = Self.viewportProjectionString(projection)
                     for modelEntity in modelEntities {
                         let projectedDrawOrder = modelEntity.drawOrder == Int.max
                             ? Int.max
@@ -1447,7 +1475,7 @@ public enum DXFImporter {
                             leaderData: modelEntity.leaderData,
                             arrayData: modelEntity.arrayData,
                             transform: projection.multiplying(by: modelEntity.transform),
-                            xdata: syntheticViewportXData(modelEntity.xdata, projection: projection),
+                            xdata: syntheticViewportXData(modelEntity.xdata, projectionString: projectionString),
                             drawOrder: projectedDrawOrder,
                             localBoundingBox: modelEntity.localBoundingBox,
                             anchorPoints: modelEntity.anchorPoints))
@@ -1463,6 +1491,8 @@ public enum DXFImporter {
             views = importedViews
         }
 
+        DXFProfile.mark("tail: views + viewport projection")
+        DXFProfile.mark("convertDXFToCAD done")
         return DXFImportResult(
             layers: layers,
             blocks: blocks,

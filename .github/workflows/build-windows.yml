@@ -14,6 +14,10 @@ on:
         options:
           - debug
           - release
+  push:
+    branches: [ main, 'feature/swift-6.4' ]
+  pull_request:
+    branches: [ main ]
 
 env:
   SDL3_VERSION: "3.4.12"
@@ -21,7 +25,7 @@ env:
   SDL3_IMAGE_VERSION: "3.4.4"
   ZLIB_NG_VERSION: "2.3.3"
   PDFIUM_TAG: "chromium%2F7891"
-  SWIFT_VERSION: "6.3.3"
+  SWIFT_VERSION: "6.4.0"
   DEV_ROOT: "C:/dev"
 
 jobs:
@@ -324,7 +328,7 @@ jobs:
       - name: Install Swift
         uses: SwiftyLab/setup-swift@v1
         with:
-          swift-version: '6.3.2'
+          swift-version: '6.4.0'
 
       # ------------------------------------------------------------------
       # 6. Locate Visual Studio and DXC
@@ -438,6 +442,40 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Swift build failed with exit code $LASTEXITCODE" }
 
           Write-Host "Swift build succeeded."
+
+      # ------------------------------------------------------------------
+      # 7b. Swift 6.4 canary + perf baseline
+      # ------------------------------------------------------------------
+      - name: Swift 6.4 canary and perf baseline
+        run: |
+          $config   = "${{ inputs.configuration || 'debug' }}"
+          $swiftDir = "${{ github.workspace }}\Engine\EngineAsBuilt"
+          $binDir   = "$swiftDir\.build\${{ matrix.swift-triple }}\$config"
+
+          $bench = Join-Path $binDir "ZephyrBench.exe"
+          if (-not (Test-Path $bench)) {
+            Write-Host "::warning::ZephyrBench.exe not found at $bench - skipping canary and perf baseline"
+            exit 0
+          }
+
+          # SDL3 runtime DLLs must sit next to the executable.
+          foreach ($dll in @("SDL3.dll", "SDL3_image.dll", "SDL3_ttf.dll")) {
+            $source = Join-Path "C:\dev\SDL3\lib" $dll
+            if (Test-Path $source) { Copy-Item $source $binDir -Force }
+          }
+
+          Write-Host "=== Swift 6.4 feature canary (Windows) ==="
+          & $bench canary
+          if ($LASTEXITCODE -ne 0) { throw "Swift 6.4 feature canary failed" }
+
+          Write-Host "=== DXF parser golden digests ==="
+          & $bench dxf-goldens (Join-Path $swiftDir "Tools\bench\golden")
+          if ($LASTEXITCODE -ne 0) { throw "DXF golden digests failed" }
+
+          Write-Host "=== Perf baseline (Windows) ==="
+          & $bench nurbs
+          $shx = Get-ChildItem "$swiftDir\Fonts\*.SHX" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($shx) { & $bench shx $shx.FullName }
 
       # ------------------------------------------------------------------
 # 8. Compile HLSL Shaders with DXC
@@ -644,6 +682,26 @@ jobs:
           Write-Host "Standalone check OK - all $($deps.Count) imports resolve from the output directory or the OS."
 
       # ------------------------------------------------------------------
+      # 9c. Verify standalone launch (no Swift/VC dirs on PATH)
+      # ------------------------------------------------------------------
+      - name: Verify Standalone Launch
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $config = "${{ inputs.configuration || 'debug' }}"
+          $binDir = "${{ github.workspace }}\Engine\EngineAsBuilt\.build\${{ matrix.swift-triple }}\$config"
+
+          # Strip toolchain dirs from PATH so the loader must resolve every
+          # dependency from the exe directory - exactly what an end-user
+          # machine without Swift installed sees.
+          $env:PATH = "C:\Windows\System32;C:\Windows"
+          & "$binDir\ZephyrBench.exe" canary
+          if ($LASTEXITCODE -ne 0) {
+            throw "ZephyrBench.exe failed to launch standalone (exit code $LASTEXITCODE). Missing DLL?"
+          }
+          Write-Host "Standalone launch OK - all dependencies resolve from the output directory."
+
+      # ------------------------------------------------------------------
       # 10. Package for distribution
       # ------------------------------------------------------------------
       - name: Package Build
@@ -654,7 +712,7 @@ jobs:
           $zipName  = "Zephyr-Windows-${{ matrix.arch }}.zip"
           $zipPath  = "$env:RUNNER_TEMP\$zipName"
 
-          # Stage only runtime-required files (skip .build dirs, index/, Modules/, ModuleCache/) 
+          # Stage only runtime-required files (skip .build dirs, index/, Modules/, ModuleCache/)
           $stageDir = "$env:RUNNER_TEMP\pkg-${{ matrix.arch }}"
           New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
@@ -684,6 +742,10 @@ jobs:
       # 11. Upload to Nightly Release
       # ------------------------------------------------------------------
       - name: Upload to Nightly Release
+        # Only publish from `main`. The workflow now also runs on branch pushes and pull requests
+        # (see the `on:` block), and without this guard a branch build would move the `nightly`
+        # tag and overwrite the public download with unreleased code.
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: nightly

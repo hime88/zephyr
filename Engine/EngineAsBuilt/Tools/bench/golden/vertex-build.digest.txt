@@ -1,0 +1,81 @@
+inputs: 70
+vertexCount: 564
+vertexArrayCount: 564
+batchCount: 51
+mutationGen: 7
+region: -10.0,-10.0,200.0,200.0
+zoom: 2.5
+pipeline: aaLine batches=50
+pipeline: triangle batches=1
+entityIndex: 1 vertices=24
+entityIndex: 2 vertices=6
+entityIndex: 3 vertices=6
+entityIndex: 4 vertices=6
+entityIndex: 5 vertices=6
+entityIndex: 6 vertices=6
+entityIndex: 7 vertices=6
+entityIndex: 8 vertices=24
+entityIndex: 9 vertices=6
+entityIndex: 10 vertices=6
+entityIndex: 11 vertices=6
+entityIndex: 12 vertices=6
+entityIndex: 13 vertices=6
+entityIndex: 14 vertices=6
+entityIndex: 15 vertices=24
+entityIndex: 16 vertices=6
+entityIndex: 17 vertices=6
+entityIndex: 18 vertices=6
+entityIndex: 19 vertices=6
+entityIndex: 20 vertices=6
+entityIndex: 21 vertices=6
+entityIndex: 22 vertices=24
+entityIndex: 23 vertices=6
+entityIndex: 24 vertices=6
+entityIndex: 25 vertices=6
+entityIndex: 26 vertices=6
+entityIndex: 27 vertices=6
+entityIndex: 28 vertices=6
+entityIndex: 29 vertices=24
+entityIndex: 30 vertices=6
+entityIndex: 31 vertices=6
+entityIndex: 32 vertices=6
+entityIndex: 33 vertices=6
+entityIndex: 34 vertices=6
+entityIndex: 35 vertices=6
+entityIndex: 36 vertices=24
+entityIndex: 37 vertices=6
+entityIndex: 38 vertices=6
+entityIndex: 39 vertices=6
+entityIndex: 40 vertices=6
+entityIndex: 41 vertices=6
+entityIndex: 42 vertices=6
+entityIndex: 43 vertices=24
+entityIndex: 44 vertices=6
+entityIndex: 45 vertices=6
+entityIndex: 46 vertices=6
+entityIndex: 47 vertices=6
+entityIndex: 48 vertices=6
+entityIndex: 49 vertices=6
+entityIndex: 50 vertices=24
+entityIndex: 100 vertices=6
+entityIndex: 101 vertices=6
+entityIndex: 102 vertices=6
+entityIndex: 103 vertices=6
+entityIndex: 104 vertices=6
+entityIndex: 105 vertices=6
+entityIndex: 106 vertices=6
+entityIndex: 107 vertices=6
+entityIndex: 108 vertices=6
+entityIndex: 109 vertices=6
+entityIndex: 110 vertices=6
+entityIndex: 111 vertices=6
+entityIndex: 112 vertices=6
+entityIndex: 113 vertices=6
+entityIndex: 114 vertices=6
+entityIndex: 115 vertices=6
+entityIndex: 116 vertices=6
+entityIndex: 117 vertices=6
+entityIndex: 118 vertices=6
+entityIndex: 119 vertices=6
+verticesHash: cfeaace26074c69a
+DIGEST: 783b51924045eb08

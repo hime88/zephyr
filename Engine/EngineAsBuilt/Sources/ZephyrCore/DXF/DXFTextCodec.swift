@@ -57,11 +57,28 @@ public class DXFTextCodec {
     /// Convert string from DXF code page to UTF-8.
     /// Decodes \U+XXXX escape sequences embedded in the encoded text.
     public func toUtf8(_ s: String) -> String {
-        if storesStringsAsUTF8 || codePage == "UTF-8" || codePage == "UTF-16" {
-            return decodeUnicodeEscapes(s)
+        // One pass classifies the input, because both remaining steps are conditional:
+        //
+        //   * `foundationDecode` converts the value from the DXF code page to UTF-8. Every code page
+        //     we handle (ANSI_1252 and friends) agrees with ASCII below 0x80, so for an all-ASCII
+        //     value the conversion is the identity — and it is not cheap: on Windows it is a Win32
+        //     call, elsewhere it builds a `[UInt8]` and a second `String`.
+        //   * `decodeUnicodeEscapes` only ever rewrites a string containing a backslash.
+        //
+        // Layer names, linetypes, handles and colour names are ASCII and escape-free, so this runs
+        // once per entity over ~76k entities and was the bulk of `applyCommon`'s 2.22 us apiece.
+        var isASCII = true
+        var hasBackslash = false
+        for byte in s.utf8 {
+            if byte >= 0x80 { isASCII = false; break }
+            if byte == 0x5C { hasBackslash = true }
         }
-        let decoded = foundationDecode(s)
-        return decodeUnicodeEscapes(decoded)
+        if isASCII && !hasBackslash { return s }
+        if storesStringsAsUTF8 || codePage == "UTF-8" || codePage == "UTF-16" {
+            return hasBackslash ? decodeUnicodeEscapes(s) : s
+        }
+        if isASCII { return decodeUnicodeEscapes(s) }
+        return decodeUnicodeEscapes(foundationDecode(s))
     }
 
     /// Convert string from UTF-8 to DXF code page.

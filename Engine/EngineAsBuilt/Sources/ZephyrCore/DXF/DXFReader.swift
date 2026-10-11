@@ -18,6 +18,20 @@ public struct DXFSortEntsTable: Sendable {
 
 /// Pure Swift DXF file reader.
 /// Parses ASCII DXF pair-based format and builds libdxfrw-compatible entity tree.
+/// How `DXFReader` turns the file's bytes into group-code/value pairs.
+///
+/// The byte scanner and the historical decode-then-split parser are kept side by side so their output
+/// can be compared on real drawings (`ZephyrBench dxf-digest --compare`). The default is `automatic`.
+public enum DXFPairParsingMode: Sendable {
+    /// Byte scanner for pure-ASCII files (the overwhelmingly common case), legacy path for anything
+    /// containing non-ASCII bytes so ANSI/Latin-1 drawings keep decoding exactly as they used to.
+    case automatic
+    /// Force the byte scanner. Falls back to the legacy path if the file is not pure ASCII.
+    case byteScanner
+    /// Force the historical `String` + `components(separatedBy:)` parser.
+    case legacyStrings
+}
+
 public class DXFReader {
 
     public enum ReaderError: Swift.Error {
@@ -60,6 +74,30 @@ public class DXFReader {
     // MARK: - Internal
 
     private var pairs: [(code: Int, value: String)] = []
+
+    /// Number of group-code/value pairs parsed from the file. Exposed for diagnostics and the
+    /// perf/digest harness; the storage itself stays private.
+    public var pairCount: Int { pairs.count }
+
+    /// Order-sensitive fingerprint of every parsed pair (code + value).
+    ///
+    /// Exists so the two pair parsers (byte scanner and legacy decode-then-split) can be proven
+    /// equivalent on real drawings: `ZephyrBench dxf-compare <file>` compares these fingerprints.
+    public func pairsFingerprint() -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        func mix(_ byte: UInt8) {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x1000_0000_01b3
+        }
+        for pair in pairs {
+            var code = UInt64(bitPattern: Int64(pair.code))
+            for _ in 0..<8 { mix(UInt8(truncatingIfNeeded: code)); code >>= 8 }
+            mix(0x1F)
+            for byte in pair.value.utf8 { mix(byte) }
+            mix(0x1E)
+        }
+        return String(hash, radix: 16)
+    }
     private var pos: Int = 0
     private var tableStylesByHandle: [UInt32: TableStyleInfo] = [:]
     private var objectDictionaryNameByHandle: [UInt32: String] = [:]
@@ -68,7 +106,7 @@ public class DXFReader {
     public init() {}
 
     /// Parse DXF file at path
-    public func readFile(at path: String) throws -> DXFReader {
+    public func readFile(at path: String, mode: DXFPairParsingMode = .automatic) throws -> DXFReader {
         guard let data = FileManager.default.contents(atPath: path) else {
             throw ReaderError.fileNotFound("File not found: \(path)")
         }
@@ -78,28 +116,93 @@ public class DXFReader {
            sig.hasPrefix("AutoCAD Binary DXF") {
             throw ReaderError.unsupportedFormat("Binary DXF not supported. Use ASCII.")
         }
-        guard let content = String(data: data, encoding: .ascii)
-                ?? String(data: data, encoding: .utf8)
-                ?? String(data: data, encoding: .isoLatin1) else {
-            throw ReaderError.invalidFormat("Cannot decode DXF file as ASCII.")
-        }
-        return try readString(content)
+        return try readData(data, mode: mode)
     }
 
     /// Parse DXF from string content
     public func readString(_ content: String) throws -> DXFReader {
-        pairs = try parsePairs(content)
+        try readData(Data(content.utf8))
+    }
+
+    /// Parse DXF from raw bytes — the entry point both `readFile` and `readString` funnel through.
+    ///
+    /// Pure-ASCII files (which is what DXF is, and what the reference drawings are) never materialise
+    /// a whole-file `String`: the group codes and values are scanned straight out of the byte buffer.
+    /// Files containing non-ASCII bytes fall back to the original decode-then-split path so that ANSI
+    /// / Latin-1 drawings keep decoding exactly as before (accented layer names must not degrade into
+    /// replacement characters).
+    public func readData(_ data: Data, mode: DXFPairParsingMode = .automatic) throws -> DXFReader {
+        DXFProfile.reset("DXFReader.readData")
+        let scannedPairs = mode == .legacyStrings ? nil : parsePairsFromBytes(data)
+        if let scannedPairs {
+            pairs = scannedPairs
+        } else {
+            guard let content = String(data: data, encoding: .ascii)
+                    ?? String(data: data, encoding: .utf8)
+                    ?? String(data: data, encoding: .isoLatin1) else {
+                throw ReaderError.invalidFormat("Cannot decode DXF file as ASCII.")
+            }
+            pairs = try parsePairs(content)
+        }
+        DXFProfile.mark("tokenize pairs")
         pos = 0
         try parseSections()
+        DXFProfile.mark("parseSections")
         resolveTableStyles()
         resolveTableObjectGraphs()
         resolveImageReferences()
+        DXFProfile.mark("resolve styles/graphs/images")
+        DXFProfile.dump("DXFReader total")
         return self
     }
 
     // MARK: - Pair parsing
 
-    private func parsePairs(_ content: String) throws -> [(Int, String)] {
+    /// Byte-level line terminators.
+    ///
+    /// The previous implementation split a `String` with `components(separatedBy: .newlines)`, which
+    /// treats CRLF as one separator and also splits on VT (0x0B), FF (0x0C) and NEL (0x85). The byte
+    /// scanner reproduces that set; the exotic multi-byte separators (U+2028/U+2029) that a UTF-8
+    /// decode would also split on are treated as data, which is what a DXF value containing them
+    /// actually means.
+    @inline(__always)
+    private static func isLineTerminator(_ byte: UInt8) -> Bool {
+        byte == 0x0A || byte == 0x0D || byte == 0x0B || byte == 0x0C || byte == 0x85
+    }
+
+    /// Horizontal padding that the old `trimmingCharacters(in: .whitespacesAndNewlines)` removed.
+    /// (Unicode spaces such as NBSP are no longer trimmed — documenting the difference rather than
+    /// paying for a `CharacterSet` lookup per value.)
+    @inline(__always)
+    private static func isValuePadding(_ byte: UInt8) -> Bool {
+        byte == 0x20 || byte == 0x09
+    }
+
+    @inline(__always)
+    private static func parseInt(_ bytes: Span<UInt8>, _ start: Int, _ end: Int) -> Int? {
+        var index = start
+        while index < end, isValuePadding(bytes[index]) { index += 1 }
+        guard index < end else { return nil }
+        var negative = false
+        if bytes[index] == 0x2D {
+            negative = true
+            index += 1
+        } else if bytes[index] == 0x2B {
+            index += 1
+        }
+        guard index < end else { return nil }
+        var value = 0
+        while index < end {
+            let digit = bytes[index]
+            guard digit >= 0x30, digit <= 0x39 else { return nil }
+            value = value &* 10 &+ Int(digit - 0x30)
+            index += 1
+        }
+        return negative ? -value : value
+    }
+
+    /// Legacy path, kept verbatim for files that are not pure ASCII (see `readData`).
+    private func parsePairs(_ content: String) throws -> [(code: Int, value: String)] {
         var result: [(Int, String)] = []
         var lines: [String]
 
@@ -123,6 +226,69 @@ public class DXFReader {
         }
 
         return result
+    }
+
+    /// Single-pass byte scanner. Returns `nil` when the file contains non-ASCII bytes and therefore
+    /// has to go through the decoding path instead.
+    private func parsePairsFromBytes(_ data: Data) -> [(code: Int, value: String)]? {
+        var failure = false
+        var result: [(code: Int, value: String)] = []
+
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let baseAddress = raw.baseAddress, raw.count > 0 else { return }
+            let bytes = Span<UInt8>(
+                _unsafeStart: baseAddress.assumingMemoryBound(to: UInt8.self),
+                count: raw.count)
+
+            result.reserveCapacity(raw.count / 12)
+
+            var index = 0
+            while index < bytes.count {
+                // --- group code line -----------------------------------------------------------------
+                let codeStart = index
+                while index < bytes.count, !Self.isLineTerminator(bytes[index]) {
+                    if bytes[index] >= 0x80 { failure = true }
+                    index += 1
+                }
+                let codeEnd = index
+                if index < bytes.count, bytes[index] == 0x0D,
+                   index + 1 < bytes.count, bytes[index + 1] == 0x0A {
+                    index += 2
+                } else if index < bytes.count {
+                    index += 1            // exactly one terminator: blank lines stay blank lines
+                }
+                if failure { return }
+                if codeStart == codeEnd { continue }
+                guard let code = Self.parseInt(bytes, codeStart, codeEnd) else { continue }
+
+                // --- value line ---------------------------------------------------------------------
+                guard index < bytes.count else { break }
+                let valueStart = index
+                while index < bytes.count, !Self.isLineTerminator(bytes[index]) {
+                    if bytes[index] >= 0x80 { failure = true }
+                    index += 1
+                }
+                let valueEnd = index
+                if index < bytes.count, bytes[index] == 0x0D,
+                   index + 1 < bytes.count, bytes[index + 1] == 0x0A {
+                    index += 2
+                } else if index < bytes.count {
+                    index += 1
+                }
+                if failure { return }
+
+                var trimmedStart = valueStart
+                var trimmedEnd = valueEnd
+                while trimmedStart < trimmedEnd, Self.isValuePadding(bytes[trimmedStart]) { trimmedStart += 1 }
+                while trimmedEnd > trimmedStart, Self.isValuePadding(bytes[trimmedEnd - 1]) { trimmedEnd -= 1 }
+
+                // Short DXF values stay in small-string storage, so this is cheap; keeping the
+                // `(Int, String)` shape leaves the 24 `parseX` functions untouched.
+                result.append((code, String(decoding: data[trimmedStart..<trimmedEnd], as: UTF8.self)))
+            }
+        }
+
+        return failure ? nil : result
     }
 
     // MARK: - Section parsing
@@ -363,25 +529,29 @@ public class DXFReader {
         // payload with opaque group codes that look like normal MTEXT placement
         // fields; ignore that payload so later 10/20/40 codes do not overwrite
         // the real insertion point or text height.
-        var props: [(Int, String)] = []
+        let __ptCollect = DXFProfile.tic()
+        // One array, built in order: the entity type first, then its pairs. The previous shape built
+        // `props` and then copied the whole thing into `allPairs` with an insert-at-0 shift — two
+        // allocations and an O(n) memmove per entity, for 75,942 entities.
+        var allPairs: [(Int, String)] = []
+        allPairs.reserveCapacity(24)
+        allPairs.append((0, typeName))
+        let isMTEXT = (typeName == "MTEXT")   // hoisted: this was a String compare per pair
         var idx = startPos + 1
         var skippingEmbeddedMTextObject = false
         while idx < pairs.count {
             let (c, v) = pairs[idx]
             if c == 0 { break }
-            if typeName == "MTEXT", c == 101, v.uppercased() == "EMBEDDED OBJECT" {
+            if isMTEXT, c == 101, v.uppercased() == "EMBEDDED OBJECT" {
                 skippingEmbeddedMTextObject = true
                 idx += 1
                 continue
             }
-            if !skippingEmbeddedMTextObject { props.append((c, v)) }
+            if !skippingEmbeddedMTextObject { allPairs.append((c, v)) }
             idx += 1
         }
         startPos = idx  // advance to next 0
-
-        // Also store all pairs including the type for convenience
-        var allPairs = props
-        allPairs.insert((0, typeName), at: 0)
+        DXFProfile.toc(__ptCollect, "    parseEntity: collect pairs")
 
         switch typeName {
         case "POINT":    return parsePoint(allPairs)
@@ -577,9 +747,24 @@ extension DXFReader {
     }
 
     func parseLWPolyline(_ pairs: [(Int, String)]) -> DXFLWPolylineEntity {
+        let __ptLw = DXFProfile.tic()
+        defer { DXFProfile.toc(__ptLw, "    parseLWPolyline body") }
         let e = DXFLWPolylineEntity()
         applyCommon(pairs, to: e)
-        var vertex: DXFVertex2D?
+
+        // Vertices are assembled in a local array and handed to the entity once.
+        //
+        // The previous shape appended a fresh vertex on every code 10 and then located it again for
+        // each of 20/40/41/42 via `e.vertices.last?.…` — four optional-chained writes through a class
+        // property per vertex, plus array growth. Reserving from the number of code-10 pairs removes
+        // the regrowth, and a local `current` removes the re-lookup. Measured at 3.59 us per polyline
+        // over 75,939 entities (~78% of parseSections on the 23 MB reference drawing).
+        var vertexCapacity = 0
+        for (c, _) in pairs where c == 10 { vertexCapacity += 1 }
+        var vertices: [DXFVertex2D] = []
+        vertices.reserveCapacity(vertexCapacity)
+        var current: DXFVertex2D?
+
         for (c, v) in pairs {
             switch c {
             case 38: e.elevation = d(v)
@@ -588,19 +773,23 @@ extension DXFReader {
             case 70: e.flags = i(v)
             case 90: e.vertexCount = i(v)
             case 10:
-                vertex = DXFVertex2D()
-                vertex!.x = d(v)
-                if let vt = vertex { e.vertices.append(vt) }
-            case 20: e.vertices.last?.y = d(v)
-            case 40: e.vertices.last?.startWidth = d(v)
-            case 41: e.vertices.last?.endWidth = d(v)
-            case 42: e.vertices.last?.bulge = d(v)
+                if let pending = current { vertices.append(pending) }
+                // `DXFVertex2D` is a class, so the binding itself is never mutated.
+                let fresh = DXFVertex2D()
+                fresh.x = d(v)
+                current = fresh
+            case 20: current?.y = d(v)
+            case 40: current?.startWidth = d(v)
+            case 41: current?.endWidth = d(v)
+            case 42: current?.bulge = d(v)
             case 210: e.extPoint.x = d(v)
             case 220: e.extPoint.y = d(v)
             case 230: e.extPoint.z = d(v)
             default: break
             }
         }
+        if let pending = current { vertices.append(pending) }
+        e.vertices = vertices
         return e
     }
 
@@ -2693,6 +2882,8 @@ extension DXFReader {
     // MARK: - Helpers
 
     func applyCommon(_ pairs: [(Int, String)], to entity: DXFEntity) {
+        let __ptCommon = DXFProfile.tic()
+        defer { DXFProfile.toc(__ptCommon, "    applyCommon (shared attributes)") }
         var inAppData = false
         var currentAppBlock: [(code: Int, value: Any)] = []
         var groupTransparency: Int32?
@@ -2782,7 +2973,29 @@ extension DXFReader {
     func d(_ s: String) -> Double { return Double(s) ?? 0.0 }
     func i(_ s: String) -> Int { return Int(s) ?? 0 }
     func i32(_ s: String) -> Int32 { return Int32(s) ?? 0 }
-    func parseHandle(_ s: String) -> UInt32 { return UInt32(s.trimmingCharacters(in: .whitespacesAndNewlines), radix: 16) ?? 0 }
+    /// Handles are bare ASCII hex ("0", "1F3"), and the pair scanner has already trimmed the value.
+    ///
+    /// Parsing the digits directly avoids the `String` that `trimmingCharacters(in:)` allocates plus
+    /// the generic radix parser, on a call that happens once per entity (code 5) and again for 330/390.
+    /// Anything that is not 1-8 hex digits falls back to the original expression, so the accepted
+    /// inputs and the failure result (0) are unchanged.
+    func parseHandle(_ s: String) -> UInt32 {
+        var value: UInt32 = 0
+        var digits = 0
+        for byte in s.utf8 {
+            let digit: UInt32
+            switch byte {
+            case 0x30...0x39: digit = UInt32(byte - 0x30)
+            case 0x41...0x46: digit = UInt32(byte - 0x41 + 10)
+            case 0x61...0x66: digit = UInt32(byte - 0x61 + 10)
+            default: return UInt32(s.trimmingCharacters(in: .whitespacesAndNewlines), radix: 16) ?? 0
+            }
+            digits += 1
+            if digits > 8 { return UInt32(s.trimmingCharacters(in: .whitespacesAndNewlines), radix: 16) ?? 0 }
+            value = value << 4 | digit
+        }
+        return value
+    }
     func dxfLineWeightVal(_ s: String) -> DXFLineWidth { return DXFLineWidth.fromDXF(Int(s) ?? -3) }
 }
 

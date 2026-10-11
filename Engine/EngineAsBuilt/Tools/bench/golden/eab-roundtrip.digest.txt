@@ -1,0 +1,12 @@
+archiveBytes: 6468
+restoredLayers: 1
+restoredBlocks: 1
+restoredEntities: 1
+layerCount: 1
+layer: GateLayer c=10,20,30,255 lw=0.25 lt=CONTINUOUS vis=true op=1.0
+blockCount: 1
+block: GateBlock geometry=10 hash=4ce94a0182caf616
+entityCount: 1
+entity: kind=block-instance layer=GateLayer block=GateBlock geomCount=0 transform=8b68b521a35ec8d5 geometry=e4896577aeb05be2
+primitiveKind: block-instance count=1
+DIGEST: b745a3f142aa4b32

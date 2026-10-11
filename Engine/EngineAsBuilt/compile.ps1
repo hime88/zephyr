@@ -90,7 +90,20 @@ $vsInstallerPath = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\v
 $vsPath = & $vsInstallerPath -latest -property installationPath
 $vcvarsPath = "$vsPath\VC\Auxiliary\Build\vcvarsall.bat"
 
-$buildCommand = "swift build --configuration $config -Xcc -I`"$($env:SDL3_INCLUDE)`""
+# Swift 6.4 made `swiftbuild` the default build system. It scans every Swift Platform SDK under
+# %LOCALAPPDATA%\Programs\Swift\Platforms and errors out with "platform 'windows' already registered"
+# when more than one toolchain version is installed. Single-toolchain machines (CI runners) are fine,
+# so only fall back to the (deprecated) native build system when multiple platforms are present.
+# Long-term fix on a developer machine: uninstall the older Swift toolchains.
+$swiftPlatformsRoot = "$env:LOCALAPPDATA\Programs\Swift\Platforms"
+$swiftBuildSystemFlag = @()
+if ((Test-Path $swiftPlatformsRoot) -and ((Get-ChildItem $swiftPlatformsRoot -Directory).Count -gt 1)) {
+    $platformVersions = (Get-ChildItem $swiftPlatformsRoot -Directory | Select-Object -ExpandProperty Name) -join ', '
+    Write-Host "Multiple Swift Platform SDKs found ($platformVersions) - using --build-system native" -ForegroundColor Yellow
+    $swiftBuildSystemFlag = @("--build-system", "native")
+}
+
+$buildCommand = (@("swift build", "--configuration", $config) + $swiftBuildSystemFlag + @("-Xcc", "-I`"$($env:SDL3_INCLUDE)`"")) -join " "
 $cmdScriptPath = "$env:TEMP\swift-compile-local.cmd"
 Set-Content -Path $cmdScriptPath -Encoding ASCII -Value @(
     "@echo off",
@@ -160,4 +173,4 @@ foreach ($asset in @("Fonts", "Plot Styles", "Patterns")) {
     }
 }
 
-Write-Host "`n### Build complete. Run with: .\$dllDest\Zephyr.exe ###" -ForegroundColor Green
+Write-Host "`n### Build complete. Run: cd `"$dllDest`" ; .\Zephyr.exe ###" -ForegroundColor Green
