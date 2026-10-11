@@ -429,9 +429,8 @@ jobs:
           # Build inside MSVC environment (vcvarsall.bat sets INCLUDE/LIB/PATH for Clang)
           $swiftBuildDir = "${{ github.workspace }}\Engine\EngineAsBuilt"
           # NOTE: --triple is passed for determinism, but SwiftPM 6.4 elides
-          # the triple dir for host builds, so output is NOT under
-          # .build\<triple>\<config>. Downstream paths are being migrated to
-          # `swift build --show-bin-path` (see step 7a diagnostics).
+          # the triple dir for host builds. Downstream steps use BIN_DIR,
+          # computed from `swift build --show-bin-path` in step 7a.
           $buildCommand = "swift build -c $config --triple ${{ matrix.swift-triple }} -Xcc -I$($env:SDL3_INCLUDE -replace '\\','/')"
 
           Write-Host "Launching build via vcvarsall.bat ${{ matrix.vcvars-arch }}..."
@@ -456,10 +455,17 @@ jobs:
 
           $config = "${{ inputs.configuration || 'debug' }}"
           $pkgDir = "${{ github.workspace }}\Engine\EngineAsBuilt"
-          $binDir = "$pkgDir\.build\${{ matrix.swift-triple }}\$config"
+
+          # Single source of truth for every downstream step: ask SwiftPM
+          # itself where the products went (layout varies by toolchain).
+          Push-Location "$pkgDir"
+          $binDir = (swift build -c $config --triple ${{ matrix.swift-triple }} --show-bin-path | Select-Object -Last 1).Trim()
+          Pop-Location
+          if (-not $binDir) { throw "swift build --show-bin-path returned nothing" }
           $exe = Join-Path $binDir "Zephyr.exe"
           if (Test-Path $exe) {
             Write-Host "Build output OK: $exe"
+            Add-Content -Path $env:GITHUB_ENV -Value "BIN_DIR=$binDir"
             exit 0
           }
           Write-Host "::error::Zephyr.exe not found at $exe"
@@ -471,10 +477,7 @@ jobs:
           if (Test-Path "$pkgDir") {
             Write-Host "--- Package dir top level ---"
             Get-ChildItem "$pkgDir" -ErrorAction Continue | Select-Object Name
-            Write-Host "--- SwiftPM's own answer ---"
-            Push-Location "$pkgDir"
-            swift build -c $config --triple ${{ matrix.swift-triple }} --show-bin-path
-            Pop-Location
+            Write-Host "--- SwiftPM bin path (computed above): $binDir"
             Write-Host "--- Zephyr.exe anywhere under package dir ---"
             Get-ChildItem "$pkgDir" -Recurse -Depth 6 -Filter "Zephyr.exe" -ErrorAction Continue |
               Select-Object FullName
@@ -504,7 +507,8 @@ jobs:
         run: |
           $config   = "${{ inputs.configuration || 'debug' }}"
           $swiftDir = "${{ github.workspace }}\Engine\EngineAsBuilt"
-          $binDir   = "$swiftDir\.build\${{ matrix.swift-triple }}\$config"
+          $binDir   = $env:BIN_DIR
+          if (-not $binDir) { throw "BIN_DIR not set by Verify Build Output Layout step" }
 
           $bench = Join-Path $binDir "ZephyrBench.exe"
           if (-not (Test-Path $bench)) {
@@ -545,7 +549,8 @@ jobs:
             $config     = "${{ inputs.configuration || 'debug' }}"
             $swiftDir   = "${{ github.workspace }}\Engine\EngineAsBuilt"
             $shaderDir  = "$swiftDir\Shaders"
-            $outputDir  = "$swiftDir\.build\${{ matrix.swift-triple }}\$config"
+            $outputDir = $env:BIN_DIR
+            if (-not $outputDir) { throw "BIN_DIR not set by Verify Build Output Layout step" }
 
             Write-Host "Compiling shaders with DXC: $dxcPath"
             Write-Host "Shader source: $shaderDir"
@@ -589,7 +594,8 @@ jobs:
           $triplet   = "${{ matrix.vcpkg-triplet }}"
           $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
           $swiftDir  = "${{ github.workspace }}\Engine\EngineAsBuilt"
-          $dllDest   = "$swiftDir\.build\${{ matrix.swift-triple }}\$config"
+          $dllDest = $env:BIN_DIR
+          if (-not $dllDest) { throw "BIN_DIR not set by Verify Build Output Layout step" }
           $sdlLib    = "C:\dev\SDL3\lib"
 
           New-Item -ItemType Directory -Force -Path $dllDest | Out-Null
@@ -698,7 +704,8 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $config = "${{ inputs.configuration || 'debug' }}"
-          $binDir = "${{ github.workspace }}\Engine\EngineAsBuilt\.build\${{ matrix.swift-triple }}\$config"
+          $binDir = $env:BIN_DIR
+          if (-not $binDir) { throw "BIN_DIR not set by Verify Build Output Layout step" }
           $vcvarsPath = "${{ steps.tools.outputs.vcvarspath }}"
 
           $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
@@ -743,7 +750,8 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $config = "${{ inputs.configuration || 'debug' }}"
-          $binDir = "${{ github.workspace }}\Engine\EngineAsBuilt\.build\${{ matrix.swift-triple }}\$config"
+          $binDir = $env:BIN_DIR
+          if (-not $binDir) { throw "BIN_DIR not set by Verify Build Output Layout step" }
 
           # Strip toolchain dirs from PATH so the loader must resolve every
           # dependency from the exe directory - exactly what an end-user
@@ -761,8 +769,8 @@ jobs:
       - name: Package Build
         run: |
           $config  = "${{ inputs.configuration || 'debug' }}"
-          $triple  = "${{ matrix.swift-triple }}"
-          $buildDir = "${{ github.workspace }}\Engine\EngineAsBuilt\.build\$triple\$config"
+          $buildDir = $env:BIN_DIR
+          if (-not $buildDir) { throw "BIN_DIR not set by Verify Build Output Layout step" }
           $zipName  = "Zephyr-Windows-${{ matrix.arch }}.zip"
           $zipPath  = "$env:RUNNER_TEMP\$zipName"
 
