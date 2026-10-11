@@ -2973,7 +2973,29 @@ extension DXFReader {
     func d(_ s: String) -> Double { return Double(s) ?? 0.0 }
     func i(_ s: String) -> Int { return Int(s) ?? 0 }
     func i32(_ s: String) -> Int32 { return Int32(s) ?? 0 }
-    func parseHandle(_ s: String) -> UInt32 { return UInt32(s.trimmingCharacters(in: .whitespacesAndNewlines), radix: 16) ?? 0 }
+    /// Handles are bare ASCII hex ("0", "1F3"), and the pair scanner has already trimmed the value.
+    ///
+    /// Parsing the digits directly avoids the `String` that `trimmingCharacters(in:)` allocates plus
+    /// the generic radix parser, on a call that happens once per entity (code 5) and again for 330/390.
+    /// Anything that is not 1-8 hex digits falls back to the original expression, so the accepted
+    /// inputs and the failure result (0) are unchanged.
+    func parseHandle(_ s: String) -> UInt32 {
+        var value: UInt32 = 0
+        var digits = 0
+        for byte in s.utf8 {
+            let digit: UInt32
+            switch byte {
+            case 0x30...0x39: digit = UInt32(byte - 0x30)
+            case 0x41...0x46: digit = UInt32(byte - 0x41 + 10)
+            case 0x61...0x66: digit = UInt32(byte - 0x61 + 10)
+            default: return UInt32(s.trimmingCharacters(in: .whitespacesAndNewlines), radix: 16) ?? 0
+            }
+            digits += 1
+            if digits > 8 { return UInt32(s.trimmingCharacters(in: .whitespacesAndNewlines), radix: 16) ?? 0 }
+            value = value << 4 | digit
+        }
+        return value
+    }
     func dxfLineWeightVal(_ s: String) -> DXFLineWidth { return DXFLineWidth.fromDXF(Int(s) ?? -3) }
 }
 
