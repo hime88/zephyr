@@ -14,7 +14,8 @@ import SwiftSDL
 /// Result returned by `DynamicNumericInput` event handlers.
 /// The owning `FeatureCommand` maps this to `CommandResult`.
 public enum DynamicInputResult {
-    /// Key was not relevant (letters, modifiers, arrows, etc.).
+    /// Key was not relevant (letters, modifiers, arrows, or Enter with
+    /// all buffers empty — the command runs its own Enter handling).
     case ignored
     /// Key was consumed (digit, backspace, tab) but no commit occurred.
     case consumed
@@ -306,6 +307,10 @@ public struct DynamicNumericInput {
     }
 
     private mutating func handleEnter() -> DynamicInputResult {
+        // No input anywhere: not ours — let the owning command run its own
+        // Enter handling (e.g. Line/Polyline finalize their segments).
+        // Partial input stays `.consumed` so Enter never discards keystrokes.
+        guard hasInput else { return .ignored }
         switch activeField {
         case .angle:
             guard let angleDeg = parsedAngleDegrees else { return .consumed }

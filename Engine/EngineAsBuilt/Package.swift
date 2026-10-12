@@ -110,7 +110,10 @@ let package = Package(
         ),
         .testTarget(
             name: "ZephyrTests",
-            dependencies: ["ZephyrCore"],
+            dependencies: [
+                "ZephyrCore",
+                .product(name: "CSDL3", package: "SwiftSDL"),
+            ],
             path: "Tests/ZephyrTests",
             swiftSettings: zephyrSwiftSettings
         ),

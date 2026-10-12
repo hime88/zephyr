@@ -17,8 +17,9 @@ import SwiftSDL_image
 ///     distance from the last point in the current mouse direction.
 ///   - Tab to switch to angle mode, type an angle, Enter to lock it — then
 ///     type a distance to place the point at that angle.
-///   - Press Enter with an empty buffer to finalize; Esc with empty buffer
-///     finalizes existing segments or cancels if fewer than 2 points.
+///   - Press Enter with an empty buffer to finalize.
+///   - Esc cancels the in-progress segments (the input layer intercepts
+///     it before this command; `cancel` discards the pending points).
 @MainActor
 public final class LineCommand: FeatureCommand {
 
