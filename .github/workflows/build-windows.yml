@@ -815,7 +815,7 @@ jobs:
           body: |
             Automated nightly builds from `main` branch.
 
-            See [downloads page](https://joseph-montanez.github.io/as-built/#download) for all platforms.
+            See [downloads page](https://joseph-montanez.github.io/zephyr/#download) for all platforms.
           files: ${{ runner.temp }}\Zephyr-Windows-${{ matrix.arch }}.zip
           prerelease: true
           make_latest: true

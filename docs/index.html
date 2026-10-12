@@ -94,6 +94,7 @@
       <a href="#features" style-hover="color:var(--text);">Features</a>
       <a href="#compatibility" style-hover="color:var(--text);">Compatibility</a>
       <a href="#proof" style-hover="color:var(--text);">Proof</a>
+      <a href="#autolisp" style-hover="color:var(--text);">AutoLISP</a>
       <a href="#compare" style-hover="color:var(--text);">vs AutoCAD</a>
       <a href="#opensource" style-hover="color:var(--text);">Open source</a>
     </div>
@@ -106,7 +107,7 @@
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
         </sc-if>
       </button>
-      <a href="https://github.com" style="display:flex; align-items:center; gap:6px; padding:7px 12px; border:1px solid var(--border); border-radius:8px; font-size:13px; color:var(--text-2); font-family:'Geist Mono';" style-hover="color:var(--text); border-color:var(--border-strong);">
+      <a href="https://github.com/joseph-montanez/zephyr" style="display:flex; align-items:center; gap:6px; padding:7px 12px; border:1px solid var(--border); border-radius:8px; font-size:13px; color:var(--text-2); font-family:'Geist Mono';" style-hover="color:var(--text); border-color:var(--border-strong);">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
         <span>1.2k</span>
       </a>
@@ -133,15 +134,15 @@
   <div style="max-width:1100px; margin:0 auto; text-align:center; position:relative;">
     <div style="display:inline-flex; align-items:center; gap:10px; padding:6px 12px; border:1px solid var(--border); border-radius:100px; font-family:'Geist Mono'; font-size:11px; color:var(--text-2); margin-bottom:32px;">
       <span style="width:6px; height:6px; border-radius:50%; background:var(--accent); animation: pulseDot 2s ease-in-out infinite;"></span>
-      <span>OPEN SOURCE · GPL v2 · 0.1 BETA</span>
+      <span>OPEN SOURCE · GPL v3 · 0.1 BETA</span>
     </div>
     <h1 style="font-size:104px; line-height:0.94; letter-spacing:-0.045em; margin:0 0 28px; font-weight:600; text-wrap:balance;">
       Native 2D CAD.<br>
-      <span style="color:var(--text-2);">Mac. Windows.</span>
+      <span style="color:var(--text-2);">Mac. Windows. Linux.</span>
       <span style="font-family:'Instrument Serif', Georgia, serif; font-style:italic; font-weight:400; color:var(--accent); letter-spacing:-0.02em;">Free.</span>
     </h1>
     <p style="font-size:21px; line-height:1.45; max-width:660px; margin:0 auto; color:var(--text-2); text-wrap:balance;">
-      Zephyr is a GPU‑accelerated drafting app written from scratch in Swift. Metal on macOS, Direct3D&nbsp;12 on Windows. Read/Write DWG. Costs nothing.
+      Zephyr is a GPU‑accelerated drafting app written from scratch in Swift. Metal on macOS, Direct3D&nbsp;12 on Windows, Vulkan on Linux. Read/Write DWG. Costs nothing.
     </p>
     <div style="display:flex; gap:10px; justify-content:center; margin-top:40px; flex-wrap:wrap;">
       <a href="#download" style="display:inline-flex; align-items:center; gap:10px; padding:14px 22px; background:var(--text); color:var(--bg); border-radius:10px; font-size:15px; font-weight:500;" style-hover="background:var(--accent); color:var(--navy);">
@@ -152,15 +153,21 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5L10.5 4.5v7H3v-6zM11.5 4.4L21 3v8.5h-9.5v-7.1zM3 12.5h7.5v7L3 18.5v-6zM11.5 12.5H21V21l-9.5-1.4v-7.1z"/></svg>
         Download for Windows
       </a>
-      <a href="https://github.com" style="display:inline-flex; align-items:center; gap:8px; padding:14px 18px; color:var(--text-2); font-size:14px;" style-hover="color:var(--text);">
+      <a href="#download" style="display:inline-flex; align-items:center; gap:10px; padding:14px 22px; background:transparent; color:var(--text); border:1px solid var(--border-strong); border-radius:10px; font-size:15px; font-weight:500;" style-hover="background:var(--bg-elev); border-color:var(--text);">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        Download for Linux
+      </a>
+      <a href="https://github.com/joseph-montanez/zephyr" style="display:inline-flex; align-items:center; gap:8px; padding:14px 18px; color:var(--text-2); font-size:14px;" style-hover="color:var(--text);">
         View source on GitHub
         <span style="display:inline-block;">→</span>
       </a>
     </div>
     <div style="display:flex; gap:20px; justify-content:center; margin-top:36px; font-family:'Geist Mono'; font-size:11px; color:var(--text-3); flex-wrap:wrap;">
-      <span>macOS 13+ · Apple silicon &amp; Intel</span>
+      <span>macOS 12+ · Apple silicon &amp; Intel</span>
       <span style="opacity:0.4;">·</span>
       <span>Windows 10+ · x64 &amp; ARM64</span>
+      <span style="opacity:0.4;">·</span>
+      <span>Linux · x64 &amp; ARM64 &amp; Snap</span>
       <span style="opacity:0.4;">·</span>
       <span>~14 MB download</span>
     </div>
@@ -217,10 +224,10 @@
         On top of that, finding great cross-platform tools that treat macOS and Linux as first-class citizens is a nightmare. Most polished solutions are strictly Windows-only. For example, while Autodesk finally added AutoLISP support to AutoCAD LT on Windows recently (2024), their official documentation explicitly states that AutoLISP is completely blocked on AutoCAD LT for Mac. If you're on a Mac and need LISP automation, they force you to step up to the full AutoCAD license at over <strong>$2,000 a year</strong>.
       </p>
       <p style="font-size:16px; color:var(--text-3); border-left: 3px solid var(--accent); padding-left: 16px; margin-top: 28px;">
-        <em>Note:</em> We highly encourage looking at other excellent free open-source software like <strong>QCAD</strong>, <strong>LibreCAD</strong>, <strong>FreeCAD</strong>, <strong>SolveSpace</strong>, and <strong>Open 2D Studio</strong> as powerful options to try in your drafting workflows. Zephyr exists alongside these community solutions as a performance-oriented alternative, utilizing Direct3D 12 on Windows and Metal on macOS through a single Swift GPU pipeline to feel native on both.
+        <em>Note:</em> We highly encourage looking at other excellent free open-source software like <strong>QCAD</strong>, <strong>LibreCAD</strong>, <strong>FreeCAD</strong>, <strong>SolveSpace</strong>, and <strong>Open 2D Studio</strong> as powerful options to try in your drafting workflows. Zephyr exists alongside these community solutions as a performance-oriented alternative, utilizing Direct3D 12 on Windows, Metal on macOS, and Vulkan on Linux through a single Swift GPU pipeline to feel native on all three.
       </p>
     </div>
-    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1px; background:var(--border-soft); border:1px solid var(--border-soft); border-radius:14px; overflow:hidden;">
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:1px; background:var(--border-soft); border:1px solid var(--border-soft); border-radius:14px; overflow:hidden;">
       <!-- mac card -->
       <div style="background:var(--bg-elev); padding:36px;">
         <div style="display:flex; align-items:center; gap:10px; margin-bottom:20px;">
@@ -247,6 +254,20 @@
           <li style="display:flex; gap:10px;"><span style="color:var(--accent);">✓</span> No .NET install, no Visual C++ runtime</li>
           <li style="display:flex; gap:10px;"><span style="color:var(--accent);">✓</span> Single signed .exe, ~14 MB</li>
           <li style="display:flex; gap:10px;"><span style="color:var(--accent);">✓</span> Per‑monitor DPI, multi‑display ready</li>
+        </ul>
+      </div>
+      <!-- linux card -->
+      <div style="background:var(--bg-elev); padding:36px;">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:20px;">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--text)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          <div style="font-size:20px; font-weight:600;">Linux</div>
+        </div>
+        <div style="font-family:'Geist Mono'; font-size:13px; color:var(--text-2); margin-bottom:24px;">Vulkan · x64 + ARM64 + Snap</div>
+        <ul style="list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:10px; font-size:14px; color:var(--text-2);">
+          <li style="display:flex; gap:10px;"><span style="color:var(--accent);">✓</span> Native Vulkan renderer, same GPU pipeline</li>
+          <li style="display:flex; gap:10px;"><span style="color:var(--accent);">✓</span> Ubuntu 24.04+, plain .zip or confined Snap</li>
+          <li style="display:flex; gap:10px;"><span style="color:var(--accent);">✓</span> Runs on WSL2 with WSLg</li>
+          <li style="display:flex; gap:10px;"><span style="color:var(--accent);">✓</span> DWG via ODA AppImage, one command to install</li>
         </ul>
       </div>
     </div>
@@ -562,10 +583,72 @@
   </div>
 </section>
 
+<!-- ============ AUTOLISP ============ -->
+<section id="autolisp" style="padding:120px 32px;">
+  <div style="max-width:1180px; margin:0 auto;">
+    <div style="display:grid; grid-template-columns: 1fr 1.1fr; gap:80px; align-items:center;">
+      <div>
+        <div style="font-family:'Geist Mono'; font-size:11px; color:var(--accent); letter-spacing:0.16em; margin-bottom:16px;">06 · AUTOMATION</div>
+        <h2 style="font-size:48px; line-height:1.0; letter-spacing:-0.035em; margin:0 0 24px; font-weight:600; text-wrap:balance;">
+          AutoLISP that runs everywhere. Yes, even on Mac.
+        </h2>
+        <p style="font-size:17px; line-height:1.55; color:var(--text-2); margin:0 0 24px;">
+          A native AutoLISP engine with the full inventoried builtin set — verified against every documented example. Routines written for full AutoCAD run unmodified: entity creation and editing, selection sets, system variables, file I/O, dictionaries, layer states, and scripted <span style="font-family:'Geist Mono'; font-size:15px; color:var(--text);">(command …)</span> calls.
+        </p>
+        <p style="font-size:17px; line-height:1.55; color:var(--text-2); margin:0 0 32px;">
+          Identical behavior on <span style="color:var(--text); font-weight:500;">macOS, Windows, and Linux</span> — the platform AutoCAD LT blocks LISP on is a first-class citizen here. Unsupported Tier‑2 calls report clean errors instead of failing silently.
+        </p>
+        <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+          <a href="./autolisp.html" style="padding:10px 18px; background:var(--accent); color:var(--navy); border-radius:8px; font-size:14px; font-weight:500;" style-hover="background:var(--accent-2);">
+            Browse the 305-function reference →
+          </a>
+          <span style="font-family:'Geist Mono'; font-size:12px; color:var(--text-3);">commands: <span style="color:var(--text-2);">LOAD</span> · <span style="color:var(--text-2);">EVAL</span> · <span style="color:var(--text-2);">SCRIPT</span></span>
+        </div>
+      </div>
+      <!-- code card -->
+      <div style="background:var(--canvas); border:1px solid var(--border); border-radius:14px; overflow:hidden; box-shadow: var(--shadow-lg);">
+        <div style="height:34px; background:var(--bg-panel); border-bottom:1px solid var(--border-soft); display:flex; align-items:center; gap:8px; padding:0 12px;">
+          <span style="width:10px; height:10px; border-radius:50%; background:#ff5f57;"></span>
+          <span style="width:10px; height:10px; border-radius:50%; background:#febc2e;"></span>
+          <span style="width:10px; height:10px; border-radius:50%; background:#28c840;"></span>
+          <div style="flex:1; text-align:center; font-family:'Geist Mono'; font-size:11px; color:var(--text-3);">red-circles.lsp · LOAD to run</div>
+        </div>
+        <pre style="margin:0; padding:24px 28px; font-family:'Geist Mono'; font-size:13px; line-height:1.7; color:var(--text); overflow-x:auto;"><code>;; Color all circles red
+(setq ss (ssget "_X" '((0 . "CIRCLE"))))
+(setq i 0)
+(repeat (sslength ss)
+  (setq e (entget (ssname ss i)))
+  (entmod (if (assoc 62 e)
+            (subst '(62 . 1) (assoc 62 e) e)
+            (append e (list '(62 . 1)))))
+  (setq i (1+ i)))</code></pre>
+      </div>
+    </div>
+    <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:1px; background:var(--border-soft); border:1px solid var(--border-soft); border-radius:14px; overflow:hidden; margin-top:64px;">
+      <div style="background:var(--bg-elev); padding:28px; text-align:center;">
+        <div style="font-size:36px; font-weight:600; letter-spacing:-0.03em; color:var(--accent);">305</div>
+        <div style="font-size:13px; color:var(--text-2); margin-top:6px;">builtins inventoried</div>
+      </div>
+      <div style="background:var(--bg-elev); padding:28px; text-align:center;">
+        <div style="font-size:36px; font-weight:600; letter-spacing:-0.03em; color:var(--text);">288</div>
+        <div style="font-size:13px; color:var(--text-2); margin-top:6px;">implemented today</div>
+      </div>
+      <div style="background:var(--bg-elev); padding:28px; text-align:center;">
+        <div style="font-size:36px; font-weight:600; letter-spacing:-0.03em; color:var(--text);">3</div>
+        <div style="font-size:13px; color:var(--text-2); margin-top:6px;">commands: LOAD · EVAL · SCRIPT</div>
+      </div>
+      <div style="background:var(--bg-elev); padding:28px; text-align:center;">
+        <div style="font-size:36px; font-weight:600; letter-spacing:-0.03em; color:var(--text);">3</div>
+        <div style="font-size:13px; color:var(--text-2); margin-top:6px;">platforms, identical behavior</div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ============ COMPARISON ============ -->
-<section id="compare" style="padding:120px 32px;">
+<section id="compare" style="padding:120px 32px; background:var(--bg-elev); border-top:1px solid var(--border-soft); border-bottom:1px solid var(--border-soft);">
   <div style="max-width:1100px; margin:0 auto;">
-    <div style="font-family:'Geist Mono'; font-size:11px; color:var(--accent); letter-spacing:0.16em; margin-bottom:16px;">06 · HOW WE COMPARE</div>
+    <div style="font-family:'Geist Mono'; font-size:11px; color:var(--accent); letter-spacing:0.16em; margin-bottom:16px;">07 · HOW WE COMPARE</div>
     <h2 style="font-size:56px; line-height:1.0; letter-spacing:-0.035em; margin:0 0 24px; font-weight:600; max-width:880px; text-wrap:balance;">
       You don't need a subscription. You don't need to compromise.
     </h2>
@@ -585,7 +668,7 @@
         <div style="padding:20px 24px; font-size:15px; font-weight:500; color:var(--text-2);">AutoCAD LT</div>
         <div style="padding:20px 24px; font-size:15px; font-weight:500; color:var(--text-2);">FOSS Ecosystem</div>
       </div>
-      <sc-for list="{{ compareRows }}" as="row" hint-placeholder-count="10">
+      <sc-for list="{{ compareRows }}" as="row" hint-placeholder-count="12">
         <div style="display:grid; grid-template-columns: 2fr 1fr 1fr 1fr; border-top:1px solid var(--border-soft);">
           <div style="padding:18px 24px; font-size:14px; color:var(--text);">{{ row.label }}</div>
           <div style="padding:18px 24px; font-size:14px; color:var(--text); font-family:'Geist Mono';">{{ row.zephyr }}</div>
@@ -602,21 +685,21 @@
 <section id="opensource" style="padding:120px 32px; background:var(--navy); color:#f0f4f7; position:relative; overflow:hidden;">
   <div aria-hidden="true" style="position:absolute; inset:0; background-image: radial-gradient(circle, rgba(74,138,184,0.4) 1px, transparent 1px); background-size: 32px 32px; opacity:0.4; mask-image: radial-gradient(ellipse at center, black 30%, transparent 80%); -webkit-mask-image: radial-gradient(ellipse at center, black 30%, transparent 80%);"></div>
   <div style="max-width:1000px; margin:0 auto; position:relative; text-align:center;">
-    <div style="font-family:'Geist Mono'; font-size:11px; color:#e0ab36; letter-spacing:0.16em; margin-bottom:20px;">07 · FREE FOREVER</div>
+    <div style="font-family:'Geist Mono'; font-size:11px; color:#e0ab36; letter-spacing:0.16em; margin-bottom:20px;">08 · FREE FOREVER</div>
     <h2 style="font-size:72px; line-height:1.0; letter-spacing:-0.035em; margin:0 0 28px; font-weight:600; text-wrap:balance; color:#f0f4f7;">
       Open source. <span style="font-family:'Instrument Serif', Georgia, serif; font-style:italic; font-weight:400; color:#e0ab36;">Always.</span>
     </h2>
     <p style="font-size:19px; line-height:1.55; max-width:680px; margin:0 auto 48px; color:#a8bccc;">
-      Zephyr is GPL v2. Free to use, free to fork, free to ship inside your shop. Paid support (priority bug fixes, technical help) comes later — the app itself never costs money.
+      Zephyr is GPL v3. Free to use, free to fork, free to ship inside your shop. Paid support (priority bug fixes, technical help) comes later — the app itself never costs money.
     </p>
     <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:24px; max-width:780px; margin:0 auto;">
       <div style="padding:24px; border:1px solid rgba(74,138,184,0.3); border-radius:12px; background:rgba(20,51,77,0.4);">
         <div style="font-size:13px; font-family:'Geist Mono'; color:#e0ab36; margin-bottom:8px;">LICENSE</div>
-        <div style="font-size:18px; font-weight:500;">GPL v2</div>
+        <div style="font-size:18px; font-weight:500;">GPL v3</div>
       </div>
       <div style="padding:24px; border:1px solid rgba(74,138,184,0.3); border-radius:12px; background:rgba(20,51,77,0.4);">
         <div style="font-size:13px; font-family:'Geist Mono'; color:#e0ab36; margin-bottom:8px;">SOURCE</div>
-        <div style="font-size:18px; font-weight:500;">github.com/zephyr-cad</div>
+        <div style="font-size:18px; font-weight:500;">github.com/joseph-montanez/zephyr</div>
       </div>
       <div style="padding:24px; border:1px solid rgba(74,138,184,0.3); border-radius:12px; background:rgba(20,51,77,0.4);">
         <div style="font-size:13px; font-family:'Geist Mono'; color:#e0ab36; margin-bottom:8px;">LANGUAGE</div>
@@ -636,16 +719,21 @@
       Free download. No account, no telemetry, no email gate. The .dxf files you author inside your open-source tools will open here perfectly.
     </p>
     <div style="display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
-      <a href="https://github.com/joseph-montanez/as-built/releases/download/nightly/EngineAsBuilt-macOS-arm64.zip" style="display:inline-flex; align-items:center; gap:10px; padding:16px 24px; background:var(--text); color:var(--bg); border-radius:10px; font-size:16px; font-weight:500;" style-hover="background:var(--accent); color:var(--navy);">
+      <a href="https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-macOS-Universal.zip" style="display:inline-flex; align-items:center; gap:10px; padding:16px 24px; background:var(--text); color:var(--bg); border-radius:10px; font-size:16px; font-weight:500;" style-hover="background:var(--accent); color:var(--navy);">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
         Zephyr for macOS
       </a>
-      <a href="https://github.com/joseph-montanez/as-built/releases/download/nightly/EngineAsBuilt-Windows-x64.zip" style="display:inline-flex; align-items:center; gap:10px; padding:16px 24px; background:transparent; color:var(--text); border:1px solid var(--border-strong); border-radius:10px; font-size:16px; font-weight:500;" style-hover="background:var(--bg-elev);">
+      <a href="https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-x64.zip" style="display:inline-flex; align-items:center; gap:10px; padding:16px 24px; background:transparent; color:var(--text); border:1px solid var(--border-strong); border-radius:10px; font-size:16px; font-weight:500;" style-hover="background:var(--bg-elev);">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5L10.5 4.5v7H3v-6zM11.5 4.4L21 3v8.5h-9.5v-7.1zM3 12.5h7.5v7L3 18.5v-6zM11.5 12.5H21V21l-9.5-1.4v-7.1z"/></svg>
         Zephyr for Windows
       </a>
+      <a href="https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-x64.zip" style="display:inline-flex; align-items:center; gap:10px; padding:16px 24px; background:transparent; color:var(--text); border:1px solid var(--border-strong); border-radius:10px; font-size:16px; font-weight:500;" style-hover="background:var(--bg-elev);">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        Zephyr for Linux
+      </a>
     </div>
-    <div style="margin-top:24px; font-family:'Geist Mono'; font-size:11px; color:var(--text-3);">v0.1.0 · macOS 13+ (Apple silicon + Intel) · Windows 10+ (x64 + ARM64) · SHA‑256 verified · ~14 MB</div>
+    <div style="margin-top:24px; font-family:'Geist Mono'; font-size:11px; color:var(--text-3);">v0.1.0 · macOS 12+ (Apple silicon + Intel) · Windows 10+ (x64 + ARM64) · Linux (x64 + ARM64 + Snap) · SHA‑256 verified · ~14 MB</div>
+    <div style="margin-top:12px; font-size:13px; color:var(--text-2);"><a href="https://github.com/joseph-montanez/zephyr/releases/tag/nightly" style="text-decoration:underline;" style-hover="color:var(--text);">All nightly builds</a> — ARM64 zips and Snap packages included.</div>
   </div>
 </section>
 
@@ -673,13 +761,14 @@
       </div>
       <div style="display:flex; flex-direction:column; gap:10px;">
         <div style="font-family:'Geist Mono'; font-size:11px; color:var(--text-3); letter-spacing:0.08em; margin-bottom:4px;">PROJECT</div>
-        <a style="font-size:13px; color:var(--text-2);" href="#">GitHub</a>
-        <a style="font-size:13px; color:var(--text-2);" href="#">Issues</a>
+        <a style="font-size:13px; color:var(--text-2);" href="https://github.com/joseph-montanez/zephyr">GitHub</a>
+        <a style="font-size:13px; color:var(--text-2);" href="https://github.com/joseph-montanez/zephyr/issues">Issues</a>
         <a style="font-size:13px; color:var(--text-2);" href="#">Roadmap</a>
         <a style="font-size:13px; color:var(--text-2);" href="#">Contribute</a>
       </div>
       <div style="display:flex; flex-direction:column; gap:10px;">
         <div style="font-family:'Geist Mono'; font-size:11px; color:var(--text-3); letter-spacing:0.08em; margin-bottom:4px;">DOCS</div>
+        <a style="font-size:13px; color:var(--text-2);" href="./autolisp.html">AutoLISP reference</a>
         <a style="font-size:13px; color:var(--text-2);" href="#">Quick start</a>
         <a style="font-size:13px; color:var(--text-2);" href="#">Commands</a>
         <a style="font-size:13px; color:var(--text-2);" href="#">File formats</a>
@@ -694,8 +783,8 @@
       </div>
     </div>
     <div style="display:flex; justify-content:space-between; padding-top:24px; border-top:1px solid var(--border-soft); font-family:'Geist Mono'; font-size:11px; color:var(--text-3);">
-      <span>© 2026 Zephyr CAD contributors · GPL v2</span>
-      <span>Built natively for Mac and Windows</span>
+      <span>© 2026 Zephyr CAD contributors · GPL v3</span>
+      <span>Built natively for Mac, Windows, and Linux</span>
     </div>
   </div>
 </footer>
@@ -899,14 +988,16 @@ class Component extends DCLogic {
 
       compareRows: [
         { label: 'Price',                          zephyr: 'Free',         autocad: '$70 / mo',     qcad: 'Free / low cost' },
-        { label: 'License',                        zephyr: 'GPL v2',       autocad: 'Subscription', qcad: 'Open Source Ecosystem' },
+        { label: 'License',                        zephyr: 'GPL v3',       autocad: 'Subscription', qcad: 'Open Source Ecosystem' },
         { label: 'Native Mac (Metal)',             zephyr: '✓',            autocad: 'Blocked (LT)', qcad: '— (Alternative UI)' },
         { label: 'Native Windows (D3D12)',         zephyr: '✓',            autocad: '✓',            qcad: '— (Alternative UI)' },
         { label: 'Native Windows ARM64',           zephyr: '✓',            autocad: 'Emulation',    qcad: '—' },
+        { label: 'Native Linux (Vulkan)',            zephyr: '✓',            autocad: '—',            qcad: '✓' },
         { label: 'GPU‑accelerated rendering',      zephyr: '✓',            autocad: 'Partial',      qcad: '—' },
         { label: 'DWG read',                       zephyr: '✓',            autocad: '✓',            qcad: 'Varies' },
         { label: 'DXF R2007 round‑trip',           zephyr: '✓',            autocad: '✓',            qcad: '✓' },
         { label: 'PDF export w/ measurements',     zephyr: '✓ Bluebeam',   autocad: '✓',            qcad: 'Flat' },
+        { label: 'AutoLISP automation',             zephyr: '✓ 305 builtins', autocad: 'Win only (LT)', qcad: '—' },
         { label: 'Quick Measure (hover)',          zephyr: '✓',            autocad: '—',            qcad: '—' },
         { label: 'Clean Speckles (by example)',    zephyr: '✓',            autocad: '—',            qcad: '—' },
         { label: 'Open source option friendly',    zephyr: '✓',            autocad: '—',            qcad: '✓' },

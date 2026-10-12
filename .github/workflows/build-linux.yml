@@ -292,7 +292,7 @@ jobs:
           body: |
             Automated nightly builds from `main` branch.
 
-            See [downloads page](https://joseph-montanez.github.io/as-built/#download) for all platforms.
+            See [downloads page](https://joseph-montanez.github.io/zephyr/#download) for all platforms.
           files: ${{ runner.temp }}/${{ matrix.zip_name }}
           prerelease: true
           make_latest: true
@@ -332,7 +332,7 @@ jobs:
           body: |
             Automated nightly builds from `main` branch.
 
-            See [downloads page](https://joseph-montanez.github.io/as-built/#download) for all platforms.
+            See [downloads page](https://joseph-montanez.github.io/zephyr/#download) for all platforms.
           files: ${{ steps.snapcraft.outputs.snap }}
           prerelease: true
           make_latest: true
