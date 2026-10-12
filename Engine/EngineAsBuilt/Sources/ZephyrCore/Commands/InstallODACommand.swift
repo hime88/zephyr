@@ -7,7 +7,8 @@ import SwiftSDL
 import CSDL3
 
 
-private struct ODADownloadUpdate: Sendable {
+/// Visible for the download regression tests.
+struct ODADownloadUpdate: Sendable {
     let progress: Float?
     let downloadedBytes: Int64
     let expectedBytes: Int64
@@ -507,13 +508,15 @@ private final class ODADownloadOperation: @unchecked Sendable {
     }
 }
 #else
-private final class ODADownloadOperation: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+/// Visible for the download regression tests.
+final class ODADownloadOperation: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let destination: URL
     private let onProgress: @Sendable (ODADownloadUpdate) -> Void
     private let lock = NSLock()
 
     private var continuation: CheckedContinuation<URL, Error>?
     private var session: URLSession?
+    private var delegateQueue: OperationQueue?
     private var task: URLSessionDownloadTask?
     private var downloadedResult: Result<URL, Error>?
     private var completed = false
@@ -570,10 +573,11 @@ private final class ODADownloadOperation: NSObject, URLSessionDownloadDelegate, 
                 if completed {
                     lock.unlock()
                     task.cancel()
-                    session.invalidateAndCancel()
+                    delegateQueue.addOperation { session.invalidateAndCancel() }
                     return
                 }
                 self.session = session
+                self.delegateQueue = delegateQueue
                 self.task = task
                 lock.unlock()
 
@@ -594,15 +598,47 @@ private final class ODADownloadOperation: NSObject, URLSessionDownloadDelegate, 
         let continuation = self.continuation
         let task = self.task
         let session = self.session
+        let queue = self.delegateQueue
         self.continuation = nil
         self.task = nil
         self.session = nil
+        self.delegateQueue = nil
         lock.unlock()
 
         task?.cancel()
-        session?.invalidateAndCancel()
+        invalidateOnDelegateQueue(session: session, queue: queue, cancel: true)
         try? FileManager.default.removeItem(at: destination)
         continuation?.resume(throwing: CancellationError())
+    }
+
+    /// Tears the session down on its own serial delegate queue, never
+    /// inline. Invalidating from inside didCompleteWithError — or racing
+    /// an in-flight delegate callback from another thread — crashes
+    /// corelibs-foundation's curl multi handle on Linux (_MultiHandle
+    /// deallocated with live retains; see endOperation crash). The queue
+    /// is serial, so teardown strictly follows the last callback.
+    private func invalidateOnDelegateQueue(
+        session: URLSession?,
+        queue: OperationQueue?,
+        cancel: Bool
+    ) {
+        guard let session, let queue else {
+            // Unreachable in practice (stored and cleared together);
+            // invalidate directly rather than leak the session.
+            if cancel {
+                session?.invalidateAndCancel()
+            } else {
+                session?.finishTasksAndInvalidate()
+            }
+            return
+        }
+        queue.addOperation {
+            if cancel {
+                session.invalidateAndCancel()
+            } else {
+                session.finishTasksAndInvalidate()
+            }
+        }
     }
 
     func urlSession(
@@ -708,12 +744,14 @@ private final class ODADownloadOperation: NSObject, URLSessionDownloadDelegate, 
         completed = true
         let continuation = self.continuation
         let session = self.session
+        let queue = self.delegateQueue
         self.continuation = nil
         self.task = nil
         self.session = nil
+        self.delegateQueue = nil
         lock.unlock()
 
-        session?.finishTasksAndInvalidate()
+        invalidateOnDelegateQueue(session: session, queue: queue, cancel: false)
 
         switch result {
         case .success(let url):

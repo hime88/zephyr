@@ -330,9 +330,9 @@ struct AppUI {
 
         ImGuiTextV("DWG Files")
         if _setupOdaInstalled == true {
-            ImGuiTextWrappedV("ODA FileConverter is installed. DWG files will open directly.")
+            ImGuiTextWrappedV("ODA FileConverter is installed. DWG files will open and save directly.")
         } else {
-            ImGuiTextWrappedV("Opening AutoCAD DWG files needs the free ODA FileConverter. Install it now, or any time later with the INSTALLODA command.")
+            ImGuiTextWrappedV("Opening and saving AutoCAD DWG files needs the free ODA FileConverter. Without it, Zephyr can only work with DXF files. Install it now, or any time later with the INSTALLODA command.")
             ImGuiSpacing()
             if igButton("Install ODA FileConverter...", ImVec2(x: 0, y: 0)) {
                 completeSetup(engine: engine)
