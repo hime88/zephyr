@@ -28,7 +28,7 @@ If you look at the subscription costs for AutoCAD LT, it's **$540 a year** if yo
 
 On top of that, finding great cross-platform tools that treat macOS and Linux as first-class citizens is a nightmare. Most polished solutions are strictly Windows-only. For example, while Autodesk finally added AutoLISP support to AutoCAD LT on Windows recently (2024), their official documentation explicitly states that AutoLISP is completely blocked on AutoCAD LT for Mac. If you're on a Mac and need LISP automation, they force you to step up to the full AutoCAD license at over **$2,000 a year**.
 
-> **Note:** We highly encourage looking at other excellent free open-source software like **QCAD**, **LibreCAD**, **FreeCAD**, **SolveSpace**, and **Open 2D Studio** as powerful options to try in your drafting workflows. Zephyr exists alongside these community solutions as a performance-oriented alternative, utilizing Direct3D 12 on Windows and Metal on macOS through a single Swift GPU pipeline to feel native on both.
+> **Note:** We highly encourage looking at other excellent free open-source software like **QCAD**, **LibreCAD**, **FreeCAD**, **SolveSpace**, **Open CAD Studio** and **Open 2D Studio** as powerful options to try in your drafting workflows. Zephyr exists alongside these community solutions as a performance-oriented alternative, utilizing Direct3D 12 on Windows and Metal on macOS through a single Swift GPU pipeline to feel native on both.
 
 ## Tech Stack
 
