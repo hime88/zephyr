@@ -28,6 +28,39 @@ public struct UserSettings: Codable, Sendable {
     public var toolbarVisible: Bool
     public var radialNavVisible: Bool
 
+    // MARK: - First-run setup
+    /// Whether the welcome/setup popup was completed. Pre-flag settings
+    /// files decode this as false, so upgrading users see the popup once.
+    public var hasCompletedSetup: Bool
+
+    // MARK: - Initialization
+
+    /// Memberwise initializer (explicit: the custom Decodable init
+    /// below suppresses the synthesized one).
+    public init(
+        isDarkTheme: Bool,
+        layersPanelVisible: Bool,
+        drawPaletteVisible: Bool,
+        blockPanelVisible: Bool,
+        dataTablePanelVisible: Bool,
+        showPropertiesPanel: Bool,
+        showFPS: Bool,
+        toolbarVisible: Bool,
+        radialNavVisible: Bool,
+        hasCompletedSetup: Bool
+    ) {
+        self.isDarkTheme = isDarkTheme
+        self.layersPanelVisible = layersPanelVisible
+        self.drawPaletteVisible = drawPaletteVisible
+        self.blockPanelVisible = blockPanelVisible
+        self.dataTablePanelVisible = dataTablePanelVisible
+        self.showPropertiesPanel = showPropertiesPanel
+        self.showFPS = showFPS
+        self.toolbarVisible = toolbarVisible
+        self.radialNavVisible = radialNavVisible
+        self.hasCompletedSetup = hasCompletedSetup
+    }
+
     // MARK: - Default instance
     public static let `default` = UserSettings(
         isDarkTheme: true,
@@ -38,8 +71,55 @@ public struct UserSettings: Codable, Sendable {
         showPropertiesPanel: false,
         showFPS: false,
         toolbarVisible: true,
-        radialNavVisible: false
+        radialNavVisible: false,
+        hasCompletedSetup: false
     )
+
+    /// Decodes leniently so settings files written before a field
+    /// existed still load (missing keys fall back to defaults rather
+    /// than resetting the whole file to `.default`).
+    public init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        let fallback = Self.default
+        isDarkTheme = try box.decodeIfPresent(Bool.self, forKey: .isDarkTheme)
+            ?? fallback.isDarkTheme
+        layersPanelVisible = try box.decodeIfPresent(Bool.self, forKey: .layersPanelVisible)
+            ?? fallback.layersPanelVisible
+        drawPaletteVisible = try box.decodeIfPresent(Bool.self, forKey: .drawPaletteVisible)
+            ?? fallback.drawPaletteVisible
+        blockPanelVisible = try box.decodeIfPresent(Bool.self, forKey: .blockPanelVisible)
+            ?? fallback.blockPanelVisible
+        dataTablePanelVisible = try box.decodeIfPresent(
+            Bool.self, forKey: .dataTablePanelVisible) ?? fallback.dataTablePanelVisible
+        showPropertiesPanel = try box.decodeIfPresent(Bool.self, forKey: .showPropertiesPanel)
+            ?? fallback.showPropertiesPanel
+        showFPS = try box.decodeIfPresent(Bool.self, forKey: .showFPS)
+            ?? fallback.showFPS
+        toolbarVisible = try box.decodeIfPresent(Bool.self, forKey: .toolbarVisible)
+            ?? fallback.toolbarVisible
+        radialNavVisible = try box.decodeIfPresent(Bool.self, forKey: .radialNavVisible)
+            ?? fallback.radialNavVisible
+        hasCompletedSetup = try box.decodeIfPresent(Bool.self, forKey: .hasCompletedSetup)
+            ?? fallback.hasCompletedSetup
+    }
+
+    /// Snapshots the live UI state into persistable settings. Single
+    /// source of truth for shutdown saves and setup completion.
+    @MainActor
+    public static func capture(ui: EngineUIManager) -> UserSettings {
+        UserSettings(
+            isDarkTheme: ui.isDarkTheme,
+            layersPanelVisible: ui.layersPanelVisible,
+            drawPaletteVisible: ui.drawPaletteVisible,
+            blockPanelVisible: ui.blockPanelVisible,
+            dataTablePanelVisible: ui.dataTablePanelVisible,
+            showPropertiesPanel: ui.showPropertiesPanel,
+            showFPS: ui.showFPS,
+            toolbarVisible: ui.toolbarVisible,
+            radialNavVisible: ui.radialNavVisible,
+            hasCompletedSetup: ui.hasCompletedSetup
+        )
+    }
 
     // MARK: - Persistence
 

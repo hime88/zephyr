@@ -718,6 +718,7 @@ public final class PhrostEngine {
         self.ui.showPropertiesPanel = settings.showPropertiesPanel
         self.ui.showFPS = settings.showFPS
         self.ui.toolbarVisible = settings.toolbarVisible
+        self.ui.hasCompletedSetup = settings.hasCompletedSetup
         self.ui.radialNavVisible = settings.radialNavVisible
 
         print("Zephyr Initialized Successfully")
@@ -852,17 +853,7 @@ public final class PhrostEngine {
     /// after the user has explicitly chosen to discard changes and exit.
     public func stop() {
         // Persist user settings and ImGui docking layout before shutting down.
-        let settings = UserSettings(
-            isDarkTheme: ui.isDarkTheme,
-            layersPanelVisible: ui.layersPanelVisible,
-            drawPaletteVisible: ui.drawPaletteVisible,
-            blockPanelVisible: ui.blockPanelVisible,
-            dataTablePanelVisible: ui.dataTablePanelVisible,
-            showPropertiesPanel: ui.showPropertiesPanel,
-            showFPS: ui.showFPS,
-            toolbarVisible: ui.toolbarVisible,
-            radialNavVisible: ui.radialNavVisible)
-        settings.save()
+        UserSettings.capture(ui: ui).save()
         if let iniURL = UserSettings.imguiIniURL() {
             let dir = iniURL.deletingLastPathComponent()
             if !FileManager.default.fileExists(atPath: dir.path) {

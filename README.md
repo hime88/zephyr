@@ -241,6 +241,29 @@ Full interpreter for DXF formatting codes — `%%u` (underline), `%%o` (overline
 ### NURBS / Spline Evaluator
 Adaptive subdivision keyed to screen pixels. Curves stay smooth at any zoom, bounded arcs stay bounded.
 
+### AutoLISP
+Native AutoLISP engine with **305 builtins** — the full inventoried set, verified against every documented example. Runs your existing `.lsp` routines: entity creation and editing (`entmake`/`entmod`/`entget`), selection sets, system variables, file I/O, dictionaries, layer states, and scripted `(command …)` calls, with AutoCAD-compatible undo grouping per script.
+
+| Command | Alias | Description |
+|---|---|---|
+| LOAD | | Load and evaluate a `.lsp` file |
+| EVAL | | Evaluate a single Lisp expression string |
+| SCRIPT | `SCR` | Run a `.scr` command script |
+
+```lisp
+;; Color all circles red
+(setq ss (ssget "_X" '((0 . "CIRCLE"))))
+(setq i 0)
+(repeat (sslength ss)
+  (setq e (entget (ssname ss i)))
+  (entmod (if (assoc 62 e)
+            (subst '(62 . 1) (assoc 62 e) e)
+            (append e (list '(62 . 1)))))
+  (setq i (1+ i)))
+```
+
+Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, ActiveX automation, and ARX/VLX/VBA application loading.
+
 ### UI
 - **Command palette** — Press Space, type, Tab-cycle through fuzzy-matched autocomplete. 100+ registered commands with descriptions and syntax hints.
 - **Multi-drawing tabs** — Open multiple files, dirty-state tracking, unsaved-changes confirmation. Tab management commands: `NEW`, `CLOSE`, `CLOSEALL`, `CLOSEALLOTHERS`.

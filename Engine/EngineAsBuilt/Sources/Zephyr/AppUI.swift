@@ -26,6 +26,8 @@ struct AppUI {
     private static var _tabClosePendingID: UUID?
     private static var _tabClosePopupRequested = false
     private static var _windowClosePending = false
+    private static var _setupDismissedThisSession = false
+    private static var _setupOdaInstalled: Bool?
 
     static func requestTabCloseConfirmation(tabID: UUID) {
         _tabClosePendingID = tabID
@@ -248,6 +250,9 @@ struct AppUI {
         renderTabCloseConfirmation(engine: engine, dw: dw)
         renderWindowCloseConfirmation(engine: engine, dw: dw)
 
+        // 11c. First-run setup popup (theme + DWG/ODA intro).
+        renderSetupIfNeeded(engine: engine, dw: dw)
+
         // 12. Radial Navigation Tool (Artrage style)
         if engine.ui.radialNavVisible {
             RadialNavUI.render(engine: engine, dw: dw, dh: dh)
@@ -280,6 +285,82 @@ struct AppUI {
             ImVec2(x: modalW, y: maxH),
             { _ in },
             nil)
+    }
+
+    /// One-time welcome popup: theme choice plus the DWG/ODA intro.
+    /// Shows until completed; X and Remind Me Later dismiss for this
+    /// session only, Get Started and Install persist completion.
+    private static func renderSetupIfNeeded(engine: PhrostEngine, dw: Float) {
+        guard !engine.ui.hasCompletedSetup, !_setupDismissedThisSession else { return }
+        if _setupOdaInstalled == nil {
+            _setupOdaInstalled = ODADWGConverter.locateConverter() != nil
+        }
+        let popupID = "Welcome to Zephyr##Setup"
+        ImGuiOpenPopup(popupID, Int32(ImGuiPopupFlags_None.rawValue))
+        prepareAutoSizedModal(
+            preferredWidth: 480, minimumHeight: 330,
+            displayWidth: dw, engine: engine)
+        let flags = Int32(ImGuiWindowFlags_NoCollapse.rawValue)
+            | Int32(ImGuiWindowFlags_NoSavedSettings.rawValue)
+        var open = true
+        guard ImGuiBeginPopupModal(popupID, &open, flags) else { return }
+        defer { ImGuiEndPopup() }
+        if !open {
+            _setupDismissedThisSession = true
+            return
+        }
+
+        ImGuiTextV("Welcome to Zephyr")
+        ImGuiSpacing()
+        ImGuiSeparator()
+        ImGuiSpacing()
+
+        ImGuiTextV("Appearance")
+        var themeChoice: Int32 = engine.ui.isDarkTheme ? 0 : 1
+        if ImGuiRadioButton("Dark", &themeChoice, 0) {
+            if !engine.ui.isDarkTheme { engine.ui.toggleTheme() }
+        }
+        ImGuiSameLine(0, 12)
+        if ImGuiRadioButton("Light", &themeChoice, 1) {
+            if engine.ui.isDarkTheme { engine.ui.toggleTheme() }
+        }
+        ImGuiSpacing()
+        ImGuiSeparator()
+        ImGuiSpacing()
+
+        ImGuiTextV("DWG Files")
+        if _setupOdaInstalled == true {
+            ImGuiTextWrappedV("ODA FileConverter is installed. DWG files will open directly.")
+        } else {
+            ImGuiTextWrappedV("Opening AutoCAD DWG files needs the free ODA FileConverter. Install it now, or any time later with the INSTALLODA command.")
+            ImGuiSpacing()
+            if igButton("Install ODA FileConverter...", ImVec2(x: 0, y: 0)) {
+                completeSetup(engine: engine)
+                ImGuiCloseCurrentPopup()
+                engine.commandProcessor.executeCommand("INSTALLODA")
+                return
+            }
+        }
+        ImGuiSpacing()
+        ImGuiSeparator()
+        ImGuiSpacing()
+
+        if igButton("Remind Me Later", ImVec2(x: 0, y: 0)) {
+            _setupDismissedThisSession = true
+            ImGuiCloseCurrentPopup()
+            return
+        }
+        ImGuiSameLine(0, 8)
+        if igButton("Get Started", ImVec2(x: 0, y: 0)) {
+            completeSetup(engine: engine)
+            ImGuiCloseCurrentPopup()
+        }
+    }
+
+    private static func completeSetup(engine: PhrostEngine) {
+        engine.ui.hasCompletedSetup = true
+        _setupDismissedThisSession = true
+        UserSettings.capture(ui: engine.ui).save()
     }
 
     private static func renderTabCloseConfirmation(engine: PhrostEngine, dw: Float) {

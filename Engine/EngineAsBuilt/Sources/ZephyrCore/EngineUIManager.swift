@@ -47,6 +47,10 @@ public final class EngineUIManager {
     /// cleared by the popup's Save/Discard/Cancel actions.
     public var blockClosePending: Bool = false
 
+    /// Whether the first-run setup popup was completed. Loaded from
+    /// settings at startup; the popup shows while this is false.
+    public var hasCompletedSetup: Bool = false
+
     public var layerMoveActive: Bool = false
     public var layerMoveSelectionIndex: Int = 0
     public var layerMoveBuffer: String = ""

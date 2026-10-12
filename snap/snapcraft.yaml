@@ -195,6 +195,12 @@ parts:
       - libcurl4t64
       - libxml2
       - libsqlite3-0
+      # Swift toolchain runtime (swift/swiftc link ncurses; the LXD build
+      # instance is too minimal to provide these; libtinfo6 arrives via
+      # libncurses6).
+      - libncurses6
+      - libuuid1
+      - libzstd1
     override-build: |
       set -e
       cd "$SNAPCRAFT_PART_BUILD"
