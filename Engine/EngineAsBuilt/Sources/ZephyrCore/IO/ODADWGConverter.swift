@@ -57,6 +57,7 @@ public enum ODADWGConverter {
     ///   2. User Application Support directory
     ///   3. macOS system /Applications (inside .app bundle)
     ///   4. Windows C:\Program Files\ODA\ (versioned subdirectory)
+    ///   5. Linux system paths (/usr/bin, /usr/local/bin)
     public static func locateConverter() -> String? {
         let fm = FileManager.default
 
@@ -72,6 +73,8 @@ public enum ODADWGConverter {
                 .appendingPathComponent("ODAFileConverter")
             #if os(Windows)
                 .appendingPathComponent("ODAFileConverter.exe")
+            #elseif os(Linux)
+                .appendingPathComponent("ODAFileConverter.AppImage")
             #else
                 .appendingPathComponent("ODAFileConverter.app/Contents/MacOS/ODAFileConverter")
             #endif
@@ -92,6 +95,15 @@ public enum ODADWGConverter {
         let systemAppPath = "/Applications/ODAFileConverter.app/Contents/MacOS/ODAFileConverter"
         if isRunnableFile(atPath: systemAppPath) {
             return systemAppPath
+        }
+        #endif
+
+        // 5. Linux: system installs (.deb/.rpm drop the binary on PATH).
+        #if os(Linux)
+        for candidate in ["/usr/bin/ODAFileConverter", "/usr/local/bin/ODAFileConverter"] {
+            if isRunnableFile(atPath: candidate) {
+                return candidate
+            }
         }
         #endif
 
@@ -293,17 +305,62 @@ public enum ODADWGConverter {
         audit: String,
         filter: String
     ) async throws {
+        let baseArguments = [inputDir, outputDir, version, format, recursive, audit, filter]
+        let extractedArguments = ["--appimage-extract-and-run"] + baseArguments
+        // AppImages mount via FUSE; without /dev/fuse that always fails,
+        // so start extracted (covers stock Ubuntu 22.04+ with no libfuse2).
+        let startExtracted = appImageNeedsExtractAndRun(
+            path: path,
+            fuseDevicePresent: FileManager.default.fileExists(atPath: "/dev/fuse")
+        )
+
+        let startTime = Date()
+        let first = try launchConverter(
+            path: path,
+            arguments: startExtracted ? extractedArguments : baseArguments
+        )
+        if first.status == 0 {
+            logCompleted(startTime: startTime, status: first.status)
+            return
+        }
+        // One bounded retry: a directly-launched AppImage that fails
+        // with FUSE-smelling output gets a single extract-and-run shot
+        // (covers fuse3-only systems where /dev/fuse exists but the
+        // AppImage runtime cannot load libfuse.so.2).
+        if !startExtracted,
+           isAppImageBundle(path: path),
+           looksLikeFuseFailure(first.stdout + "\n" + first.stderr) {
+            print("[ODADWGConverter] Direct AppImage launch failed; retrying with --appimage-extract-and-run")
+            let second = try launchConverter(path: path, arguments: extractedArguments)
+            if second.status == 0 {
+                logCompleted(startTime: startTime, status: second.status)
+                return
+            }
+            throw ODADWGConvertError.processFailed(
+                exitCode: second.status,
+                stderr: second.stderr
+            )
+        }
+        throw ODADWGConvertError.processFailed(
+            exitCode: first.status,
+            stderr: first.stderr
+        )
+    }
+
+    private static func launchConverter(
+        path: String,
+        arguments: [String]
+    ) throws -> (status: Int32, stdout: String, stderr: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = [inputDir, outputDir, version, format, recursive, audit, filter]
+        process.arguments = arguments
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        let startTime = Date()
-        print("[ODADWGConverter] Running: \(path) \(process.arguments?.joined(separator: " ") ?? "")")
+        print("[ODADWGConverter] Running: \(path) \(arguments.joined(separator: " "))")
 
         do {
             try process.run()
@@ -315,16 +372,38 @@ public enum ODADWGConverter {
             )
         }
 
-        let elapsed = Date().timeIntervalSince(startTime)
-        print("[ODADWGConverter] Completed in \(String(format: "%.1f", elapsed))s, exit code: \(process.terminationStatus)")
+        let outData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        return (
+            process.terminationStatus,
+            String(data: outData, encoding: .utf8) ?? "",
+            String(data: errData, encoding: .utf8) ?? "(no stderr)"
+        )
+    }
 
-        if process.terminationStatus != 0 {
-            let errorData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorStr = String(data: errorData, encoding: .utf8) ?? "(no stderr)"
-            throw ODADWGConvertError.processFailed(
-                exitCode: process.terminationStatus,
-                stderr: errorStr
-            )
-        }
+    private static func logCompleted(startTime: Date, status: Int32) {
+        let elapsed = Date().timeIntervalSince(startTime)
+        print("[ODADWGConverter] Completed in \(String(format: "%.1f", elapsed))s, exit code: \(status)")
+    }
+
+    // MARK: - AppImage launch policy (pure, unit-tested)
+
+    static func isAppImageBundle(path: String) -> Bool {
+        path.lowercased().hasSuffix(".appimage")
+    }
+
+    /// True when an AppImage must start with --appimage-extract-and-run:
+    /// no FUSE device means the runtime cannot mount, so a direct
+    /// launch is guaranteed to fail.
+    static func appImageNeedsExtractAndRun(path: String, fuseDevicePresent: Bool) -> Bool {
+        isAppImageBundle(path: path) && !fuseDevicePresent
+    }
+
+    /// True when process output smells like an AppImage mount failure
+    /// ("Cannot mount AppImage, please check your FUSE setup",
+    /// "dlopen(): error loading libfuse.so.2", ...).
+    static func looksLikeFuseFailure(_ output: String) -> Bool {
+        let lower = output.lowercased()
+        return lower.contains("fuse") || lower.contains("cannot mount")
     }
 }

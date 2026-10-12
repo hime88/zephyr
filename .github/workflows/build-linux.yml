@@ -14,6 +14,10 @@ on:
         options:
           - debug
           - release
+  push:
+    branches: [ main, 'feature/swift-6.4' ]
+  pull_request:
+    branches: [ main ]
 
 env:
   SDL3_VERSION: "3.4.18"
@@ -277,6 +281,10 @@ jobs:
       # 11. Upload to Nightly Release
       # ------------------------------------------------------------------
       - name: Upload to Nightly Release
+        # Only publish from `main`. The workflow now also runs on branch pushes and pull requests
+        # (see the `on:` block), and without this guard a branch build would move the `nightly`
+        # tag and overwrite the public download with unreleased code.
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: nightly
@@ -294,8 +302,10 @@ jobs:
   snap:
     name: snap ${{ matrix.arch }}
     runs-on: ${{ matrix.runs-on }}
-    # Snaps are distribution artifacts: only build them for release.
-    if: inputs.configuration == 'release'
+    # Snaps are distribution artifacts: release builds from `main` only.
+    # Push/PR runs carry no inputs.configuration, so default to release and
+    # gate on the branch (a branch/PR snap build would move the `nightly` tag).
+    if: (inputs.configuration || 'release') == 'release' && github.ref == 'refs/heads/main'
 
     strategy:
       fail-fast: false

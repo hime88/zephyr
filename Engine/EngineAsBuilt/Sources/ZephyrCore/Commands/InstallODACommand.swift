@@ -747,10 +747,13 @@ public final class InstallODACommand: FeatureCommand {
     private var workerState: ODAInstallWorkerState?
     private var modalOpened = false
 
-    private static let fallbackURLs: [String: String] = [
-        "windows": "https://www.opendesign.com/guestfiles/get?filename=ODAFileConverter_QT6_vc16_amd64dll_27.1.msi",
-        "macos_arm64": "https://www.opendesign.com/guestfiles/get?filename=ODAFileConverter_QT6_macOsX_arm64_15.0dll_27.1.dmg",
-        "macos_x64": "https://www.opendesign.com/guestfiles/get?filename=ODAFileConverter_QT6_macOsX_x64_15.0dll_27.1.dmg",
+    /// Visible for the URL regression test; ODA serves unversioned
+    /// guestfiles filenames (a `_27.1`-style infix 404s).
+    static let fallbackURLs: [String: String] = [
+        "windows": "https://www.opendesign.com/guestfiles/get?filename=ODAFileConverter_QT6_vc16_amd64dll.msi",
+        "macos_arm64": "https://www.opendesign.com/guestfiles/get?filename=ODAFileConverter_QT6_macOsX_arm64_15.0dll.dmg",
+        "macos_x64": "https://www.opendesign.com/guestfiles/get?filename=ODAFileConverter_QT6_macOsX_x64_15.0dll.dmg",
+        "linux": "https://www.opendesign.com/guestfiles/get?filename=ODAFileConverter_QT6_lnxX64_11dll.AppImage",
     ]
 
     private static let agreementURL = "https://www.opendesign.com/agreements/2025/en/ODA%20Community%20User%20Agreement%2009-2025.pdf"
@@ -1050,6 +1053,8 @@ public final class InstallODACommand: FeatureCommand {
 
                 #if os(Windows)
                 try Self.validateMSI(at: file)
+                #elseif os(Linux)
+                try Self.validateAppImage(at: file)
                 #endif
 
                 try Task.checkCancellation()
@@ -1235,6 +1240,24 @@ public final class InstallODACommand: FeatureCommand {
         }
     }
 
+    nonisolated private static func validateAppImage(at url: URL) throws {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let header = try handle.read(upToCount: 4) ?? Data()
+        let expected = Data([0x7F, 0x45, 0x4C, 0x46]) // ELF magic.
+
+        guard header == expected else {
+            throw NSError(
+                domain: "InstallODA",
+                code: -16,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Open Design Alliance returned a file that is not a valid AppImage (missing ELF header). The download may have been an expired redirect or an HTML error page."
+                ]
+            )
+        }
+    }
+
 
     nonisolated private static func runInstall(
         file: URL,
@@ -1376,6 +1399,21 @@ public final class InstallODACommand: FeatureCommand {
         return destination
             .appendingPathComponent("Contents/MacOS/ODAFileConverter")
             .path
+        #elseif os(Linux)
+        // AppImage: single file, no mounting or root needed. Move (not
+        // copy) the ~200MB download into place under a stable name and
+        // mark it executable.
+        onStatus("Installing ODA FileConverter...")
+        let destination = target.appendingPathComponent("ODAFileConverter.AppImage")
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.moveItem(at: file, to: destination)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: destination.path
+        )
+        return destination.path
         #else
         throw NSError(
             domain: "InstallODA",
