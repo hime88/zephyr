@@ -395,7 +395,7 @@ struct ZephyrBench {
         print("")
 
         guard !arguments.isEmpty else {
-            print("usage: ZephyrBench [canary] [dxf <file>] [shx <file>] [nurbs] [dxf-digest <file>] [dxf-compare <file>] [dxf-goldens <dir>] [dxf-goldens-write <dir>] [eab-scalars] [eab-roundtrip] [all <dxf> <shx>]")
+            print("usage: ZephyrBench [canary] [dxf <file>] [shx <file>] [nurbs] [dxf-digest <file>] [dxf-compare <file>] [dxf-goldens <dir>] [dxf-goldens-write <dir>] [eab-scalars] [eab-roundtrip] [lisp [--eval EXPR]... [file.lsp]...] [all <dxf> <shx>]")
             return
         }
 
@@ -463,6 +463,30 @@ struct ZephyrBench {
                 run("dxf") { try Cases.dxf(path: dxf) }
                 run("shx") { try Cases.shx(path: shx) }
                 run("nurbs") { Cases.nurbs() }
+            case "lisp":
+                // Consumes the rest of argv: [--eval EXPR]... [file.lsp]...
+                let rest = Array(arguments.suffix(from: min(index + 1, arguments.count)))
+                index = arguments.count - 1
+                run("lisp") {
+                    // Unchecked box: the semaphore wait/signal pair orders the
+                    // write before the read, so the handoff is sound.
+                    final class ErrorBox: @unchecked Sendable {
+                        var error: Error?
+                    }
+                    let semaphore = DispatchSemaphore(value: 0)
+                    let box = ErrorBox()
+                    // Detached on purpose: main() is MainActor-isolated, so a
+                    // plain Task would inherit MainActor and deadlock against
+                    // the wait below. Detached tasks run on the global pool.
+                    Task.detached {
+                        do { try await LispRepl.run(arguments: rest) } catch {
+                            box.error = error
+                        }
+                        semaphore.signal()
+                    }
+                    semaphore.wait()
+                    if let thrown = box.error { throw thrown }
+                }
             default:
                 print("unknown case '\(arguments[index])'")
             }

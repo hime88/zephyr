@@ -1,0 +1,478 @@
+import Foundation
+import CSDL3
+import ImGui
+import SwiftSDL
+import ZephyrLisp
+
+// =========================================================================
+// MARK: - Lisp Command Driver (LOAD / EVAL / SCRIPT)
+// =========================================================================
+//
+// `LispCommand` is the interactive driver for AutoLISP: a FeatureCommand
+// that runs one evaluation task and feeds it UI events through the
+// `LispInputBroker`. Nothing here blocks a thread for input — the eval task
+// suspends on broker requests and resumes from the existing event handlers.
+//
+// Lifecycle:
+// * start: refuses nested runs (depth guard), claims invocation depth 1,
+//   builds the CAD host, and either launches immediately (source preset or
+//   argument already delivered) or prompts for the file path / expression.
+// * Evaluation runs in a detached task (off MainActor); every host effect
+//   hops back as needed. Completion, Esc cancel, and errors all funnel
+//   through cancel(), which is idempotent: cancel task, cancel pending
+//   broker request, discard open undo groups, release invocation depth.
+// * Normal completion additionally auto-closes unbalanced UNDO groups with
+//   a warning before releasing (fail-open toward the coalescing asked for).
+//
+// Input routing (handleCommandText / mouse / keys) offers EXACTLY ONE event
+// per gesture, chosen by the broker's pending kind: offering several would
+// queue the losers as stale input once the first settles the slot.
+// Clicks and keys also queue for future grread when nothing pends; motion
+// never queues (flood protection) and only settles live grread waits.
+
+@MainActor
+public final class LispCommand: FeatureCommand {
+    /// Which entry point spawned this driver.
+    public enum Mode: Sendable {
+        /// LOAD: read a .lsp file and evaluate its forms.
+        case load
+        /// EVAL: evaluate the argument as one expression string.
+        case eval
+        /// SCRIPT: run a .scr command script through the scripted commands.
+        case script
+    }
+
+    private let mode: Mode
+    private var presetSource: String?
+    private var launched = false
+    private var tornDown = false
+    private var evalTask: Task<Void, Never>?
+    private var host: LispCADHost?
+    private weak var engineRef: PhrostEngine?
+    private weak var processorRef: CADCommandProcessor?
+    private var lastMouseWorld: (x: Double, y: Double)?
+    private var lastPromptShown: String?
+
+    /// - Parameter source: preset path/expression (tests, and programmatic
+    ///   launch). When nil, start() prompts and handleCommandText launches.
+    public init(mode: Mode, source: String? = nil) {
+        self.mode = mode
+        self.presetSource = source
+    }
+
+    // MARK: - FeatureCommand
+
+    public func start(engine: PhrostEngine, processor: CADCommandProcessor) {
+        engineRef = engine
+        processorRef = processor
+        if processor.lispInvocationDepth > 0 {
+            print("[Lisp] Nested Lisp routines are not allowed.")
+            processor.finishFeatureCommand(engine: engine)
+            return
+        }
+        processor.lispInvocationDepth = 1
+        let broker = LispInputBroker()
+        broker.drainQueue()
+        host = LispCADHost(
+            document: engine.document,
+            selection: engine.cadSelection,
+            processor: processor,
+            broker: broker)
+        if let preset = presetSource {
+            presetSource = nil
+            launch(argument: preset)
+        } else {
+            switch mode {
+            case .load: processor.commandPrompt = "Enter Lisp file path to LOAD:"
+            case .eval: processor.commandPrompt = "Enter expression to EVAL:"
+            case .script: processor.commandPrompt = "Enter script file path to run:"
+            }
+        }
+    }
+
+    public func cancel(engine _: PhrostEngine, processor: CADCommandProcessor) {
+        guard !tornDown else { return }
+        tornDown = true
+        evalTask?.cancel()
+        evalTask = nil
+        host?.broker.cancelPending()
+        if let doc = engineRef?.document {
+            doc.undoManager.discardOpenUndoGroups()
+        }
+        processor.lispInvocationDepth = 0
+        host = nil
+    }
+
+    public func handleMouseClick(
+        worldX: Double, worldY: Double,
+        engine: PhrostEngine, processor _: CADCommandProcessor
+    ) -> CommandResult {
+        guard launched, let host else { return .continue }
+        lastMouseWorld = (worldX, worldY)
+        switch host.broker.pendingKind {
+        case .point:
+            host.broker.offer(.point([worldX, worldY]))
+        case .entity:
+            if let (handle, _) = pickEntity(atX: worldX, y: worldY, engine: engine) {
+                host.broker.offer(.entity(handle: handle, point: [worldX, worldY]))
+            } else {
+                // Miss (point, no handle): the host re-prompts.
+                host.broker.offer(.entity(handle: nil, point: [worldX, worldY]))
+            }
+        case .device:
+            host.broker.offer(grreadClick(worldX: worldX, worldY: worldY))
+        case .line, nil:
+            // Clicks queue for future grread when nothing (or text) pends.
+            if host.broker.pendingKind == nil {
+                host.broker.offer(grreadClick(worldX: worldX, worldY: worldY))
+            }
+        }
+        return .handled
+    }
+
+    public func handleMouseMotion(
+        worldX: Double, worldY: Double,
+        engine _: PhrostEngine, processor _: CADCommandProcessor
+    ) {
+        lastMouseWorld = (worldX, worldY)
+        // Motion only settles live grread waits; it never queues.
+        if host?.broker.pendingKind == .device {
+            host?.broker.offer(.device(LispValue(list: [
+                .int(5), .real(worldX), .real(worldY),
+            ])))
+        }
+    }
+
+    public func handleKeyDown(
+        scancode: SDL_Scancode, engine _: PhrostEngine, processor _: CADCommandProcessor
+    ) -> CommandResult {
+        // Keys feed grread (queued when idle). Never swallowed: the app's
+        // shortcuts still see them.
+        // NOTE: grread key codes are SDL scancodes, not AutoCAD codes.
+        host?.broker.offer(.device(LispValue(list: [.int(2), .int(Int(scancode.rawValue))])))
+        return .continue
+    }
+
+    public func renderOverlay(cam: CameraTransform, engine: PhrostEngine) {
+        guard launched, let host, let processor = processorRef else { return }
+        // Mirror the host's live prompt into the command line.
+        if host.currentPrompt != lastPromptShown {
+            lastPromptShown = host.currentPrompt
+            processor.commandPrompt = host.currentPrompt.isEmpty
+                ? "Lisp running… (Esc cancels)"
+                : host.currentPrompt
+        }
+        // Rubber band from the base point to the cursor during point waits.
+        if case .point = host.broker.pendingKind,
+           let base = host.pendingBase, base.count >= 2,
+           let mouse = lastMouseWorld
+        {
+            let drawList = igGetForegroundDrawList_ViewportPtr(nil)
+            let a = EngineCameraManager.worldToScreen(worldX: base[0], worldY: base[1], cam: cam)
+            let b = EngineCameraManager.worldToScreen(worldX: mouse.x, worldY: mouse.y, cam: cam)
+            let col = makeCol32(0, 200, 255, 200)
+            ImDrawListAddLine(
+                drawList,
+                ImVec2(x: a.x, y: a.y), ImVec2(x: b.x, y: b.y), col, 1.5)
+        }
+        _ = engine
+    }
+
+    public func handleCommandText(
+        _ text: String, engine _: PhrostEngine, processor _: CADCommandProcessor
+    ) -> CommandResult {
+        guard let host else { return .continue }
+        if !launched {
+            launch(argument: text)
+            return .continue
+        }
+        // Route typed text by the outstanding request kind.
+        switch host.broker.pendingKind {
+        case .line:
+            host.broker.offer(.line(text.isEmpty ? nil : text))
+        case .point:
+            if text.isEmpty {
+                host.broker.offer(.point(nil))
+            } else if let coords = LispCommand.parsePointText(
+                text, base: host.pendingBase)
+            {
+                host.broker.offer(.point(coords))
+            } else {
+                host.output("Invalid point. Type X,Y or pick with the mouse.\n")
+            }
+        case .entity:
+            if text.isEmpty {
+                host.broker.offer(.entity(handle: nil, point: nil))
+            } else {
+                host.output("Select an entity with the mouse (or Enter for none).\n")
+            }
+        case .device:
+            // Feed grread the first typed character (rest is dropped).
+            if let scalar = text.unicodeScalars.first {
+                host.broker.offer(.device(LispValue(list: [
+                    .int(2), .int(Int(scalar.value)),
+                ])))
+            }
+        case nil:
+            break // Script is computing; stray text is ignored.
+        }
+        return .continue
+    }
+
+    // MARK: - Launch + completion
+
+    private func launch(argument: String) {
+        guard !launched, let host,
+              let engine = engineRef, let processor = processorRef
+        else { return }
+        launched = true
+        processor.commandPrompt = "Lisp running… (Esc cancels)"
+        let mode = mode
+        let hostRef = host
+        evalTask = Task.detached(priority: .userInitiated) { [weak self] in
+            let outcome = await LispCommand.runDetached(
+                mode: mode, argument: argument, host: hostRef)
+            await MainActor.run { [weak self] in
+                self?.complete(outcome: outcome, engine: engine, processor: processor)
+            }
+        }
+    }
+
+    private enum Outcome {
+        case value(LispValue)
+        case error(String)
+        case cancelled
+    }
+
+    /// Off-actor evaluation body. Only Sendable captures (mode, argument,
+    /// host); the host serializes all drawing effects on MainActor.
+    private static func runDetached(
+        mode: Mode, argument: String, host: LispCADHost
+    ) async -> Outcome {
+        do {
+            switch mode {
+            case .load:
+                let source = try readTextFile(argument: argument, what: "LOAD")
+                let forms = try LispReader().readAll(source)
+                var env = LispEnvironment()
+                let result = try await LispEvaluator().run(forms, env: &env, host: host)
+                return .value(result)
+            case .eval:
+                let forms = try LispReader().readAll(argument)
+                var env = LispEnvironment()
+                let result = try await LispEvaluator().run(forms, env: &env, host: host)
+                return .value(result)
+            case .script:
+                try await runScriptFile(argument: argument, host: host)
+                return .value(.nilValue)
+            }
+        } catch let error as LispError {
+            if case .userCancel = error { return .cancelled }
+            return .error("\(error)")
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .error("\(error)")
+        }
+    }
+
+    private func complete(
+        outcome: Outcome, engine: PhrostEngine, processor: CADCommandProcessor
+    ) {
+        guard !tornDown, let host else { return }
+        switch outcome {
+        case let .value(result):
+            if !result.isNil {
+                host.output("\(result.prin1String)\n")
+            }
+        case let .error(message):
+            // *error* already ran inside the evaluator when defined.
+            host.output("Error: \(message)\n")
+        case .cancelled:
+            host.output("*Cancel*\n")
+        }
+        // Unbalanced Begin at script end auto-closes with a warning
+        // (documented default; AutoCAD's behavior here is undocumented).
+        let depth = engine.document.undoManager.undoGroupDepth
+        if depth > 0 {
+            while engine.document.undoManager.undoGroupDepth > 0 {
+                engine.document.undoManager.endUndoGroup()
+            }
+            host.output(
+                "Warning: \(depth) unbalanced UNDO group(s) auto-closed.\n")
+        }
+        evalTask = nil
+        processor.finishFeatureCommand(engine: engine)
+    }
+
+    // MARK: - File + script helpers
+
+    private static func readTextFile(argument: String, what: String) throws -> String {
+        let trimmed = argument.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        guard !trimmed.isEmpty else {
+            throw LispError.hostError("\(what): missing file path")
+        }
+        let url = URL(fileURLWithPath: trimmed)
+        do {
+            return try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            throw LispError.hostError("\(what): cannot read \"\(trimmed)\"")
+        }
+    }
+
+    /// Runs a .scr command script: lines naming a scripted command start a
+    /// new call; following lines accumulate as that call's arguments until
+    /// the next command line. Blank lines append "" (Enter). Tokens parse
+    /// as points (X,Y[,Z]), numbers, or strings.
+    ///
+    /// Limitation: a bare word argument that exactly matches a scripted
+    /// command name starts a new call instead. Only the 12 audited names
+    /// can collide; quoted strings never do (only bare words are tested).
+    static func runScriptFile(argument: String, host: LispCADHost) async throws {
+        let text = try readTextFile(argument: argument, what: "SCRIPT")
+        var pendingName: String?
+        var pendingArgs: [LispValue] = []
+        var lineNumber = 0
+        func flush() async throws {
+            guard let name = pendingName else { return }
+            pendingName = nil
+            let args = pendingArgs
+            pendingArgs = []
+            do {
+                _ = try await host.runCommand([.string(name)] + args)
+            } catch let error as LispError {
+                throw LispError.hostError("SCRIPT line \(lineNumber): \(error)")
+            }
+        }
+        for rawLine in text.components(separatedBy: .newlines) {
+            lineNumber += 1
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty {
+                pendingArgs.append(.string(""))
+                continue
+            }
+            if line.hasPrefix(";") { continue } // Comment.
+            if isScriptCommandLine(line) {
+                try await flush()
+                pendingName = line
+                pendingArgs = []
+                continue
+            }
+            if pendingName == nil {
+                throw LispError.hostError(
+                    "SCRIPT line \(lineNumber): expected a command, got \"\(line)\"")
+            }
+            pendingArgs += parseScriptLine(line)
+        }
+        try await flush()
+    }
+
+    private static func isScriptCommandLine(_ line: String) -> Bool {
+        // Bare single words only (no spaces, no commas, no quotes).
+        guard !line.contains(where: { $0 == " " || $0 == "," || $0 == "\"" }) else {
+            return false
+        }
+        return LispScriptedCommands.disposition(for: line) == .scripted
+    }
+
+    /// Tokenizes one script line: whitespace-separated tokens; X,Y[,Z]
+    /// becomes a point, numeric tokens become numbers, the rest strings.
+    static func parseScriptLine(_ line: String) -> [LispValue] {
+        line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map { token in
+            let word = String(token)
+            if word.contains(","),
+               let coords = parsePointText(word, base: nil),
+               coords.count >= 2
+            {
+                return LispValue(list: coords.map(LispValue.real))
+            }
+            if let int = Int(word) { return .int(int) }
+            if let double = Double(word) { return .real(double) }
+            return .string(word)
+        }
+    }
+
+    // MARK: - Picking + parsing
+
+    /// Bounding-box entity pick (v1 aperture picking): smallest-area live
+    /// bounding box containing the click, or nil on a miss.
+    private func pickEntity(
+        atX x: Double, y: Double, engine: PhrostEngine
+    ) -> (handle: String, point: [Double])? {
+        var best: (handle: String, area: Double)?
+        for entity in engine.document.allEntities {
+            guard let box = entity.worldBoundingBox,
+                  x >= box.min.x, x <= box.max.x,
+                  y >= box.min.y, y <= box.max.y
+            else { continue }
+            let area = (box.max.x - box.min.x) * (box.max.y - box.min.y)
+            if best == nil || area < best!.area {
+                best = (entity.handle.uuidString, area)
+            }
+        }
+        guard let best else { return nil }
+        return (best.handle, [x, y])
+    }
+
+    private func grreadClick(worldX: Double, worldY: Double) -> LispInputBroker.Event {
+        .device(LispValue(list: [.int(3), .real(worldX), .real(worldY)]))
+    }
+
+    /// Parses typed point text: "X,Y[,Z]", "X Y Z", "@X,Y" (relative to
+    /// base), or a bare number (single-element answer for the
+    /// getdist/getangle escape; getpoint re-prompts on those).
+    static func parsePointText(_ text: String, base: [Double]?) -> [Double]? {
+        var cleaned = text.trimmingCharacters(in: .whitespaces)
+        var relative = false
+        if cleaned.hasPrefix("@") {
+            relative = true
+            cleaned = String(cleaned.dropFirst())
+        }
+        let parts = cleaned
+            .replacingOccurrences(of: ",", with: " ")
+            .split(whereSeparator: { $0 == " " || $0 == "\t" })
+            .compactMap { Double(String($0)) }
+        guard !parts.isEmpty, parts.count <= 3 else { return nil }
+        // Reject partial parses ("10,abc" must not become [10]).
+        let tokens = cleaned
+            .replacingOccurrences(of: ",", with: " ")
+            .split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard tokens.count == parts.count else { return nil }
+        if parts.count == 1, !relative { return parts }
+        guard parts.count >= 2 else { return nil }
+        if relative {
+            guard let base, base.count >= 2 else { return nil }
+            let x = base[0] + parts[0], y = base[1] + parts[1]
+            if parts.count > 2 || base.count > 2 {
+                return [x, y, (base.count > 2 ? base[2] : 0) + (parts.count > 2 ? parts[2] : 0)]
+            }
+            return [x, y]
+        }
+        return parts.count == 2 ? [parts[0], parts[1]] : parts
+    }
+}
+
+// MARK: - Descriptors + registration
+
+/// Autocomplete descriptors for the Lisp entry points.
+public enum LispDescriptors {
+    public static let load = CommandDescriptor(
+        canonicalName: "LOAD",
+        aliases: [],
+        category: .lisp,
+        syntax: "<file>",
+        description: "Load and evaluate an AutoLISP (.lsp) file")
+    public static let eval = CommandDescriptor(
+        canonicalName: "EVAL",
+        aliases: [],
+        category: .lisp,
+        syntax: "<expression>",
+        description: "Evaluate an AutoLISP expression string")
+    public static let script = CommandDescriptor(
+        canonicalName: "SCRIPT",
+        aliases: ["SCR"],
+        category: .lisp,
+        syntax: "<file>",
+        description: "Run a command script (.scr) file")
+}

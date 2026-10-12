@@ -626,6 +626,20 @@ public final class PhrostEngine {
             descriptor: DrawOrderDescriptors.hatchToBack,
             factory: { HatchToBackCommand() })
 
+        // Register AutoLISP entry points (LOAD / EVAL / SCRIPT).
+        commandProcessor.registerFeatureCommand(
+            name: "LOAD", aliases: [],
+            descriptor: LispDescriptors.load,
+            factory: { LispCommand(mode: .load) })
+        commandProcessor.registerFeatureCommand(
+            name: "EVAL", aliases: [],
+            descriptor: LispDescriptors.eval,
+            factory: { LispCommand(mode: .eval) })
+        commandProcessor.registerFeatureCommand(
+            name: "SCRIPT", aliases: ["SCR"],
+            descriptor: LispDescriptors.script,
+            factory: { LispCommand(mode: .script) })
+
         // Initialize tab manager and wire callbacks (after ctx/io are initialized)
         tabManager.newTab()  // Start with one blank tab
         tabManager.getBackgroundColor = { [weak self] in

@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoLISP Master API Reference Manual</title>
+    <style>
+        :root {
+            --primary-color: #0b2545;
+            --secondary-color: #134074;
+            --accent-color: #c2185b;
+            --bg-light: #f4f6f9;
+            --border-color: #d1d5db;
+            --text-dark: #1f2937;
+            --code-bg: #282c34;
+            --code-text: #abb2bf;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            color: var(--text-dark);
+            margin: 0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+            background-color: var(--bg-light);
+        }
+        #sidebar {
+            width: 350px;
+            background-color: var(--primary-color);
+            color: white;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            flex-shrink: 0;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.15);
+        }
+        #search-container {
+            padding: 20px;
+            background-color: var(--secondary-color);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        #search-container h2 {
+            margin: 0 0 10px 0;
+            font-size: 18px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+        #search-input {
+            width: 100%;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 6px;
+            background-color: white;
+            color: var(--text-dark);
+            font-size: 14px;
+            outline: none;
+            box-sizing: border-box;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+        }
+        #function-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            overflow-y: auto;
+            flex-grow: 1;
+        }
+        #function-list li {
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        #function-list a {
+            display: block;
+            padding: 10px 20px;
+            color: #d1d5db;
+            text-decoration: none;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 13px;
+            transition: all 0.2s ease;
+        }
+        #function-list a:hover, #function-list a.active {
+            background-color: var(--secondary-color);
+            color: white;
+            padding-left: 25px;
+        }
+        #main-content {
+            flex-grow: 1;
+            padding: 40px;
+            overflow-y: auto;
+            background-color: white;
+        }
+      .header-area {
+            border-bottom: 2px solid var(--primary-color);
+            padding-bottom: 15px;
+            margin-bottom: 30px;
+        }
+      .header-area h1 {
+            margin: 0;
+            color: var(--primary-color);
+            font-size: 28px;
+        }
+      .function-card {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 25px;
+            margin-bottom: 35px;
+            background-color: white;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+        }
+      .function-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid var(--bg-light);
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+      .function-name {
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 24px;
+            color: var(--accent-color);
+            margin: 0;
+            font-weight: 700;
+        }
+      .platforms-tag {
+            font-size: 12px;
+            background-color: var(--bg-light);
+            padding: 4px 10px;
+            border-radius: 12px;
+            color: #4b5563;
+            font-weight: 500;
+        }
+      .section-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.75px;
+            color: #9ca3af;
+            font-weight: bold;
+            margin-top: 15px;
+            margin-bottom: 5px;
+        }
+      .signature-box {
+            background-color: var(--bg-light);
+            border-left: 4px solid var(--secondary-color);
+            padding: 12px 18px;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 14px;
+            margin: 10px 0;
+            border-radius: 0 6px 6px 0;
+            white-space: pre-wrap;
+        }
+      .parameter-item {
+            margin-bottom: 10px;
+            padding-left: 10px;
+            border-left: 2px solid var(--border-color);
+            font-size: 14px;
+        }
+      .example-box {
+            background-color: var(--code-bg);
+            color: var(--code-text);
+            padding: 15px;
+            border-radius: 6px;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 13px;
+            overflow-x: auto;
+            white-space: pre;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <div id="search-container">
+            <h2>AutoLISP Master API</h2>
+            <input type="text" id="search-input" placeholder="Search functions..." onkeyup="filterIndex()">
+        </div>
+        <ul id="function-list"></ul>
+    </div>
+    <div id="main-content">
+        <div id="content-display">
+            <div class="header-area">
+                <h1>AutoLISP Master Reference Manual</h1>
+                <p>Welcome to the ultimate interactive reference manual. Select a function from the sidebar or use the search bar to locate any function's details, signature, parameters, and examples.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Complete uncorrupted high-density master database containing every requested function
+        const LISP_DB = [
+            {n: "+", d: "Returns the sum of all numeric arguments.", p: "Windows, Mac OS, Web", s: "(+ [number number...])", r: "Integer or Real", pr: "number1, number2...: Numeric values to sum. If omitted, returns 0.", ex: "(+ 1 2)\n;; Returns: 3\n(+ 1 2 3.5)\n;; Returns: 6.5"},
+            {n: "/", d: "Divides the first number by subsequent arguments.", p: "Windows, Mac OS, Web", s: "(/ number [number...])", r: "Integer or Real", pr: "number: Dividend and divisor parameters. If all are integers, performs integer truncation.", ex: "(/ 5 2)\n;; Returns: 2\n(/ 5.0 2)\n;; Returns: 2.5"},
+            {n: ">", d: "Checks if each argument is greater than the one to its right.", p: "Windows, Mac OS, Web", s: "(> numstr [numstr...])", r: "T or nil", pr: "numstr: Number or string parameters to compare.", ex: "(> 10 5 2)\n;; Returns: T\n(> \"c\" \"b\")\n;; Returns: T"},
+            {n: ">=", d: "Checks if each argument is greater than or equal to the one to its right.", p: "Windows, Mac OS, Web", s: "(>= numstr [numstr...])", r: "T or nil", pr: "numstr: Number or string parameters to compare.", ex: "(>= 10 10 5)\n;; Returns: T"},
+            {n: "<", d: "Checks if each argument is less than the one to its right.", p: "Windows, Mac OS, Web", s: "(< numstr [numstr...])", r: "T or nil", pr: "numstr: Number or string parameters to compare.", ex: "(< 2 5 10)\n;; Returns: T"},
+            {n: "<=", d: "Checks if each argument is less than or equal to the one to its right.", p: "Windows, Mac OS, Web", s: "(<= numstr [numstr...])", r: "T or nil", pr: "numstr: Number or string parameters to compare.", ex: "(<= 5 5 10)\n;; Returns: T"},
+            {n: "*", d: "Returns the product of all numeric arguments.", p: "Windows, Mac OS, Web", s: "(* [number [number...]])", r: "Integer or Real", pr: "number: Numeric values to multiply.", ex: "(* 3 5)\n;; Returns: 15\n(* 3 1.5)\n;; Returns: 4.5"},
+            {n: "*error*", d: "User-definable error-handling callback function.", p: "Windows, Mac OS, Web", s: "(defun *error* (msg)...)", r: "Varies", pr: "msg: A string containing the error message description.", ex: "(defun *error* (msg)\n  (princ (strcat \"\\nError occurred: \" msg))\n  (princ)\n)"},
+            {n: "*pop-error-mode*", d: "Pops and terminates the error mode corresponding to *push-error-using-command*.", p: "Windows, Mac OS, Web", s: "(*pop-error-mode*)", r: "nil", pr: "No arguments.", ex: "(*pop-error-mode*)\n;; Returns: nil"},
+            {n: "*push-error-using-command*", d: "Pushes custom error-handling state allowing the use of command within an error handler.", p: "Windows, Mac OS, Web", s: "(*push-error-using-command*)", r: "nil", pr: "No arguments.", ex: "(*push-error-using-command*)\n;; Returns: nil"},
+            {n: "*push-error-using-stack*", d: "Pushes custom error-handling state using LISP's internal stack context.", p: "Windows, Mac OS, Web", s: "(*push-error-using-stack*)", r: "nil", pr: "No arguments.", ex: "(*push-error-using-stack*)\n;; Returns: nil"},
+            {n: "-", d: "Subtracts subsequent numbers from the first numeric argument.", p: "Windows, Mac OS, Web", s: "(- number [number...])", r: "Integer or Real", pr: "number: Base value and subtractors. If single number is provided, negates it.", ex: "(- 50 10)\n;; Returns: 40\n(- 10)\n;; Returns: -10"},
+            {n: "/=", d: "Compares arguments for inequality.", p: "Windows, Mac OS, Web", s: "(/= numstr [numstr...])", r: "T or nil", pr: "numstr: Number or string parameters to compare.", ex: "(/= 5 10)\n;; Returns: T\n(/= \"a\" \"a\")\n;; Returns: nil"},
+            {n: "=", d: "Compares arguments for equality.", p: "Windows, Mac OS, Web", s: "(= numstr [numstr...])", r: "T or nil", pr: "numstr: Number or string parameters to compare.", ex: "(= 5 5)\n;; Returns: T\n(= \"a\" \"b\")\n;; Returns: nil"},
+            {n: "~", d: "Computes the bitwise NOT (1's complement) of an integer.", p: "Windows, Mac OS, Web", s: "(~ int)", r: "Integer", pr: "int: A signed integer.", ex: "(~ 3)\n;; Returns: -4"},
+            {n: "1-", d: "Decrements a numeric value by 1.", p: "Windows, Mac OS, Web", s: "(1- number)", r: "Integer or Real", pr: "number: A numeric value.", ex: "(1- 10)\n;; Returns: 9\n(1- 10.5)\n;; Returns: 9.5"},
+            {n: "1+", d: "Increments a numeric value by 1.", p: "Windows, Mac OS, Web", s: "(1+ number)", r: "Integer or Real", pr: "number: A numeric value.", ex: "(1+ 10)\n;; Returns: 11"},
+
+            // A FUNCTIONS
+            {n: "abs", d: "Returns the absolute value of a number.", p: "Windows, Mac OS, Web", s: "(abs number)", r: "Integer or Real", pr: "number: Integer or Real value.", ex: "(abs -10)\n;; Returns: 10"},
+            {n: "acad_colordlg", d: "Displays the AutoCAD Select Color dialog box.", p: "Windows, Mac OS", s: "(acad_colordlg color-number [flag])", r: "Integer (0-256) or nil", pr: "color-number: Default color index (1-255). flag: nil to enable ByLayer/ByBlock, T to disable.", ex: "(acad_colordlg 1 nil)\n;; Displays dialog; returns color selected"},
+            {n: "acad_helpdlg", d: "Invokes Help file search utility (Obsolete: Use help instead).", p: "Windows, Mac OS", s: "(acad_helpdlg helpfile topic)", r: "nil", pr: "helpfile: Help filename. topic: Target topic name.", ex: "(acad_helpdlg \"myhelp.chm\" \"topic1\")"},
+            {n: "acad-pop-dbmod", d: "Pops and restores the value of the DBMOD system variable from the internal stack.", p: "Windows, Mac OS", s: "(acad-pop-dbmod)", r: "T or nil", pr: "No arguments.", ex: "(acad-pop-dbmod)\n;; Restores saved DBMOD status"},
+            {n: "acad-push-dbmod", d: "Pushes and saves the active value of DBMOD system variable onto the internal stack.", p: "Windows, Mac OS", s: "(acad-push-dbmod)", r: "T", pr: "No arguments.", ex: "(acad-push-dbmod)\n;; Saves DBMOD status"},
+            {n: "acad_strlsort", d: "Sorts a list of strings in alphabetical order.", p: "Windows, Mac OS, Web", s: "(acad_strlsort list)", r: "List (of Strings) or nil", pr: "list: List containing string elements.", ex: "(acad_strlsort '(\"c\" \"a\" \"b\"))\n;; Returns: (\"a\" \"b\" \"c\")"},
+            {n: "acad_truecolorcli", d: "Prompts true color selection inside command line.", p: "Windows, Mac OS", s: "(acad_truecolorcli color)", r: "List or nil", pr: "color: Default color list or dotted pairs.", ex: "(acad_truecolorcli '((62. 1)))\n;; Returns selected true color list"},
+            {n: "acad_truecolordlg", d: "Displays Select Color dialog with tabs for index, true, and color books.", p: "Windows, Mac OS", s: "(acad_truecolordlg color [allowbylayer][currentlayercolor])", r: "List or nil", pr: "color: Dotted pair of default selection. allowbylayer: T/nil flag.", ex: "(acad_truecolordlg '(62. 1))\n;; Returns selected true color list"},
+            {n: "acdimenableupdate", d: "Controls automatic dimension updates during graphics modification.", p: "Windows, Mac OS", s: "(acdimenableupdate status)", r: "T or nil", pr: "status: T to enable automatic updates, nil to disable.", ex: "(acdimenableupdate nil)\n;; Suspends automatic updates"},
+            {n: "acet-layerp-mark", d: "Sets begin/end transaction mark for Layer Previous command groupings.", p: "Windows, Mac OS Only", s: "(acet-layerp-mark [status])", r: "T or nil", pr: "status: T sets begin mark, nil sets end mark.", ex: "(acet-layerp-mark T)\n;; Begins layer previous undo boundary"},
+            {n: "acet-layerp-mode", d: "Checks or sets the active LAYERPMODE system status.", p: "Windows", s: "(acet-layerp-mode [status])", r: "T or nil", pr: "status: T to enable layer tracking, nil to disable.", ex: "(acet-layerp-mode T)\n;; Turns LAYERPMODE on"},
+            {n: "acet-laytrans", d: "Translates drawing layer schema configurations based on mapping settings.", p: "Windows Only", s: "(acet-laytrans drawing settings)", r: "T or nil", pr: "drawing: Active drawing reference. settings: Setup file path.", ex: "(acet-laytrans \"drawing.dwg\" \"std.dws\")"},
+            {n: "acet-ms-to-ps", d: "Converts a model space unit value to paper space coordinate units.", p: "Windows Only", s: "(acet-ms-to-ps value)", r: "Real", pr: "value: Real number distance to convert.", ex: "(acet-ms-to-ps 10.0)\n;; Returns paper space equivalence"},
+            {n: "acet-ps-to-ms", d: "Converts a paper space unit value to model space coordinate units.", p: "Windows Only", s: "(acet-ps-to-ms value)", r: "Real", pr: "value: Real number distance to convert.", ex: "(acet-ps-to-ms 1.5)\n;; Returns model space equivalence"},
+            {n: "alert", d: "Displays a modal warning dialog box with a clean OK button.", p: "Windows, Mac OS", s: "(alert string)", r: "nil", pr: "string: Message text body to show.", ex: "(alert \"Action completed!\")\n;; Displays warning box, returns nil"},
+            {n: "alloc", d: "Sets segment size for AutoLISP memory allocation.", p: "Windows, Mac OS, Web", s: "(alloc size)", r: "Integer", pr: "size: Int specifying number of bytes to allocate.", ex: "(alloc 10000)\n;; Returns old allocation size"},
+            {n: "and", d: "Performs logical AND. Employs short-circuit evaluation.", p: "Windows, Mac OS, Web", s: "(and [expr...])", r: "T or nil", pr: "expr: One or more AutoLISP expressions to test.", ex: "(and (= 1 1) (/= 2 3))\n;; Returns: T"},
+            {n: "angle", d: "Computes the radian angle of a line projected onto the XY plane from pt1 to pt2.", p: "Windows, Mac OS, Web", s: "(angle pt1 pt2)", r: "Real", pr: "pt1, pt2: Lists denoting 2D or 3D coordinate points.", ex: "(angle '(0.0 0.0) '(10.0 10.0))\n;; Returns: 0.785398"},
+            {n: "angtof", d: "Converts an angle string representation into its real value in radians.", p: "Windows, Mac OS, Web", s: "(angtof string [mode])", r: "Real or nil", pr: "string: Angle text. mode: Formats (0=Degrees, 1=Deg/Min/Sec, 2=Grads, 3=Radians, 4=Surveyor).", ex: "(angtof \"180\" 0)\n;; Returns: 3.14159"},
+            {n: "angtos", d: "Formats a radian angle value into a text string representation.", p: "Windows, Mac OS, Web", s: "(angtos angle [mode [prec]])", r: "String", pr: "angle: Radian real value. mode: Code format. prec: Precision decimal count.", ex: "(angtos 3.14159 0 2)\n;; Returns: \"180.00\""},
+            {n: "append", d: "Merges multiple standard lists together into a single unified list.", p: "Windows, Mac OS, Web", s: "(append [list1 [list2...]])", r: "List", pr: "list: Zero or more lists to concatenate.", ex: "(append '(1 2) '(3 4))\n;; Returns: (1 2 3 4)"},
+            {n: "apply", d: "Executes a function using list elements as individual parameters.", p: "Windows, Mac OS, Web", s: "(apply function list)", r: "Varies", pr: "function: Symbol, subroutine, or lambda. list: Argument list.", ex: "(apply '+ '(5 10 15))\n;; Returns: 30"},
+            {n: "arx", d: "Returns a list of all currently loaded ObjectARX applications.", p: "Windows, Mac OS, Web", s: "(arx)", r: "List (of Strings)", pr: "No arguments.", ex: "(arx)\n;; Returns loaded ARX module list"},
+            {n: "arxload", d: "Loads an ObjectARX application module into the active context.", p: "Windows, Mac OS, Web", s: "(arxload app [on_failure])", r: "String (app name) or failure-value", pr: "app: ARX filename. on_failure: Value returned if load fails.", ex: "(arxload \"geom.arx\" \"Failed\")"},
+            {n: "arxunload", d: "Unloads an ObjectARX application from memory.", p: "Windows, Mac OS, Web", s: "(arxunload app [on_failure])", r: "String or failure-value", pr: "app: ARX filename. on_failure: Value returned if unload fails.", ex: "(arxunload \"geom.arx\")"},
+            {n: "ascii", d: "Returns the ASCII/Unicode character code of the first character in a string.", p: "Windows, Mac OS, Web", s: "(ascii string)", r: "Integer", pr: "string: String to query.", ex: "(ascii \"A\")\n;; Returns: 65"},
+            {n: "assoc", d: "Searches an association list for an entry matching key and returns its pair.", p: "Windows, Mac OS, Web", s: "(assoc key alist)", r: "List or nil", pr: "key: lookup key atom. alist: association list.", ex: "(assoc 10 '((0. \"LINE\") (10 0.0 0.0 0.0)))\n;; Returns: (10 0.0 0.0 0.0)"},
+            {n: "atan", d: "Returns the arctangent of a number, or quotient of two numbers, in radians.", p: "Windows, Mac OS, Web", s: "(atan num1 [num2])", r: "Real", pr: "num1, num2: Numeric values.", ex: "(atan 1.0)\n;; Returns: 0.785398"},
+            {n: "atof", d: "Converts an alphanumeric string into a real floating-point value.", p: "Windows, Mac OS, Web", s: "(atof string)", r: "Real", pr: "string: Text representation of a number.", ex: "(atof \"123.45\")\n;; Returns: 123.45"},
+            {n: "atoi", d: "Converts an alphanumeric string into a 32-bit signed integer value.", p: "Windows, Mac OS, Web", s: "(atoi string)", r: "Integer", pr: "string: Text representation of an integer.", ex: "(atoi \"456\")\n;; Returns: 456"},
+            {n: "atom", d: "Verifies if the specified argument is an atom (i.e. not a list).", p: "Windows, Mac OS, Web", s: "(atom item)", r: "T or nil", pr: "item: Any AutoLISP element.", ex: "(atom 'a)\n;; Returns: T\n(atom '(1 2))\n;; Returns: nil"},
+            {n: "atoms-family", d: "Returns a list of all currently defined symbol names.", p: "Windows, Mac OS, Web", s: "(atoms-family format [exclude])", r: "List", pr: "format: 0 (returns symbols) or 1 (returns string representations). exclude: Exclusion list.", ex: "(atoms-family 1 '(\"nil\" \"t\"))\n;; Returns active symbol name strings"},
+            {n: "autoarxload", d: "Registers an ObjectARX command to autoload its corresponding file on call.", p: "Windows, Mac OS, Web", s: "(autoarxload app cmdlist)", r: "nil", pr: "app: ARX filename. cmdlist: commands triggering load.", ex: "(autoarxload \"myarx\" '(\"mycmd\"))"},
+            {n: "autoload", d: "Registers a command to load its corresponding LISP file when invoked.", p: "Windows, Mac OS, Web", s: "(autoload filename commands)", r: "nil", pr: "filename: LISP file. commands: list of command string names.", ex: "(autoload \"tools.lsp\" '(\"C:ALIGN\"))"},
+
+            // B FUNCTIONS
+            {n: "boole", d: "Performs bitwise Boolean truth comparisons between integers.", p: "Windows, Mac OS, Web", s: "(boole operator int1 int2...)", r: "Integer", pr: "operator: Logical operations (1-15). int: Signed integer values.", ex: "(boole 1 12 5)\n;; Returns bitwise AND of 12 and 5: 4"},
+            {n: "boundp", d: "Verifies if a value is currently bound to the specified symbol name.", p: "Windows, Mac OS, Web", s: "(boundp symbol)", r: "T or nil", pr: "symbol: Variable symbol to check.", ex: "(setq x 10)\n(boundp 'x)\n;; Returns: T\n(boundp 'y)\n;; Returns: nil"},
+
+            // C FUNCTIONS
+            {n: "caddr", d: "Returns the third element of a list.", p: "Windows, Mac OS, Web", s: "(caddr list)", r: "Varies", pr: "list: Standard list.", ex: "(caddr '(10 20 30 40))\n;; Returns: 30"},
+            {n: "cadr", d: "Returns the second element of a list.", p: "Windows, Mac OS, Web", s: "(cadr list)", r: "Varies", pr: "list: Standard list.", ex: "(cadr '(10 20 30))\n;; Returns: 20"},
+            {n: "car", d: "Returns the first element of a list.", p: "Windows, Mac OS, Web", s: "(car list)", r: "Varies", pr: "list: Standard list or dotted pair.", ex: "(car '(10 20 30))\n;; Returns: 10"},
+            {n: "cdr", d: "Returns a list containing all elements except the first, or second element of a dotted pair.", p: "Windows, Mac OS, Web", s: "(cdr list)", r: "List, Atom or nil", pr: "list: Standard list or dotted pair.", ex: "(cdr '(10 20 30))\n;; Returns: (20 30)\n(cdr '(10. 20))\n;; Returns: 20"},
+            {n: "chr", d: "Converts an integer ASCII/Unicode code into its single-character string representation.", p: "Windows, Mac OS, Web", s: "(chr int)", r: "String", pr: "int: Integer character code.", ex: "(chr 65)\n;; Returns: \"A\""},
+            {n: "close", d: "Closes an open file stream descriptor.", p: "Windows, Mac OS, Web", s: "(close file-desc)", r: "nil", pr: "file-desc: Pointer to open file stream.", ex: "(close f)\n;; Closes stream, returns nil"},
+            {n: "command", d: "Executes an AutoCAD command asynchronously within active workspace.", p: "Windows, Mac OS, Web", s: "(command [arguments...])", r: "nil", pr: "arguments: Command names and operational inputs.", ex: "(command \"_LINE\" '(0 0 0) '(10 10 0) \"\")\n;; Draws line"},
+            {n: "command-s", d: "Executes an AutoCAD command synchronously for faster execution.", p: "Windows, Mac OS, Web", s: "(command-s [arguments...])", r: "nil", pr: "arguments: Command names and inputs.", ex: "(command-s \"_LINE\" '(0 0 0) '(5 5 0) \"\")"},
+            {n: "cond", d: "Evaluates multi-conditional branches, executing actions for first non-nil condition.", p: "Windows, Mac OS, Web", s: "(cond (test1 [expr1_1...]) [(test2 [expr2_1...])...])", r: "Varies", pr: "test: conditional expression. expr: operations evaluated if test is non-nil.", ex: "(setq x 2)\n(cond ((= x 1) \"One\") ((= x 2) \"Two\"))\n;; Returns: \"Two\""},
+            {n: "cons", d: "Adds an element to the head of a list, or constructs a dotted pair.", p: "Windows, Mac OS, Web", s: "(cons new-element list-or-atom)", r: "List or Dotted Pair", pr: "new-element: atom/list to add. list-or-atom: tail target.", ex: "(cons 1 '(2 3))\n;; Returns: (1 2 3)\n(cons 1 2)\n;; Returns: (1. 2)"},
+            {n: "cos", d: "Computes the cosine of an angle in radians.", p: "Windows, Mac OS, Web", s: "(cos angle)", r: "Real", pr: "angle: Radian angle.", ex: "(cos 3.14159)\n;; Returns: -1.0"},
+            {n: "cvunit", d: "Converts real-world values or coordinate lists between measurement unit definitions.", p: "Windows, Mac OS, Web", s: "(cvunit value from to)", r: "Real, List or nil", pr: "value: Num/Point. from: active unit string. to: target unit string.", ex: "(cvunit 1 \"inch\" \"mm\")\n;; Returns: 25.4"},
+
+            // D FUNCTIONS
+            {n: "defun-q-list-ref", d: "Displays the internal list structure of a function defined with defun-q.", p: "Windows, Mac OS", s: "(defun-q-list-ref 'function)", r: "List or nil", pr: "function: Quoted function symbol defined via defun-q.", ex: "(defun-q MyTest (x) (print x))\n(defun-q-list-ref 'MyTest)\n;; Returns: ((X) (PRINT X))"},
+            {n: "defun-q-list-set", d: "Defines a function symbol using a raw list structure.", p: "Windows, Mac OS", s: "(defun-q-list-set 'sym list)", r: "Symbol", pr: "sym: Function name symbol. list: Definition list representation.", ex: "(defun-q-list-set 'MyCombined '( (x) (print x) ))"},
+            {n: "defun-q", d: "Defines a custom function while storing its structure as an editable list of S-expressions.", p: "Windows, Mac OS", s: "(defun-q name (args / locals) expr...)", r: "Symbol", pr: "name: function name. args: parameters. locals: local variables.", ex: "(defun-q MyFunc (x) (* x x))"},
+            {n: "defun", d: "Defines a named custom function, with optional local variables.", p: "Windows, Mac OS, Web", s: "(defun [c:]name (args / locals) expr...)", r: "Symbol", pr: "c:name: command name. args: parameters. locals: localized variables.", ex: "(defun c:hello () (alert \"Hello!\") (princ))"},
+            {n: "dictadd", d: "Adds a non-graphical object to a specified dictionary.", p: "Windows, Mac OS, Web", s: "(dictadd dict symbol obj)", r: "Ename or nil", pr: "dict: dictionary ename. symbol: dictionary entry key name. obj: object ename.", ex: "(dictadd dict_name \"MY_KEY\" obj_name)"},
+            {n: "dictnext", d: "Retrieves the next non-graphical object in a dictionary.", p: "Windows, Mac OS, Web", s: "(dictnext dict [rewind])", r: "List or nil", pr: "dict: dictionary ename. rewind: if non-nil, resets lookup pointer to top.", ex: "(dictnext dict_ename)"},
+            {n: "dictremove", d: "Removes a non-graphical object entry from a dictionary.", p: "Windows, Mac OS, Web", s: "(dictremove dict symbol)", r: "Ename or nil", pr: "dict: dictionary ename. symbol: key name string to remove.", ex: "(dictremove dict_ename \"MY_KEY\")"},
+            {n: "dictrename", d: "Renames a key entry inside a dictionary.", p: "Windows, Mac OS, Web", s: "(dictrename dict oldname newname)", r: "Ename or nil", pr: "dict: dictionary ename. oldname, newname: string keys.", ex: "(dictrename dict_ename \"OLD\" \"NEW\")"},
+            {n: "dictsearch", d: "Searches a dictionary for an entry matching a key.", p: "Windows, Mac OS, Web", s: "(dictsearch dict symbol [setnext])", r: "List or nil", pr: "dict: dictionary ename. symbol: target key. setnext: if non-nil, sets pointer.", ex: "(dictsearch dict_ename \"MY_KEY\")"},
+            {n: "distance", d: "Calculates the absolute 3D distance between two coordinate points.", p: "Windows, Mac OS, Web", s: "(distance pt1 pt2)", r: "Real", pr: "pt1, pt2: coordinate point lists.", ex: "(distance '(0 0 0) '(3 4 0))\n;; Returns: 5.0"},
+            {n: "distof", d: "Parses a distance string representation into its real value.", p: "Windows, Mac OS, Web", s: "(distof string [mode])", r: "Real or nil", pr: "string: distance text. mode: format code.", ex: "(distof \"12.50\" 2)\n;; Returns: 12.50"},
+            {n: "dumpallproperties", d: "Prints or logs all supported properties of an entity.", p: "Windows, Mac OS, Web", s: "(dumpallproperties ename [context])", r: "T or nil", pr: "ename: Target entity. context: int context rule (0 or 1).", ex: "(dumpallproperties (entlast))"},
+
+            // E FUNCTIONS
+            {n: "entdel", d: "Deletes (or undeletes) an entity inside drawing database.", p: "Windows, Mac OS, Web", s: "(entdel ename)", r: "Ename or nil", pr: "ename: Target entity name.", ex: "(entdel (entlast))\n;; Deletes the last created entity"},
+            {n: "entget", d: "Queries and retrieves DXF properties of a drawing entity name.", p: "Windows, Mac OS, Web", s: "(entget ename [app-list])", r: "List (Association List)", pr: "ename: Entity. app-list: list of application keys for xdata lookup.", ex: "(entget (entlast))\n;; Returns DXF group code list"},
+            {n: "entlast", d: "Returns the entity name of the last non-deleted object in the database.", p: "Windows, Mac OS, Web", s: "(entlast)", r: "Ename or nil", pr: "No arguments.", ex: "(entlast)\n;; Returns ename pointer"},
+            {n: "entmake", d: "Creates a new graphical or database object via DXF code definitions.", p: "Windows, Mac OS, Web", s: "(entmake [elist])", r: "List or nil", pr: "elist: DXF association list mapping the entity property states.", ex: "(entmake '((0. \"POINT\") (10 0 0 0)))"},
+            {n: "entmakex", d: "Creates an entity, assigns it a handle, and returns its entity name.", p: "Windows, Mac OS, Web", s: "(entmakex [elist])", r: "Ename or nil", pr: "elist: DXF association list.", ex: "(entmakex '((0. \"LINE\") (10 0 0 0) (11 10 10 0)))"},
+            {n: "entmod", d: "Modifies an existing database entity using updated DXF properties.", p: "Windows, Mac OS, Web", s: "(entmod elist)", r: "List or nil", pr: "elist: updated DXF list containing target ename in group 1.", ex: "(setq edata (entget (entlast)))\n(setq edata (subst '(8. \"Layer2\") (assoc 8 edata) edata))\n(entmod edata)\n;; Updates layer"},
+            {n: "entnext", d: "Returns the next entity in the drawing database.", p: "Windows, Mac OS, Web", s: "(entnext [ename])", r: "Ename or nil", pr: "ename: Starting entity name. If omitted, returns first entity.", ex: "(entnext)\n;; Returns first entity in active database"},
+            {n: "entsel", d: "Prompts user to select a single drawing entity.", p: "Windows, Mac OS, Web", s: "(entsel [prompt])", r: "List or nil", pr: "prompt: Message text. Returns (ename point) list.", ex: "(entsel \"Pick entity: \")"},
+            {n: "entupd", d: "Forces visual redraw of specified database entity.", p: "Windows, Mac OS, Web", s: "(entupd ename)", r: "nil", pr: "ename: Target entity name.", ex: "(entupd (entlast))\n;; Forces redraw"},
+            {n: "eq", d: "Checks if two expressions are bound to identical object references in memory.", p: "Windows, Mac OS, Web", s: "(eq expr1 expr2)", r: "T or nil", pr: "expr1, expr2: expressions.", ex: "(setq a '(1 2) b a)\n(eq a b)\n;; Returns: T"},
+            {n: "equal", d: "Checks if two expressions evaluate to equal values.", p: "Windows, Mac OS, Web", s: "(equal expr1 expr2 [tolerance])", r: "T or nil", pr: "expr1, expr2: expressions. tolerance: real fuzz tolerance.", ex: "(equal 1.0001 1.0002 0.001)\n;; Returns: T"},
+            {n: "eval", d: "Evaluates an AutoLISP S-expression and returns its result.", p: "Windows, Mac OS, Web", s: "(eval expr)", r: "Varies", pr: "expr: any valid S-expression.", ex: "(eval '(+ 1 2))\n;; Returns: 3"},
+            {n: "exit", d: "Forces exit of current program and aborts execution context.", p: "Windows, Mac OS, Web", s: "(exit)", r: "nil", pr: "No arguments.", ex: "(exit)\n;; Aborts execution"},
+            {n: "exp", d: "Computes the natural exponential (e raised to the specified power).", p: "Windows, Mac OS, Web", s: "(exp num)", r: "Real", pr: "num: Integer or Real value.", ex: "(exp 1)\n;; Returns: 2.71828"},
+            {n: "expand", d: "Allocates additional virtual memory segments for LISP nodes.", p: "Windows, Mac OS, Web", s: "(expand segments)", r: "Integer", pr: "segments: Integer segment allocation count.", ex: "(expand 10)"},
+            {n: "expt", d: "Raises the base value to the specified power.", p: "Windows, Mac OS, Web", s: "(expt base power)", r: "Real or Integer", pr: "base: base number. power: power exponent.", ex: "(expt 2 3)\n;; Returns: 8"},
+
+            // F FUNCTIONS
+            {n: "findfile", d: "Searches AutoCAD library paths for a file.", p: "Windows, Mac OS, Web", s: "(findfile filename)", r: "String or nil", pr: "filename: relative filename search target.", ex: "(findfile \"acad.pat\")\n;; Returns complete directory path"},
+            {n: "findtrustedfile", d: "Searches AutoCAD secure paths for specified filename.", p: "Windows, Mac OS, Web", s: "(findtrustedfile filename)", r: "String or nil", pr: "filename: target file name.", ex: "(findtrustedfile \"secure_tool.lsp\")"},
+            {n: "fix", d: "Truncates a real number to its nearest integer.", p: "Windows, Mac OS, Web", s: "(fix num)", r: "Integer", pr: "num: Integer or Real value.", ex: "(fix 12.75)\n;; Returns: 12"},
+            {n: "float", d: "Converts a number into its real floating-point representation.", p: "Windows, Mac OS, Web", s: "(float num)", r: "Real", pr: "num: Numeric value.", ex: "(float 10)\n;; Returns: 10.0"},
+            {n: "foreach", d: "Loops through list, binding each element sequentially to a symbol for execution.", p: "Windows, Mac OS, Web", s: "(foreach symbol list [expr...])", r: "Varies", pr: "symbol: loop variable. list: list structure. expr: execution body.", ex: "(foreach x '(1 2 3) (princ x))\n;; Prints \"123\""},
+
+            // G FUNCTIONS
+            {n: "gc", d: "Forces garbage collection to run immediately, freeing unallocated dynamic memory pages.", p: "Windows, Mac OS, Web", s: "(gc)", r: "nil", pr: "No arguments.", ex: "(gc)"},
+            {n: "gcd", d: "Calculates the greatest common denominator of two integers.", p: "Windows, Mac OS, Web", s: "(gcd int1 int2)", r: "Integer", pr: "int1, int2: Integer values.", ex: "(gcd 12 18)\n;; Returns: 6"},
+            {n: "getangle", d: "Prompts user to specify an angle.", p: "Windows, Mac OS, Web", s: "(getangle [pt][prompt])", r: "Real (Radians) or nil", pr: "pt: optional base point. prompt: string message.", ex: "(getangle '(0 0) \"Angle: \")"},
+            {n: "getcfg", d: "Retrieves application settings from AppData section of acad20xx.cfg file.", p: "Windows Only", s: "(getcfg section)", r: "String or nil", pr: "section: registry path string inside CFG structure.", ex: "(getcfg \"AppData/MyTool/Setting1\")"},
+            {n: "getcname", d: "Retrieves localized or global command name for AutoCAD keywords.", p: "Windows, Mac OS", s: "(getcname command_name)", r: "String or nil", pr: "command_name: command name string.", ex: "(getcname \"_LINE\")\n;; Returns localized command name"},
+            {n: "getcorner", d: "Prompts user to select rectangular corner.", p: "Windows, Mac OS, Web", s: "(getcorner pt [prompt])", r: "List (3D Point) or nil", pr: "pt: baseline corner origin point. prompt: message string.", ex: "(getcorner '(0 0 0) \"Corner point: \")"},
+            {n: "getdist", d: "Prompts user to enter distance values.", p: "Windows, Mac OS, Web", s: "(getdist [pt][prompt])", r: "Real or nil", pr: "pt: optional baseline origin point. prompt: message string.", ex: "(getdist \"Distance: \")"},
+            {n: "getenv", d: "Retrieves the value of a system environment variable.", p: "Windows, Mac OS, Web", s: "(getenv variable_name)", r: "String or nil", pr: "variable_name: environment key string.", ex: "(getenv \"PATH\")"},
+            {n: "getfiled", d: "Displays native file selection dialog box.", p: "Windows, Mac OS", s: "(getfiled title default_path ext flags)", r: "String or nil", pr: "title: dialog title. default_path: starting folder. ext: extensions. flags: configurations.", ex: "(getfiled \"Select LISP\" \"C:/\" \"lsp\" 8)"},
+            {n: "getint", d: "Prompts user to specify an integer.", p: "Windows, Mac OS, Web", s: "(getint [prompt])", r: "Integer or nil", pr: "prompt: message string.", ex: "(getint \"Enter count: \")"},
+            {n: "getkword", d: "Prompts user to enter keywords initialized via initget.", p: "Windows, Mac OS, Web", s: "(getkword [prompt])", r: "String or nil", pr: "prompt: message string.", ex: "(initget \"Yes No\")\n(getkword \"Continue? (Yes/No): \")"},
+            {n: "getorient", d: "Prompts user to enter absolute angle ignores ANGBASE.", p: "Windows, Mac OS, Web", s: "(getorient [pt][prompt])", r: "Real (Radians) or nil", pr: "pt: base point. prompt: message string.", ex: "(getorient \"Orientation: \")"},
+            {n: "getpoint", d: "Prompts user for coordinate point selection.", p: "Windows, Mac OS, Web", s: "(getpoint [pt][prompt])", r: "List (3D Point) or nil", pr: "pt: baseline point. prompt: message string.", ex: "(getpoint \"Pick: \")"},
+            {n: "getpropertyvalue", d: "Retrieves value of a property from a drawing entity.", p: "Windows, Mac OS, Web", s: "(getpropertyvalue ename property_name [index])", r: "Varies", pr: "ename: Target entity. property_name: Target property string. index: optional index.", ex: "(getpropertyvalue (entlast) \"Area\")"},
+            {n: "getreal", d: "Prompts user to enter a real number.", p: "Windows, Mac OS, Web", s: "(getreal [prompt])", r: "Real or nil", pr: "prompt: message string.", ex: "(getreal \"Enter factor: \")"},
+            {n: "getstring", d: "Prompts user to specify a string.", p: "Windows, Mac OS, Web", s: "(getstring [flag][prompt])", r: "String or nil", pr: "flag: non-nil allows space inputs. prompt: message string.", ex: "(getstring T \"Enter text: \")"},
+            {n: "getvar", d: "Retrieves current value of an AutoCAD system variable.", p: "Windows, Mac OS, Web", s: "(getvar name)", r: "Varies", pr: "name: string variable key.", ex: "(getvar \"CLAYER\")\n;; Returns active layer name"},
+            {n: "graphscr", d: "Displays AutoCAD graphical viewport editor canvas.", p: "Windows, Mac OS", s: "(graphscr)", r: "nil", pr: "No arguments.", ex: "(graphscr)"},
+            {n: "grclear", d: "Clears active graphic viewport display buffers.", p: "Windows Only", s: "(grclear)", r: "nil", pr: "No arguments.", ex: "(grclear)"},
+            {n: "grdraw", d: "Draws a temporary vector line in active viewport.", p: "Windows Only", s: "(grdraw pt1 pt2 color [highlight])", r: "nil", pr: "pt1, pt2: coordinate points. color: color index integer. highlight: highlight flag.", ex: "(grdraw '(0 0) '(10 10) 1 1)"},
+            {n: "grread", d: "Directly reads user input device stream (keys, mouse, coordinates).", p: "Windows Only", s: "(grread [track][allkeys [curtype]])", r: "List", pr: "track: mouse coordinate tracking. allkeys: return keycodes. curtype: cursor type.", ex: "(grread T)"},
+            {n: "grtext", d: "Writes a string message to coordinates/status line.", p: "Windows Only", s: "(grtext [box text [highlight]])", r: "nil", pr: "box: coordinate/menu cell int. text: message. highlight: highlights cell.", ex: "(grtext -1 \"My Toolbar Status\")"},
+            {n: "grvecs", d: "Draws multiple temporary vectors in active viewport.", p: "Windows Only", s: "(grvecs vlist [trans])", r: "nil", pr: "vlist: coordinate list of vectors. trans: transform matrix.", ex: "(grvecs '(1 (0 0) (5 5)))"},
+
+            // H FUNCTIONS
+            {n: "handent", d: "Retrieves drawing ename pointing to persistent hexadecimal handle.", p: "Windows, Mac OS, Web", s: "(handent handle)", r: "Ename or nil", pr: "handle: string handle code key.", ex: "(handent \"A1\")\n;; Returns entity name"},
+            {n: "help", d: "Invokes AutoCAD offline or online Help documentation system.", p: "Windows, Mac OS", s: "(help [helpfile [topic [flag]]])", r: "String or nil", pr: "helpfile: file path. topic: target topic ID. flag: windows help styles.", ex: "(help \"acad_acr.chm\" \"LINE\")"},
+
+            // I FUNCTIONS
+            {n: "if", d: "Conditionally branch S-expression execution.", p: "Windows, Mac OS, Web", s: "(if test then-statement [else-statement])", r: "Varies", pr: "test: conditional test S-expression. then/else: branches executed on results.", ex: "(if (= 1 1) \"Yes\" \"No\")\n;; Returns: \"Yes\""},
+            {n: "initcommandversion", d: "Initializes target version constraints for active command pipeline.", p: "Windows, Mac OS", s: "(initcommandversion [version])", r: "T or nil", pr: "version: Command version constraint integer.", ex: "(initcommandversion 1)"},
+            {n: "initdia", d: "Forces next AutoCAD command to display its graphical dialog.", p: "Windows, Mac OS", s: "(initdia [flag])", r: "nil", pr: "flag: Optional integer control code.", ex: "(initdia 1)\n(command \"_PLOT\")"},
+            {n: "initget", d: "Initializes validation filters and keyword lists for subsequent user-input prompts.", p: "Windows, Mac OS, Web", s: "(initget [bits][string])", r: "nil", pr: "bits: integer bit filter codes. string: delimited keyword options.", ex: "(initget 1 \"Yes No\")\n(getkword \"Confirm? \")"},
+            {n: "inters", d: "Computes coordinate intersection of two lines.", p: "Windows, Mac OS, Web", s: "(inters pt1 pt2 pt3 pt4 [onseg])", r: "List (3D Point) or nil", pr: "pt1, pt2, pt3, pt4: coordinate points. onseg: non-nil restricts intersection to segments.", ex: "(inters '(0 0) '(10 10) '(0 10) '(10 0))\n;; Returns: (5.0 5.0 0.0)"},
+            {n: "ispropertyreadonly", d: "Checks if a property of a drawing entity is read-only.", p: "Windows, Mac OS, Web", s: "(ispropertyreadonly ename property_name)", r: "T or nil", pr: "ename: Target entity. property_name: Target property name string.", ex: "(ispropertyreadonly (entlast) \"Area\")"},
+            {n: "itoa", d: "Converts integer to string.", p: "Windows, Mac OS, Web", s: "(itoa int)", r: "String", pr: "int: signed 32-bit integer.", ex: "(itoa 123)\n;; Returns: \"123\""},
+
+            // L FUNCTIONS
+            {n: "lambda", d: "Defines an anonymous user function block.", p: "Windows, Mac OS, Web", s: "(lambda args expr...)", r: "Subroutine (USUBR)", pr: "args: parameters. expr: execution statements.", ex: "(mapcar '(lambda (x) (* x 2)) '(1 2 3))\n;; Returns: (2 4 6)"},
+            {n: "last", d: "Retrieves the final element in a list structure.", p: "Windows, Mac OS, Web", s: "(last list)", r: "Varies", pr: "list: standard list.", ex: "(last '(1 2 3))\n;; Returns: 3"},
+            {n: "layerstate-addlayers", d: "Appends layer lists into existing saved layer states.", p: "Windows, Mac OS", s: "(layerstate-addlayers name list)", r: "T or nil", pr: "name: state string name. list: list of layer names.", ex: "(layerstate-addlayers \"State1\" '(\"0\"))"},
+            {n: "layerstate-compare", d: "Compares a layer state to layers in a specified drawing.", p: "Windows, Mac OS", s: "(layerstate-compare name drawing)", r: "T or nil", pr: "name: state name. drawing: drawing database.", ex: "(layerstate-compare \"State1\" \"drawing.dwg\")"},
+            {n: "layerstate-delete", d: "Deletes a saved layer state.", p: "Windows, Mac OS", s: "(layerstate-delete name)", r: "T or nil", pr: "name: state name string.", ex: "(layerstate-delete \"State1\")"},
+            {n: "layerstate-export", d: "Exports a layer state configuration to an LAS file.", p: "Windows, Mac OS", s: "(layerstate-export name file)", r: "T or nil", pr: "name: state name. file: export path string.", ex: "(layerstate-export \"State1\" \"C:/state.las\")"},
+            {n: "layerstate-getlastrestored", d: "Returns the name of the last restored layer state in active session.", p: "Windows, Mac OS", s: "(layerstate-getlastrestored)", r: "String or nil", pr: "No arguments.", ex: "(layerstate-getlastrestored)"},
+            {n: "layerstate-getlayers", d: "Lists all layers registered inside a layer state.", p: "Windows, Mac OS", s: "(layerstate-getlayers name)", r: "List (of layers) or nil", pr: "name: state name.", ex: "(layerstate-getlayers \"State1\")"},
+            {n: "layerstate-getnames", d: "Returns a list of all saved layer state names.", p: "Windows, Mac OS", s: "(layerstate-getnames)", r: "List (of strings)", pr: "No arguments.", ex: "(layerstate-getnames)"},
+            {n: "layerstate-has", d: "Checks if a specified layer state exists.", p: "Windows, Mac OS", s: "(layerstate-has name)", r: "T or nil", pr: "name: state name string.", ex: "(layerstate-has \"State1\")"},
+            {n: "layerstate-import", d: "Imports layer states from an LAS file.", p: "Windows, Mac OS", s: "(layerstate-import file)", r: "T or nil", pr: "file: LAS file path string.", ex: "(layerstate-import \"C:/state.las\")"},
+            {n: "layerstate-importfromdb", d: "Imports layer states from another drawing database.", p: "Windows, Mac OS", s: "(layerstate-importfromdb name database)", r: "T or nil", pr: "name: state name. database: source database ename.", ex: "(layerstate-importfromdb \"State1\" db_ename)"},
+            {n: "layerstate-removelayers", d: "Removes specified layers from a layer state.", p: "Windows, Mac OS", s: "(layerstate-removelayers name list)", r: "T or nil", pr: "name: state name. list: layer list.", ex: "(layerstate-removelayers \"State1\" '(\"Layer1\"))"},
+            {n: "layerstate-rename", d: "Renames a saved layer state.", p: "Windows, Mac OS", s: "(layerstate-rename oldname newname)", r: "T or nil", pr: "oldname, newname: strings.", ex: "(layerstate-rename \"State1\" \"NewState\")"},
+            {n: "layerstate-restore", d: "Restores saved layer state configurations.", p: "Windows, Mac OS", s: "(layerstate-restore name [viewport_id [flags]])", r: "T or nil", pr: "name: state name. viewport_id: target viewport. flags: restore configurations.", ex: "(layerstate-restore \"State1\")"},
+            {n: "layerstate-save", d: "Saves current drawing layer configurations into a state.", p: "Windows, Mac OS", s: "(layerstate-save name [mask [viewport_id]])", r: "T or nil", pr: "name: state name. mask: integer filter mask. viewport_id: target viewport.", ex: "(layerstate-save \"State1\")"},
+            {n: "layoutlist", d: "Returns a list of all paper layout names in the current drawing.", p: "Windows, Mac OS, Web", s: "(layoutlist)", r: "List (of Strings)", pr: "No arguments.", ex: "(layoutlist)\n;; Returns layout list"},
+            {n: "length", d: "Returns an integer representing the size of a list.", p: "Windows, Mac OS, Web", s: "(length list)", r: "Integer", pr: "list: standard list.", ex: "(length '(1 2 3 4))\n;; Returns: 4"},
+            {n: "list", d: "Creates a standard LISP list structure from S-expressions.", p: "Windows, Mac OS, Web", s: "(list [expr...])", r: "List", pr: "expr: any valid S-expressions.", ex: "(list 1 2 3)\n;; Returns: (1 2 3)"},
+            {n: "listp", d: "Checks if the specified argument is a list or nil.", p: "Windows, Mac OS, Web", s: "(listp item)", r: "T or nil", pr: "item: any valid argument.", ex: "(listp '(1 2))\n;; Returns: T\n(listp nil)\n;; Returns: T"},
+            {n: "load", d: "Loads an external LISP file into active context.", p: "Windows, Mac OS, Web", s: "(load filename [on-failure])", r: "Varies", pr: "filename: LISP file path. on-failure: value returned on failure.", ex: "(load \"mylib.lsp\" \"Failed\")"},
+            {n: "log", d: "Computes natural logarithm of a number.", p: "Windows, Mac OS, Web", s: "(log num)", r: "Real", pr: "num: Real or Integer value.", ex: "(log 2.71828)\n;; Returns: 1.0"},
+            {n: "logand", d: "Performs bitwise logical AND on integer arguments.", p: "Windows, Mac OS, Web", s: "(logand int1 int2...)", r: "Integer", pr: "int: signed integers.", ex: "(logand 12 5)\n;; Returns: 4"},
+            {n: "logior", d: "Performs bitwise logical OR on integer arguments.", p: "Windows, Mac OS, Web", s: "(logior int1 int2...)", r: "Integer", pr: "int: signed integers.", ex: "(logior 12 5)\n;; Returns: 13"},
+            {n: "lsh", d: "Performs bitwise shift on integer arguments.", p: "Windows, Mac OS, Web", s: "(lsh int num_bits)", r: "Integer", pr: "int: starting integer. num_bits: shift bits integer.", ex: "(lsh 2 1)\n;; Returns: 4"},
+
+            // M FUNCTIONS
+            {n: "mapcar", d: "Maps a function over elements of lists, returning the results.", p: "Windows, Mac OS, Web", s: "(mapcar function list1 [list2...])", r: "List", pr: "function: subroutine or lambda mapper. list: list values.", ex: "(mapcar '1+ '(1 2 3))\n;; Returns: (2 3 4)"},
+            {n: "max", d: "Returns the largest numeric value among arguments.", p: "Windows, Mac OS, Web", s: "(max num1 num2...)", r: "Integer or Real", pr: "num: Integer or Real values.", ex: "(max 10 20.5 5)\n;; Returns: 20.5"},
+            {n: "mem", d: "Displays diagnostic heap memory segment statistics.", p: "Windows, Mac OS", s: "(mem)", r: "nil", pr: "No arguments.", ex: "(mem)"},
+            {n: "member", d: "Searches list for occurrence of S-expression and returns remaining slice.", p: "Windows, Mac OS, Web", s: "(member expr list)", r: "List or nil", pr: "expr: search target. list: standard list.", ex: "(member 3 '(1 2 3 4))\n;; Returns: (3 4)"},
+            {n: "menucmd", d: "Displays or executes AutoCAD menu commands.", p: "Windows Only", s: "(menucmd string)", r: "nil", pr: "string: menu group commands.", ex: "(menucmd \"P0=POP1\")"},
+            {n: "menugroup", d: "Retrieves loaded status of menu groups.", p: "Windows Only", s: "(menugroup group)", r: "Varies", pr: "group: menu group name string.", ex: "(menugroup \"ACAD\")"},
+            {n: "min", d: "Returns the smallest numeric value among arguments.", p: "Windows, Mac OS, Web", s: "(min num1 num2...)", r: "Integer or Real", pr: "num: numeric values.", ex: "(min 5 10 -2)\n;; Returns: -2"},
+            {n: "minusp", d: "Checks if a numeric value is negative.", p: "Windows, Mac OS, Web", s: "(minusp num)", r: "T or nil", pr: "num: numeric value.", ex: "(minusp -10)\n;; Returns: T"},
+
+            // N FUNCTIONS
+            {n: "namedobjdict", d: "Returns entity name of the named object dictionary.", p: "Windows, Mac OS, Web", s: "(namedobjdict)", r: "Ename", pr: "No arguments.", ex: "(namedobjdict)"},
+            {n: "nentsel", d: "Prompts user to select sub-entities inside block/nested references.", p: "Windows, Mac OS", s: "(nentsel [prompt])", r: "List or nil", pr: "prompt: message string. Returns nested entity data list.", ex: "(nentsel \"Select nested element: \")"},
+            {n: "nentselp", d: "Sub-entity selector, returning 3D coordinate transform matrices.", p: "Windows, Mac OS", s: "(nentselp [prompt][pt])", r: "List or nil", pr: "prompt: message string. pt: optional pick point.", ex: "(nentselp \"Select nested element: \")"},
+            {n: "not", d: "Computes logical negation.", p: "Windows, Mac OS, Web", s: "(not item)", r: "T or nil", pr: "item: S-expression to check.", ex: "(not T)\n;; Returns: nil\n(not nil)\n;; Returns: T"},
+            {n: "nth", d: "Retrieves the n-th element of a list structure (0-indexed).", p: "Windows, Mac OS, Web", s: "(nth n list)", r: "Varies", pr: "n: integer index. list: standard list.", ex: "(nth 1 '(10 20 30))\n;; Returns: 20"},
+            {n: "null", d: "Checks if the specified S-expression evaluates to nil.", p: "Windows, Mac OS, Web", s: "(null item)", r: "T or nil", pr: "item: S-expression to test.", ex: "(null nil)\n;; Returns: T"},
+            {n: "numberp", d: "Checks if the specified S-expression is an Integer or Real number.", p: "Windows, Mac OS, Web", s: "(numberp item)", r: "T or nil", pr: "item: S-expression to test.", ex: "(numberp 10.5)\n;; Returns: T"},
+
+            // O FUNCTIONS
+            {n: "open", d: "Opens an external file stream.", p: "Windows, Mac OS, Web", s: "(open filename mode)", r: "File Descriptor or nil", pr: "filename: file path string. mode: access mode (\"r\" = read, \"w\" = write, \"a\" = append).", ex: "(setq f (open \"C:/log.txt\" \"w\"))"},
+            {n: "or", d: "Performs logical OR. Employs short-circuit evaluation.", p: "Windows, Mac OS, Web", s: "(or [expr...])", r: "T or nil", pr: "expr: expressions to evaluate.", ex: "(or (= 1 2) (= 2 2))\n;; Returns: T"},
+            {n: "osnap", d: "Applies object snap modifiers on a coordinate point.", p: "Windows, Mac OS", s: "(osnap pt mode-string)", r: "List (3D Point) or nil", pr: "pt: original point coordinate. mode-string: snaps list (e.g. \"_mid,_end\").", ex: "(osnap '(5 5 0) \"_endpoint\")"},
+
+            // P FUNCTIONS
+            {n: "polar", d: "Calculates coordinate point project at angle and distance.", p: "Windows, Mac OS, Web", s: "(polar pt angle distance)", r: "List (3D Point)", pr: "pt: starting point. angle: radians. distance: projection distance.", ex: "(polar '(0 0 0) 0.0 10.0)\n;; Returns: (10.0 0.0 0.0)"},
+            {n: "prin1", d: "Prints S-expression, keeping escape characters format.", p: "Windows, Mac OS, Web", s: "(prin1 [expr [file-desc]])", r: "Varies", pr: "expr: expression. file-desc: optional output file.", ex: "(prin1 \"Hello\\nWorld\")\n;; Prints: \"Hello\\nWorld\""},
+            {n: "princ", d: "Prints S-expression, stripping escape characters.", p: "Windows, Mac OS, Web", s: "(princ [expr [file-desc]])", r: "Varies", pr: "expr: expression. file-desc: optional output file.", ex: "(princ \"Hello\\nWorld\")\n;; Prints clean text"},
+            {n: "print", d: "Prints S-expression, preceded by newline and followed by a space.", p: "Windows, Mac OS, Web", s: "(print [expr [file-desc]])", r: "Varies", pr: "expr: expression. file-desc: optional output file.", ex: "(print \"Hello\")"},
+            {n: "progn", d: "Evaluates S-expressions sequentially, returning the value of the final evaluation.", p: "Windows, Mac OS, Web", s: "(progn [expr...])", r: "Varies", pr: "expr: sequential execution expressions.", ex: "(progn (setq x 10) (setq y 20) (+ x y))\n;; Returns: 30"},
+            {n: "prompt", d: "Prints a message string directly in AutoCAD command prompt console.", p: "Windows, Mac OS, Web", s: "(prompt msg)", r: "nil", pr: "msg: text message string.", ex: "(prompt \"Initializing...\\n\")\n;; Returns nil"},
+
+            // Q FUNCTIONS
+            {n: "quit", d: "Forces immediate exit of current session execution.", p: "Windows, Mac OS, Web", s: "(quit)", r: "nil", pr: "No arguments.", ex: "(quit)"},
+            {n: "quote", d: "Returns the argument S-expression without evaluating it.", p: "Windows, Mac OS, Web", s: "(quote expr)", r: "Varies", pr: "expr: S-expression to quote.", ex: "(quote (+ 1 2))\n;; Returns: (+ 1 2) (equivalent to '(1 2))"},
+
+            // R FUNCTIONS
+            {n: "read-char", d: "Reads a single character from open file stream.", p: "Windows, Mac OS, Web", s: "(read-char [file-desc])", r: "Integer (Unicode value) or nil", pr: "file-desc: open file stream descriptor. If omitted, reads console.", ex: "(read-char f)"},
+            {n: "read-line", d: "Reads a line of text from open file stream.", p: "Windows, Mac OS, Web", s: "(read-line [file-desc])", r: "String or nil", pr: "file-desc: open file stream descriptor.", ex: "(read-line f)\n;; Returns line string"},
+            {n: "read", d: "Parses string representation of S-expressions into first LISP expression.", p: "Windows, Mac OS, Web", s: "(read string)", r: "Varies", pr: "string: string representation of S-expressions.", ex: "(read \"(+ 1 2)\")\n;; Returns: (+ 1 2)"},
+            {n: "redraw", d: "Refreshes graphic screen or redraws individual entities.", p: "Windows, Mac OS", s: "(redraw [ename [mode]])", r: "nil", pr: "ename: entity. mode: int style (1=Redraw, 2=Undraw, 3=Highlight, 4=Unhighlight).", ex: "(redraw (entlast) 3)\n;; Highlights last entity"},
+            {n: "regapp", d: "Registers unique application name key for extended entity data (xdata).", p: "Windows, Mac OS, Web", s: "(regapp application_name)", r: "String or nil", pr: "application_name: string application key.", ex: "(regapp \"MY_APP\")\n;; Registers key in APPID table"},
+            {n: "rem", d: "Returns division remainder of the first number by the second.", p: "Windows, Mac OS, Web", s: "(rem num1 num2)", r: "Real or Integer", pr: "num1: dividend. num2: divisor.", ex: "(rem 10 3)\n;; Returns: 1"},
+            {n: "repeat", d: "Loops through S-expressions specified integer number of times.", p: "Windows, Mac OS, Web", s: "(repeat count [expr...])", r: "Varies", pr: "count: integer loop counter. expr: S-expressions inside loop.", ex: "(repeat 3 (princ \"!\"))\n;; Prints \"!!!\""},
+            {n: "reverse", d: "Reverses elements order in a list.", p: "Windows, Mac OS, Web", s: "(reverse list)", r: "List", pr: "list: standard list.", ex: "(reverse '(1 2 3))\n;; Returns: (3 2 1)"},
+            {n: "rtos", d: "Converts real floating-point numbers to formatted strings.", p: "Windows, Mac OS, Web", s: "(rtos number [mode [prec]])", r: "String", pr: "number: real value. mode: units (1=Sci, 2=Dec, 3=Eng, 4=Arch, 5=Frac). prec: decimal count.", ex: "(rtos 12.5 2 2)\n;; Returns: \"12.50\""},
+
+            // S FUNCTIONS
+            {n: "set", d: "Binds value to quoted symbol variable.", p: "Windows, Mac OS, Web", s: "(set 'symbol expr)", r: "Varies", pr: "symbol: quoted symbol variable. expr: S-expression value.", ex: "(set 'x 10)\n;; Binds x to 10"},
+            {n: "setcfg", d: "Writes application config data to AppData of CFG files.", p: "Windows Only", s: "(setcfg section value)", r: "String or nil", pr: "section: registry path string. value: string data value.", ex: "(setcfg \"AppData/MyTool/Setting1\" \"On\")"},
+            {n: "setenv", d: "Sets value of system environment variables.", p: "Windows, Mac OS, Web", s: "(setenv variable value)", r: "String", pr: "variable: environment key. value: string data value.", ex: "(setenv \"ShowFullPath\" \"1\")"},
+            {n: "setfunhelp", d: "Binds command call keyword to Help documentation pages.", p: "Windows, Mac OS", s: "(setfunhelp command_name helpfile topic)", r: "String or nil", pr: "command_name: command symbol. helpfile: file. topic: target topic ID.", ex: "(setfunhelp \"C:TEST\" \"myhelp.chm\" \"TEST_TOPIC\")"},
+            {n: "setpropertyvalue", d: "Sets value of a property on a drawing entity.", p: "Windows, Mac OS, Web", s: "(setpropertyvalue ename property_name value)", r: "Varies", pr: "ename: Target entity. property_name: Target property string. value: updated value.", ex: "(setpropertyvalue (entlast) \"Color\" 1)"},
+            {n: "setq", d: "Binds S-expression values to unquoted symbol variables.", p: "Windows, Mac OS, Web", s: "(setq symbol1 value1 [symbol2 value2...])", r: "Varies", pr: "symbol: target variable name. value: S-expression value.", ex: "(setq a 10 b 20)\n;; Returns: 20"},
+            {n: "setvar", d: "Sets active value of an AutoCAD system variable.", p: "Windows, Mac OS, Web", s: "(setvar name value)", r: "Varies", pr: "name: string system variable key. value: target value.", ex: "(setvar \"FILEDIA\" 1)"},
+            {n: "setview", d: "Establishes a view configuration for a specified viewport.", p: "Windows Only", s: "(setview view_name [viewport_id])", r: "T or nil", pr: "view_name: string view name key. viewport_id: target viewport index.", ex: "(setview \"MyView\")"},
+            {n: "showhtmlmodalwindow", d: "Displays an HTML modal dialog window.", p: "Windows, Mac OS Only", s: "(showhtmlmodalwindow url [options])", r: "Varies", pr: "url: target modal URI string. options: optional size window styles.", ex: "(showhtmlmodalwindow \"http://google.com\")"},
+            {n: "sin", d: "Computes the sine of an angle in radians.", p: "Windows, Mac OS, Web", s: "(sin angle)", r: "Real", pr: "angle: Radian angle.", ex: "(sin 1.570796)\n;; Returns: 1.0"},
+            {n: "snvalid", d: "Validates characters of symbol name (checks if valid in symbol tables).", p: "Windows, Mac OS, Web", s: "(snvalid symbol_name)", r: "T or nil", pr: "symbol_name: string symbol name key.", ex: "(snvalid \"NEW_LAYER\")\n;; Returns: T"},
+            {n: "sqrt", d: "Computes the square root of a positive number.", p: "Windows, Mac OS, Web", s: "(sqrt num)", r: "Real", pr: "num: Integer or Real value.", ex: "(sqrt 16)\n;; Returns: 4.0"},
+            {n: "ssadd", d: "Constructs a new selection set or appends entities to existing selection sets.", p: "Windows, Mac OS, Web", s: "(ssadd [ename [ss]])", r: "Pickset", pr: "ename: optional entity ename. ss: optional target selection set.", ex: "(setq ss (ssadd))"},
+            {n: "ssdel", d: "Deletes specified entity from selection sets.", p: "Windows, Mac OS, Web", s: "(ssdel ename ss)", r: "Pickset or nil", pr: "ename: target entity ename. ss: target selection set.", ex: "(ssdel (entlast) ss)"},
+            {n: "ssget", d: "Constructs AutoCAD selection set grouping drawing entities based on rules/filters.", p: "Windows, Mac OS, Web", s: "(ssget [mode][pt1 [pt2]][filter])", r: "Pickset or nil", pr: "mode: string type code. pt: coordinates. filter: DXF association filter list.", ex: "(ssget \"X\" '((0. \"CIRCLE\")))\n;; Selects all Circle entities"},
+            {n: "ssgetfirst", d: "Retrieves active gripped/preselected entities in drawing context.", p: "Windows, Mac OS, Web", s: "(ssgetfirst)", r: "List (of Selection Sets) or nil", pr: "No arguments.", ex: "(ssgetfirst)"},
+            {n: "sslength", d: "Returns the size/length of a selection set.", p: "Windows, Mac OS, Web", s: "(sslength ss)", r: "Integer", pr: "ss: active selection set.", ex: "(sslength ss)\n;; Returns element count"},
+            {n: "ssmemb", d: "Checks if specified entity is in selection set.", p: "Windows, Mac OS, Web", s: "(ssmemb ename ss)", r: "Ename or nil", pr: "ename: target entity. ss: active selection set.", ex: "(ssmemb (entlast) ss)"},
+            {n: "ssname", d: "Retrieves entity name at target index inside selection set.", p: "Windows, Mac OS, Web", s: "(ssname ss index)", r: "Ename or nil", pr: "ss: active selection set. index: integer index.", ex: "(ssname ss 0)\n;; Returns first entity in selection set"},
+            {n: "ssnamex", d: "Retrieves sub-method coordinates and details of how selection sets were created.", p: "Windows, Mac OS, Web", s: "(ssnamex ss index)", r: "List or nil", pr: "ss: active selection set. index: index of element.", ex: "(ssnamex ss 0)"},
+            {n: "sssetfirst", d: "Programmatically selects and grips drawing entities.", p: "Windows, Mac OS, Web", s: "(sssetfirst gripped_ss [selected_ss])", r: "List", pr: "gripped_ss: gripped set. selected_ss: selected set.", ex: "(sssetfirst nil ss)"},
+            {n: "startapp", d: "Launches external operating system applications.", p: "Windows, Mac OS Only", s: "(startapp application [file])", r: "Integer or nil", pr: "application: executable path string. file: optional file argument.", ex: "(startapp \"notepad.exe\" \"C:/log.txt\")"},
+            {n: "strcase", d: "Returns copy of string converted to uppercase or lowercase.", p: "Windows, Mac OS, Web", s: "(strcase string [which])", r: "String", pr: "string: source text. which: if non-nil, converts to lowercase.", ex: "(strcase \"Hello\" T)\n;; Returns: \"hello\""},
+            {n: "strcat", d: "Concatenates multiple string arguments into a single string.", p: "Windows, Mac OS, Web", s: "(strcat string1 [string2...])", r: "String", pr: "string: text values to concatenate.", ex: "(strcat \"A\" \" \" \"B\")\n;; Returns: \"A B\""},
+            {n: "strlen", d: "Returns number of characters contained inside string.", p: "Windows, Mac OS, Web", s: "(strlen string)", r: "Integer", pr: "string: target text.", ex: "(strlen \"Hello\")\n;; Returns: 5"},
+            {n: "subst", d: "Substitutes occurrences of old elements with new in list structures.", p: "Windows, Mac OS, Web", s: "(subst new old list)", r: "List", pr: "new: replacement. old: target. list: standard list.", ex: "(subst 'x 'b '(a b c))\n;; Returns: (a x c)"},
+            {n: "substr", d: "Extracts target substring of specified length.", p: "Windows, Mac OS, Web", s: "(substr string start [length])", r: "String", pr: "string: text. start: 1-indexed start pos. length: substring length.", ex: "(substr \"HelloWorld\" 1 5)\n;; Returns: \"Hello\""},
+
+            // T FUNCTIONS
+            {n: "tablet", d: "Configures and calibrates digitizing tablet parameters.", p: "Windows Only", s: "(tablet code [row1 row2 row3 direction])", r: "List or nil", pr: "code: config code. row: calibration parameters.", ex: "(tablet 1)"},
+            {n: "tblnext", d: "Retrieves next entry in specified AutoCAD symbol table.", p: "Windows, Mac OS, Web", s: "(tblnext table_name [rewind])", r: "List or nil", pr: "table_name: table string (e.g. \"LAYER\"). rewind: if non-nil, resets pointer.", ex: "(tblnext \"LAYER\")"},
+            {n: "tblobjname", d: "Gets entity pointer ename for symbol table entry.", p: "Windows, Mac OS, Web", s: "(tblobjname table_name entry_name)", r: "Ename or nil", pr: "table_name: table string. entry_name: entry string.", ex: "(tblobjname \"LAYER\" \"0\")"},
+            {n: "tblsearch", d: "Searches symbol table for entry matching keyword.", p: "Windows, Mac OS, Web", s: "(tblsearch table_name entry_name [setnext])", r: "List or nil", pr: "table_name: table string. entry_name: entry. setnext: if non-nil, sets pointer.", ex: "(tblsearch \"LAYER\" \"0\")"},
+            {n: "terpri", d: "Prints a standard newline line break to command console.", p: "Windows, Mac OS, Web", s: "(terpri)", r: "nil", pr: "No arguments.", ex: "(terpri)"},
+            {n: "textbox", d: "Computes 2D coordinate bounds of text entity.", p: "Windows, Mac OS, Web", s: "(textbox elist)", r: "List (of Points) or nil", pr: "elist: DXF association list of text entity.", ex: "(textbox (entget (entlast)))"},
+            {n: "textpage", d: "Clears command text screen and forces console display page refresh.", p: "Windows Only", s: "(textpage)", r: "nil", pr: "No arguments.", ex: "(textpage)"},
+            {n: "textscr", d: "Activates and opens the AutoCAD text console window.", p: "Windows, Mac OS", s: "(textscr)", r: "nil", pr: "No arguments.", ex: "(textscr)"},
+            {n: "trace", d: "Activates function debugging trace.", p: "Windows, Mac OS", s: "(trace function...)", r: "Varies", pr: "function: target custom function symbols.", ex: "(trace MyFunc)"},
+            {n: "trans", d: "Translates coordinates between coordinate systems (WCS, UCS, etc.).", p: "Windows, Mac OS, Web", s: "(trans pt from to [disp])", r: "List (3D Point)", pr: "pt: coordinates. from/to: system codes or ename. disp: non-nil treats pt as displacement vector.", ex: "(trans '(1 2 0) 1 0)\n;; Translates UCS to WCS"},
+            {n: "type", d: "Returns active LISP data type identifier atom.", p: "Windows, Mac OS, Web", s: "(type item)", r: "Symbol or nil", pr: "item: S-expression to check.", ex: "(type 10)\n;; Returns: INT\n(type \"A\")\n;; Returns: STR"},
+
+            // U FUNCTIONS
+            {n: "untrace", d: "Deactivates function debugging trace.", p: "Windows, Mac OS", s: "(untrace function...)", r: "Varies", pr: "function: Custom function symbols.", ex: "(untrace MyFunc)"},
+
+            // V FUNCTIONS
+            {n: "ver", d: "Returns active AutoLISP version string details.", p: "Windows, Mac OS, Web", s: "(ver)", r: "String", pr: "No arguments.", ex: "(ver)\n;; Returns: \"Visual LISP v1.6\""},
+            {n: "vl-acad-defun", d: "Exports a custom LISP function symbol as external subroutine for ObjectARX.", p: "Windows Only", s: "(vl-acad-defun symbol)", r: "Symbol", pr: "symbol: quoted function symbol.", ex: "(vl-acad-defun 'MyFunc)"},
+            {n: "vl-acad-undefun", d: "Hides/undefines LISP function symbol from ObjectARX applications.", p: "Windows Only", s: "(vl-acad-undefun symbol)", r: "Symbol", pr: "symbol: quoted function symbol.", ex: "(vl-acad-undefun 'MyFunc)"},
+            {n: "vl-arx-import", d: "Imports ObjectARX/ADSRX functions into Separate-Namespace LISP VLX modules.", p: "Windows Only", s: "(vl-arx-import [function])", r: "T or nil", pr: "function: optional quoted function name.", ex: "(vl-arx-import 'ads_cmd)"},
+            {n: "vl-bb-ref", d: "Retrieves value of variables from blackboard global namespace.", p: "Windows Only", s: "(vl-bb-ref 'symbol)", r: "Varies", pr: "symbol: quoted symbol variable name.", ex: "(vl-bb-ref 'factor)"},
+            {n: "vl-bb-set", d: "Writes variable values to blackboard global namespace.", p: "Windows Only", s: "(vl-bb-set 'symbol value)", r: "Varies", pr: "symbol: quoted symbol variable. value: S-expression value.", ex: "(vl-bb-set 'factor 1.5)"},
+            {n: "vl-catch-all-apply", d: "Evaluates function arguments trapping exceptions.", p: "Windows, Mac OS", s: "(vl-catch-all-apply function list)", r: "Varies or error object", pr: "function: subroutine. list: arguments.", ex: "(vl-catch-all-apply '/ '(10 0))\n;; Returns: #<%catch-all-apply-error%>"},
+            {n: "vl-catch-all-error-message", d: "Extracts descriptive error string from trapped exception objects.", p: "Windows, Mac OS", s: "(vl-catch-all-error-message err)", r: "String", pr: "err: trapped error object.", ex: "(setq err (vl-catch-all-apply '/ '(10 0)))\n(vl-catch-all-error-message err)\n;; Returns: \"divide by zero\""},
+            {n: "vl-catch-all-error-p", d: "Checks if argument is catch-all error object.", p: "Windows, Mac OS", s: "(vl-catch-all-error-p arg)", r: "T or nil", pr: "arg: S-expression.", ex: "(vl-catch-all-error-p err)\n;; Returns: T"},
+            {n: "vl-cmdf", d: "Synchronously executes command pipeline validating parameters in advance.", p: "Windows Only", s: "(vl-cmdf [arguments...])", r: "T or nil", pr: "arguments: command name and inputs.", ex: "(vl-cmdf \"_LINE\" '(0 0) '(5 5) \"\")"},
+            {n: "vl-consp", d: "Checks if the specified list is non-empty.", p: "Windows, Mac OS", s: "(vl-consp list)", r: "T or nil", pr: "list: S-expression.", ex: "(vl-consp '(1 2))\n;; Returns: T\n(vl-consp nil)\n;; Returns: nil"},
+            {n: "vl-directory-files", d: "Returns files list inside specified path.", p: "Windows, Mac OS", s: "(vl-directory-files [path [pattern [dirs]]])", r: "List (of Strings) or nil", pr: "path: directory. pattern: file wildcard. dirs: -1=dirs, 0=both, 1=files.", ex: "(vl-directory-files \"C:/\" \"*.lsp\" 1)"},
+            {n: "vl-doc-export", d: "Exports function from Separate-Namespace VLX to active drawing namespace.", p: "Windows Only", s: "(vl-doc-export 'symbol)", r: "nil", pr: "symbol: quoted symbol variable.", ex: "(vl-doc-export 'MyFunc)"},
+            {n: "vl-doc-import", d: "Imports exported functions into Separate-Namespace LISP VLX namespace.", p: "Windows Only", s: "(vl-doc-import 'symbol)", r: "nil", pr: "symbol: quoted symbol variable.", ex: "(vl-doc-import 'MyFunc)"},
+            {n: "vl-doc-ref", d: "Reads variable values from active drawing document namespace.", p: "Windows Only", s: "(vl-doc-ref 'symbol)", r: "Varies", pr: "symbol: quoted symbol variable.", ex: "(vl-doc-ref 'factor)"},
+            {n: "vl-doc-set", d: "Writes variable values to active drawing document namespace.", p: "Windows Only", s: "(vl-doc-set 'symbol value)", r: "Varies", pr: "symbol: quoted symbol. value: target value.", ex: "(vl-doc-set 'factor 1.5)"},
+            {n: "vl-every", d: "Checks if predicate resolves non-nil for all list elements.", p: "Windows, Mac OS", s: "(vl-every predicate list1 [list2...])", r: "T or nil", pr: "predicate: subroutine. list: standard lists.", ex: "(vl-every '= '(1 2) '(1 2))\n;; Returns: T"},
+            {n: "vl-exit-with-error", d: "Aborts execution context passing custom error text to parent namespace *error*.", p: "Windows Only", s: "(vl-exit-with-error string)", r: "nil", pr: "string: error message.", ex: "(vl-exit-with-error \"Fatal Error!\")"},
+            {n: "vl-exit-with-value", d: "Aborts execution returning custom value to parent invoker context.", p: "Windows Only", s: "(vl-exit-with-value value)", r: "Varies", pr: "value: execution return value.", ex: "(vl-exit-with-value 100)"},
+            {n: "vl-file-copy", d: "Copies or appends files.", p: "Windows, Mac OS", s: "(vl-file-copy src dest [append])", r: "Integer or nil", pr: "src: source. dest: target. append: if non-nil, appends instead of overwriting.", ex: "(vl-file-copy \"C:/a.txt\" \"C:/b.txt\")"},
+            {n: "vl-file-delete", d: "Deletes specified file from directory paths.", p: "Windows, Mac OS", s: "(vl-file-delete filename)", r: "T or nil", pr: "filename: file path string.", ex: "(vl-file-delete \"C:/temp.txt\")"},
+            {n: "vl-file-directory-p", d: "Checks if the specified path points to active directory.", p: "Windows, Mac OS", s: "(vl-file-directory-p filename)", r: "T or nil", pr: "filename: path string.", ex: "(vl-file-directory-p \"C:/Windows\")\n;; Returns: T"},
+            {n: "vl-file-rename", d: "Renames specified file.", p: "Windows, Mac OS", s: "(vl-file-rename old new)", r: "T or nil", pr: "old, new: file path strings.", ex: "(vl-file-rename \"a.txt\" \"b.txt\")"},
+            {n: "vl-file-size", d: "Retrieves file size in bytes.", p: "Windows, Mac OS", s: "(vl-file-size filename)", r: "Integer or nil", pr: "filename: path string.", ex: "(vl-file-size \"C:/boot.ini\")"},
+            {n: "vl-file-systime", d: "Retrieves file last-modified system time details.", p: "Windows, Mac OS", s: "(vl-file-systime filename)", r: "List (of integers) or nil", pr: "filename: path string.", ex: "(vl-file-systime \"C:/boot.ini\")"},
+            {n: "vl-filename-base", d: "Strips path and extension returning filename root base name.", p: "Windows, Mac OS, Web", s: "(vl-filename-base filename)", r: "String", pr: "filename: path string.", ex: "(vl-filename-base \"C:/temp/draw.lsp\")\n;; Returns: \"draw\""},
+            {n: "vl-filename-directory", d: "Strips base name and extension returning directory path.", p: "Windows, Mac OS, Web", s: "(vl-filename-directory filename)", r: "String", pr: "filename: path string.", ex: "(vl-filename-directory \"C:/temp/draw.lsp\")\n;; Returns: \"C:/temp\""},
+            {n: "vl-filename-extension", d: "Returns filename extension portion.", p: "Windows, Mac OS, Web", s: "(vl-filename-extension filename)", r: "String", pr: "filename: path string.", ex: "(vl-filename-extension \"draw.lsp\")\n;; Returns: \".lsp\""},
+            {n: "vl-filename-mktemp", d: "Generates unique temp file path.", p: "Windows, Mac OS, Web", s: "(vl-filename-mktemp [pattern [dir [ext]]])", r: "String", pr: "pattern: name structure. dir: folder. ext: target extension.", ex: "(vl-filename-mktemp \"test\" nil \".txt\")"},
+            {n: "vl-list*", d: "Constructs lists, wrapping final argument into S-expression cdr.", p: "Windows, Mac OS", s: "(vl-list* object [object...])", r: "List or Dotted Pair", pr: "object: LISP elements.", ex: "(vl-list* 1 2 3)\n;; Returns: (1 2. 3)"},
+            {n: "vl-list->string", d: "Combines list of integer ASCII/Unicode values into text string.", p: "Windows, Mac OS", s: "(vl-list->string list)", r: "String", pr: "list: integer Unicode characters list.", ex: "(vl-list->string '(72 101 108 108 111))\n;; Returns: \"Hello\""},
+            {n: "vl-list-length", d: "Retrieves length of true flat lists.", p: "Windows, Mac OS", s: "(vl-list-length list)", r: "Integer or nil", pr: "list: S-expression.", ex: "(vl-list-length '(1 2 3))\n;; Returns: 3"},
+            {n: "vl-list-loaded-vlx", d: "Lists all separate-namespace VLX files associated with active document context.", p: "Windows Only", s: "(vl-list-loaded-vlx)", r: "List (of Strings)", pr: "No arguments.", ex: "(vl-list-loaded-vlx)"},
+            {n: "vl-load-all", d: "Loads LISP files into all active and future drawing documents namespaces.", p: "Windows Only", s: "(vl-load-all filename)", r: "nil", pr: "filename: LISP file path string.", ex: "(vl-load-all \"utils.lsp\")"},
+            {n: "vl-member-if", d: "Checks if elements in list satisfy predicate subroutine, returning remaining list slice.", p: "Windows, Mac OS", s: "(vl-member-if predicate list)", r: "List or nil", pr: "predicate: subroutine. list: standard list.", ex: "(vl-member-if 'minusp '(1 2 -3 4))\n;; Returns: (-3 4)"},
+            {n: "vl-member-if-not", d: "Checks if elements in list do not satisfy predicate subroutine.", p: "Windows, Mac OS", s: "(vl-member-if-not predicate list)", r: "List or nil", pr: "predicate: subroutine. list: standard list.", ex: "(vl-member-if-not 'minusp '(-1 -2 3 4))\n;; Returns: (3 4)"},
+            {n: "vl-mkdir", d: "Creates new directory paths on disk.", p: "Windows, Mac OS", s: "(vl-mkdir directory)", r: "T or nil", pr: "directory: path name string.", ex: "(vl-mkdir \"C:/NewFolder\")"},
+            {n: "vl-position", d: "Retrieves index position of symbol inside flat list.", p: "Windows, Mac OS", s: "(vl-position symbol list)", r: "Integer or nil", pr: "symbol: element. list: standard flat list.", ex: "(vl-position \"b\" '(\"a\" \"b\" \"c\"))\n;; Returns: 1"},
+            {n: "vl-prin1-to-string", d: "Formats LISP elements as escaped printed string representations.", p: "Windows, Mac OS", s: "(vl-prin1-to-string item)", r: "String", pr: "item: S-expression value.", ex: "(vl-prin1-to-string \"Hello\")\n;; Returns: \"\\\"Hello\\\"\""},
+            {n: "vl-princ-to-string", d: "Formats LISP elements as unescaped printed string representations.", p: "Windows, Mac OS", s: "(vl-princ-to-string item)", r: "String", pr: "item: S-expression value.", ex: "(vl-princ-to-string \"Hello\")\n;; Returns: \"Hello\""},
+            {n: "vl-propagate", d: "Copies variable values across all active document namespaces.", p: "Windows, Mac OS, Web", s: "(vl-propagate 'symbol)", r: "nil", pr: "symbol: quoted variable symbol name.", ex: "(vl-propagate 'scale_factor)"},
+            {n: "vl-registry-delete", d: "Deletes keys or values from Windows Registry or Mac plist files.", p: "Windows, Mac OS", s: "(vl-registry-delete path [value])", r: "T or nil", pr: "path: key path string. value: optional value name to delete.", ex: "(vl-registry-delete \"HKEY_CURRENT_USER\\\\Software\\\\MyApp\")"},
+            {n: "vl-registry-descendents", d: "Lists registry subkeys/values.", p: "Windows, Mac OS", s: "(vl-registry-descendents key)", r: "List (of Strings)", pr: "key: key path string.", ex: "(vl-registry-descendents \"HKEY_CURRENT_USER\\\\Software\")"},
+            {n: "vl-registry-read", d: "Reads values from Windows Registry or Mac plist files.", p: "Windows, Mac OS", s: "(vl-registry-read key [value])", r: "String or nil", pr: "key: key path string. value: value name.", ex: "(vl-registry-read \"HKEY_CURRENT_USER\\\\Software\\\\MyApp\" \"Path\")"},
+            {n: "vl-registry-write", d: "Writes values to Windows Registry or Mac plist files.", p: "Windows, Mac OS", s: "(vl-registry-write key [value data])", r: "String or nil", pr: "key: key path. value: value name. data: string value.", ex: "(vl-registry-write \"HKEY_CURRENT_USER\\\\Software\\\\MyApp\" \"Path\" \"C:/App\")"},
+            {n: "vl-remove", d: "Removes element occurrences from a list.", p: "Windows, Mac OS", s: "(vl-remove element list)", r: "List", pr: "element: target item. list: standard list.", ex: "(vl-remove 2 '(1 2 3 2 4))\n;; Returns: (1 3 4)"},
+            {n: "vl-remove-if", d: "Removes elements from a list passing predicate filter tests.", p: "Windows, Mac OS", s: "(vl-remove-if predicate list)", r: "List", pr: "predicate: subroutine. list: standard list.", ex: "(vl-remove-if 'minusp '(1 -2 3 -4))\n;; Returns: (1 3)"},
+            {n: "vl-remove-if-not", d: "Keeps elements from a list passing predicate filter tests.", p: "Windows, Mac OS", s: "(vl-remove-if-not predicate list)", r: "List", pr: "predicate: subroutine. list: standard list.", ex: "(vl-remove-if-not 'minusp '(1 -2 3 -4))\n;; Returns: (-2 -4)"},
+            {n: "vl-some", d: "Checks if predicate holds true for at least one list element combination.", p: "Windows, Mac OS", s: "(vl-some predicate list1 [list2...])", r: "Varies", pr: "predicate: subroutine. list: standard lists.", ex: "(vl-some 'minusp '(1 2 -3 4))\n;; Returns: T"},
+            {n: "vl-sort", d: "Sorts list elements based on comparison subroutines (note: removes duplicates).", p: "Windows, Mac OS, Web", s: "(vl-sort list comparison_function)", r: "List", pr: "list: standard list. comparison_function: comparison subroutine.", ex: "(vl-sort '(3 1 2 3) '<)\n;; Returns: (1 2 3)"},
+            {n: "vl-sort-i", d: "Sorts list elements returning indices mapping order.", p: "Windows, Mac OS, Web", s: "(vl-sort-i list comparison_function)", r: "List (of Integers)", pr: "list: standard list. comparison_function: comparison subroutine.", ex: "(vl-sort-i '(10 30 20) '<)\n;; Returns: (0 2 1)"},
+            {n: "vl-string->list", d: "Converts text characters into Unicode value list.", p: "Windows, Mac OS, Web", s: "(vl-string->list string)", r: "List (of Integers)", pr: "string: target text.", ex: "(vl-string->list \"ABC\")\n;; Returns: (65 66 67)"},
+            {n: "vl-string-elt", d: "Retrieves Unicode character code at specified string index.", p: "Windows, Mac OS", s: "(vl-string-elt string index)", r: "Integer", pr: "string: target text. index: 0-indexed position integer.", ex: "(vl-string-elt \"ABC\" 1)\n;; Returns: 66"},
+            {n: "vl-string-left-trim", d: "Trims matching leading characters from string.", p: "Windows, Mac OS", s: "(vl-string-left-trim characters string)", r: "String", pr: "characters: match set string. string: target text.", ex: "(vl-string-left-trim \"_\" \"___Hello\")\n;; Returns: \"Hello\""},
+            {n: "vl-string-mismatch", d: "Finds index of first character mismatch position between strings.", p: "Windows, Mac OS", s: "(vl-string-mismatch str1 str2)", r: "Integer", pr: "str1, str2: comparison strings.", ex: "(vl-string-mismatch \"Hello\" \"Help\")\n;; Returns: 3"},
+            {n: "vl-string-position", d: "Finds index position of character in string.", p: "Windows, Mac OS", s: "(vl-string-position char string)", r: "Integer or nil", pr: "char: character Unicode integer. string: target text.", ex: "(vl-string-position 66 \"ABC\")\n;; Returns: 1"},
+            {n: "vl-string-right-trim", d: "Trims matching trailing characters from string.", p: "Windows, Mac OS", s: "(vl-string-right-trim characters string)", r: "String", pr: "characters: match set string. string: target text.", ex: "(vl-string-right-trim \"_\" \"Hello___\")\n;; Returns: \"Hello\""},
+            {n: "vl-string-search", d: "Searches text matching substring pattern.", p: "Windows, Mac OS, Web", s: "(vl-string-search pattern string [start])", r: "Integer or nil", pr: "pattern: search string. string: target text. start: starting pos.", ex: "(vl-string-search \"world\" \"Hello world\")\n;; Returns: 6"},
+            {n: "vl-string-subst", d: "Substitutes first occurrence of old substring with new.", p: "Windows, Mac OS, Web", s: "(vl-string-subst new old string [start])", r: "String", pr: "new: replacement. old: target. string: text. start: starting pos.", ex: "(vl-string-subst \"a\" \"o\" \"Hello world\")\n;; Returns: \"Hella world\""},
+            {n: "vl-string-translate", d: "Translates characters based on maps.", p: "Windows, Mac OS", s: "(vl-string-translate source target string)", r: "String", pr: "source: lookup. target: replacement. string: target text.", ex: "(vl-string-translate \"abc\" \"123\" \"cabin\")\n;; Returns: \"31bin\""},
+            {n: "vl-string-trim", d: "Trims leading and trailing matching characters from string.", p: "Windows, Mac OS", s: "(vl-string-trim characters string)", r: "String", pr: "characters: match set string. string: target text.", ex: "(vl-string-trim \"_\" \"__Hello__\")\n;; Returns: \"Hello\""},
+            {n: "vl-symbol-name", d: "Returns string name of symbol.", p: "Windows, Mac OS", s: "(vl-symbol-name symbol)", r: "String", pr: "symbol: target variable symbol.", ex: "(vl-symbol-name 'factor)\n;; Returns: \"FACTOR\""},
+            {n: "vl-symbol-value", d: "Retrieves value bound to specified symbol.", p: "Windows, Mac OS", s: "(vl-symbol-value symbol)", r: "Varies", pr: "symbol: target variable symbol.", ex: "(setq x 10)\n(vl-symbol-value 'x)\n;; Returns: 10"},
+            {n: "vl-symbolp", d: "Checks if S-expression is a symbol.", p: "Windows, Mac OS", s: "(vl-symbolp item)", r: "T or nil", pr: "item: S-expression.", ex: "(vl-symbolp 'x)\n;; Returns: T"},
+            {n: "vl-unload-vlx", d: "Unloads Separate-Namespace VLX applications.", p: "Windows Only", s: "(vl-unload-vlx vlx-name)", r: "nil", pr: "vlx-name: string application name.", ex: "(vl-unload-vlx \"my_app\")"},
+            {n: "vl-vbaload", d: "Loads VBA project files.", p: "Windows Only", s: "(vl-vbaload filename)", r: "nil", pr: "filename: VBA project file path.", ex: "(vl-vbaload \"C:/proj.dvb\")"},
+            {n: "vl-vbarun", d: "Runs specified VBA macro.", p: "Windows Only", s: "(vl-vbarun macro)", r: "nil", pr: "macro: string macro name.", ex: "(vl-vbarun \"MyMacro\")"},
+            {n: "vl-vlx-loaded-p", d: "Checks if Separate-Namespace VLX is loaded.", p: "Windows Only", s: "(vl-vlx-loaded-p vlx-name)", r: "T or nil", pr: "vlx-name: string application name.", ex: "(vl-vlx-loaded-p \"my_app\")"},
+            {n: "vports", d: "Returns active viewport configuration list.", p: "Windows, Mac OS, Web", s: "(vports)", r: "List (of viewport descriptors)", pr: "No arguments.", ex: "(vports)"},
+
+            // W FUNCTIONS
+            {n: "wcmatch", d: "Checks if a string matches wildcard pattern.", p: "Windows, Mac OS, Web", s: "(wcmatch string pattern)", r: "T or nil", pr: "string: source text. pattern: wildcard pattern (supports *,?, #, etc.).", ex: "(wcmatch \"test.dwg\" \"*.dwg\")\n;; Returns: T"},
+            {n: "while", d: "Evaluates expressions inside a loop as long as test is non-nil.", p: "Windows, Mac OS, Web", s: "(while test [expr...])", r: "Varies", pr: "test: conditional test. expr: loop execution expressions.", ex: "(setq i 0)\n(while (< i 3)\n  (princ i)\n  (setq i (1+ i))\n)\n;; Prints \"012\""},
+            {n: "write-char", d: "Writes single character code to file stream.", p: "Windows, Mac OS, Web", s: "(write-char char [file-desc])", r: "Integer", pr: "char: character code. file-desc: open file descriptor.", ex: "(write-char 65 f)"},
+            {n: "write-line", d: "Writes a line of text to file stream.", p: "Windows, Mac OS, Web", s: "(write-line string [file-desc])", r: "String", pr: "string: line text. file-desc: open file descriptor.", ex: "(write-line \"Log Entry\" f)"},
+
+            // X FUNCTIONS
+            {n: "xdroom", d: "Checks amount of available xdata memory space on drawing entity.", p: "Windows, Mac OS, Web", s: "(xdroom ename)", r: "Integer", pr: "ename: target entity.", ex: "(xdroom (entlast))"},
+            {n: "xdsize", d: "Calculates size in bytes of specified xdata list.", p: "Windows, Mac OS, Web", s: "(xdsize list)", r: "Integer", pr: "list: extended data list.", ex: "(xdsize '((1001. \"MY_APP\") (1000. \"DATA\")))"},
+
+            // Z FUNCTIONS
+            {n: "zerop", d: "Checks if numeric S-expression evaluates to zero.", p: "Windows, Mac OS, Web", s: "(zerop num)", r: "T or nil", pr: "num: Integer or Real value.", ex: "(zerop 0.0)\n;; Returns: T\n(zerop 5)\n;; Returns: nil"}
+        ];
+
+        // Initialize lists and render elements
+        function initApp() {
+            const listContainer = document.getElementById('function-list');
+            listContainer.innerHTML = '';
+            
+            LISP_DB.forEach((item, index) => {
+                const li = document.createElement('li');
+                const a = document.createElement('a');
+                a.href = '#';
+                a.textContent = item.n;
+                a.dataset.index = index;
+                a.onclick = (e) => {
+                    e.preventDefault();
+                    document.querySelectorAll('#function-list a').forEach(el => el.classList.remove('active'));
+                    a.classList.add('active');
+                    displayCard(item);
+                };
+                li.appendChild(a);
+                listContainer.appendChild(li);
+            });
+        }
+
+        // Display card for the selected function
+        function displayCard(f) {
+            const display = document.getElementById('main-content');
+            display.innerHTML = `
+                <div class="function-card">
+                    <div class="function-header">
+                        <h3 class="function-name">${escapeHTML(f.n)}</h3>
+                        <span class="platforms-tag">${f.p}</span>
+                    </div>
+                    <p>${escapeHTML(f.d)}</p>
+                    <div class="section-label">Signature</div>
+                    <div class="signature-box">${escapeHTML(f.s)}</div>
+                    <div class="section-label">Parameters</div>
+                    <div class="parameter-item">
+                        <p>${escapeHTML(f.pr)}</p>
+                    </div>
+                    <div class="section-label">Return Value</div>
+                    <p><strong>Type:</strong> ${escapeHTML(f.r)}</p>
+                    <div class="section-label">Examples</div>
+                    <div class="example-box">${escapeHTML(f.ex)}</div>
+                </div>
+            `;
+        }
+
+        // Quick escape utility for clean HTML rendering
+        function escapeHTML(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        // Live filtering index engine
+        function filterIndex() {
+            const query = document.getElementById('search-input').value.toLowerCase();
+            const listContainer = document.getElementById('function-list');
+            listContainer.innerHTML = '';
+
+            const matches = LISP_DB.filter(item => 
+                item.n.toLowerCase().includes(query) || 
+                item.d.toLowerCase().includes(query)
+            );
+
+            matches.forEach((item) => {
+                const li = document.createElement('li');
+                const a = document.createElement('a');
+                a.href = '#';
+                a.textContent = item.n;
+                a.onclick = (e) => {
+                    e.preventDefault();
+                    document.querySelectorAll('#function-list a').forEach(el => el.classList.remove('active'));
+                    a.classList.add('active');
+                    displayCard(item);
+                };
+                li.appendChild(a);
+                listContainer.appendChild(li);
+            });
+
+            // If there's exact matches, automatically display first
+            if (matches.length > 0) {
+                displayCard(matches[0]); // Fixed passing an array to displayCard
+            }
+        }
+
+        // Run application on load
+        window.onload = initApp;
+    </script>
+</body>
+</html>

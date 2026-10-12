@@ -138,6 +138,7 @@ public enum CommandCategory: String, CaseIterable, Sendable {
     case layer   = "Layer"
     case block   = "Block"
     case settings = "Settings"
+    case lisp    = "Lisp"
 }
 
 /// Metadata describing one CAD command for autocomplete and help.
@@ -382,6 +383,9 @@ public final class CADCommandProcessor {
     public typealias FeatureCommandFactory = () -> any FeatureCommand
     private var featureCommandRegistry: [String: FeatureCommandFactory] = [:]
 
+    /// Backing store for `lispInvocationDepth` (see LispInvocationContext.swift).
+    var _lispInvocationDepth: Int = 0
+
     public var arrayAssociativity: Bool =
         UserDefaults.standard.object(forKey: "Zephyr.ArrayAssociativity") as? Bool ?? true {
         didSet {
@@ -470,6 +474,10 @@ public final class CADCommandProcessor {
 
     /// Execute a command string (e.g. "MOVE", "M", "ERASE").
     public func executeCommand(_ text: String) {
+        // Reject-nested-interactive gate: while a Lisp routine runs, no
+        // other command may start. Must precede lastExecutedCommand so a
+        // rejected command never poisons spacebar repeat.
+        if rejectCommandIfLispActive(text) { return }
         let upper = text.uppercased().trimmingCharacters(in: .whitespaces)
         guard !upper.isEmpty else { return }
         lastExecutedCommand = text

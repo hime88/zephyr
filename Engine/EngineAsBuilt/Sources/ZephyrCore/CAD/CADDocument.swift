@@ -176,6 +176,11 @@ public final class UndoManager {
     private var undoStack: [CADDocumentSnapshot] = []
     private var redoStack: [CADDocumentSnapshot] = []
 
+    // UNDO Begin/End group state (see LispUndoGroups.swift). Depth > 0
+    // means pushes coalesce; the pending snapshot is the pre-group state.
+    var _undoGroupDepth: Int = 0
+    var _pendingGroupSnapshot: CADDocumentSnapshot?
+
     public var maxDepth: Int = 256
 
     public init() {}
@@ -1534,6 +1539,15 @@ public final class CADDocument {
         updateTransform(for: handle, to: newTransform)   // invalidates grid
     }
 
+    /// Replaces a stored entity (same handle) under a single undo snapshot.
+    /// Used by entmod and scripted commands that rewrite entity data.
+    public func replaceEntity(_ entity: CADEntity) {
+        pushUndo()
+        entityRegistry[entity.handle] = preparedEntityForStorage(entity)
+        markEdited(regenerate: true)
+        invalidateEntityGrid()
+    }
+
     public func updateLayer(for handle: UUID, to layerID: UUID) {
         pushUndo()
         guard var entity = entityRegistry[handle] else { return }
@@ -2505,10 +2519,10 @@ public final class CADDocument {
         guard let next = undoManager.popRedo(currentSnapshot: currentSnapshot) else { return }
         restore(from: next)
     }
-    public func pushUndo() { undoManager.pushUndo(snapshot()) }
+    public func pushUndo() { undoManager.pushUndoGrouped(snapshot()) }
 
     /// Records a snapshot captured before an interactive live edit.
     public func pushUndo(_ snapshot: CADDocumentSnapshot) {
-        undoManager.pushUndo(snapshot)
+        undoManager.pushUndoGrouped(snapshot)
     }
 }
