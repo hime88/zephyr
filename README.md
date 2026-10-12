@@ -13,6 +13,12 @@ Zephyr is a drafting app that runs natively on macOS (Metal) and Windows (Direct
 | macOS 12+ | Universal (Apple Silicon & Intel) | [Zephyr-macOS-Universal.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-macOS-Universal.zip) |
 | Windows 10+ | ARM64 (Snapdragon / Surface) | [Zephyr-Windows-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-arm64.zip) |
 | Windows 10+ | x64 | [Zephyr-Windows-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-x64.zip) |
+| Linux (Ubuntu 24.04+) | x64 | [Zephyr-Linux-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-x64.zip) |
+| Linux (Ubuntu 24.04+) | ARM64 | [Zephyr-Linux-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-arm64.zip) |
+| Linux (Snap) | x64 | [zephyr_1.0_amd64.snap](https://github.com/joseph-montanez/zephyr/releases/download/nightly/zephyr_1.0_amd64.snap) |
+| Linux (Snap) | ARM64 | [zephyr_1.0_arm64.snap](https://github.com/joseph-montanez/zephyr/releases/download/nightly/zephyr_1.0_arm64.snap) |
+
+Snap install: `sudo snap install --dangerous <file>.snap` (details in [DEVELOPMENT.md](DEVELOPMENT.md#4-snap-packaging)).
 
 ## Escape the Rent Trap
 
@@ -281,6 +287,10 @@ Same links as above — updated on every push.
 | macOS | Universal (Apple Silicon & Intel) | [Zephyr-macOS-Universal.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-macOS-Universal.zip) |
 | Windows | ARM64 | [Zephyr-Windows-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-arm64.zip) |
 | Windows | x64 | [Zephyr-Windows-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-x64.zip) |
+| Linux | x64 | [Zephyr-Linux-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-x64.zip) |
+| Linux | ARM64 | [Zephyr-Linux-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-arm64.zip) |
+| Linux (Snap) | x64 | [zephyr_1.0_amd64.snap](https://github.com/joseph-montanez/zephyr/releases/download/nightly/zephyr_1.0_amd64.snap) |
+| Linux (Snap) | ARM64 | [zephyr_1.0_arm64.snap](https://github.com/joseph-montanez/zephyr/releases/download/nightly/zephyr_1.0_arm64.snap) |
 
 ## Quick Start
 

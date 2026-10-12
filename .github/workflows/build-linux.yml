@@ -290,3 +290,41 @@ jobs:
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  snap:
+    name: snap ${{ matrix.arch }}
+    runs-on: ${{ matrix.runs-on }}
+    # Snaps are distribution artifacts: only build them for release.
+    if: inputs.configuration == 'release'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runs-on: ubuntu-24.04
+          - arch: arm64
+            runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build snap
+        uses: snapcore/action-build@v1
+        id: snapcraft
+
+      - name: Upload snap to Nightly Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly Build
+          body: |
+            Automated nightly builds from `main` branch.
+
+            See [downloads page](https://joseph-montanez.github.io/as-built/#download) for all platforms.
+          files: ${{ steps.snapcraft.outputs.snap }}
+          prerelease: true
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
