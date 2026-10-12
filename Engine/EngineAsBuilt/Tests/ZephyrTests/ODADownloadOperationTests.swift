@@ -74,6 +74,21 @@ final class ODADownloadOperationTests: XCTestCase {
         try? FileManager.default.removeItem(at: dest)
     }
 
+    func testHTTPErrorCompletionSurfaces() async throws {
+        let dest = destination("httperror")
+        let operation = ODADownloadOperation(destination: dest) { _ in }
+        let url = URL(string: "http://127.0.0.1:\(Self.port)/missing")!
+        do {
+            _ = try await operation.download(from: url)
+            XCTFail("HTTP 404 should throw")
+        } catch is CancellationError {
+            XCTFail("HTTP error must not surface as CancellationError")
+        } catch {
+            // Expected: ODA download failed with HTTP status 404.
+        }
+        try? FileManager.default.removeItem(at: dest)
+    }
+
     func testCancelMidFlight() async throws {
         let dest = destination("cancel")
         let operation = ODADownloadOperation(destination: dest) { _ in }
