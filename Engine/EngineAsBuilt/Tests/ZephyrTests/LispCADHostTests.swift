@@ -36,6 +36,14 @@ final class LispCADHostTests: XCTestCase {
         XCTAssertEqual(actual, expected, "eval: \(source)", file: file, line: line)
     }
 
+    /// Mirrors the driver's frame poll: applies the host's pending
+    /// pickfirst write to the live selection manager.
+    private func drainSelection(_ host: LispCADHost) {
+        if let pending = host.takePendingSelectionApply() {
+            host.selection.selectedHandles = pending
+        }
+    }
+
     /// assoc lookup on an entget-style list. Returns the cdr value.
     private func assoc(_ code: Int, _ list: LispValue) -> LispValue? {
         guard let items = list.properList else { return nil }
@@ -283,6 +291,7 @@ final class LispCADHostTests: XCTestCase {
         var env = LispEnvironment()
         try await assertEval("(ssgetfirst)", .nilValue, host: host, env: &env)
         _ = try await eval(#"(sssetfirst (ssget "_X"))"#, host: host, env: &env)
+        drainSelection(host)
         XCTAssertEqual(host.selection.selectedHandles.count, 2)
         let first = try await eval("(ssgetfirst)", host: host, env: &env)
         guard let pair = first.properList, pair.count == 2 else {
@@ -290,10 +299,12 @@ final class LispCADHostTests: XCTestCase {
         }
         XCTAssertEqual(pair.count, 2)
         _ = try await eval("(sssetfirst nil nil)", host: host, env: &env)
+        drainSelection(host)
         XCTAssertEqual(host.selection.selectedHandles.count, 0)
         try await assertEval("(ssgetfirst)", .nilValue, host: host, env: &env)
         // Two-arg form highlights the SECOND set (corpus idiom).
         _ = try await eval("(sssetfirst nil (ssget \"_X\"))", host: host, env: &env)
+        drainSelection(host)
         XCTAssertEqual(host.selection.selectedHandles.count, 2)
     }
 
@@ -303,6 +314,7 @@ final class LispCADHostTests: XCTestCase {
         var env = LispEnvironment()
         _ = try await eval(
             #"(vl-cmdf "_.SELECT" (ssget "_X") "")"#, host: host, env: &env)
+        drainSelection(host)
         XCTAssertEqual(host.selection.selectedHandles.count, 2)
         XCTAssertEqual(host.previousSelection.count, 2)
         let depthBefore = host.document.undoManager.undoDepth

@@ -13,15 +13,22 @@ import ZephyrLisp
 // `LispInputBroker`. Nothing here blocks a thread for input — the eval task
 // suspends on broker requests and resumes from the existing event handlers.
 //
+// Threading: the eval task NEVER hops to MainActor — the hand-rolled SDL
+// loop never pumps the main dispatch queue, so such a hop stalls forever.
+// Completion arrives via a locked box polled each frame; selection writes
+// drain the same way; input flows through the lock-based broker. The host
+// touches only hop-free state (document, snapshots, locks).
+//
 // Lifecycle:
 // * start: refuses nested runs (depth guard), claims invocation depth 1,
-//   builds the CAD host, and either launches immediately (source preset or
-//   argument already delivered), arms the native file picker for the first
-//   frame (LOAD/SCRIPT with no preset), or prompts for the expression (EVAL).
-// * Evaluation runs in a detached task (off MainActor); every host effect
-//   hops back as needed. Completion, Esc cancel, and errors all funnel
-//   through cancel(), which is idempotent: cancel task, cancel pending
-//   broker request, discard open undo groups, release invocation depth.
+//   builds the CAD host, freezes main-thread snapshots, and either launches
+//   immediately (source preset or argument already delivered), arms the
+//   native file picker for the event phase (LOAD/SCRIPT with no preset),
+//   or prompts for the expression (EVAL).
+// * Evaluation runs in a detached task (off MainActor). Completion, Esc
+//   cancel, and errors all funnel through cancel(), which is idempotent:
+//   cancel task, cancel pending broker request, discard open undo groups,
+//   release invocation depth.
 // * Normal completion additionally auto-closes unbalanced UNDO groups with
 //   a warning before releasing (fail-open toward the coalescing asked for).
 //
@@ -50,10 +57,14 @@ public final class LispCommand: FeatureCommand {
     private var presetSource: String?
     private var launched = false
     private var tornDown = false
-    /// Bare LOAD/SCRIPT: open the native picker on the first frame unless
-    /// a typed path launched the command first (see start()).
+    /// Bare LOAD/SCRIPT with no preset: the native picker opens from the
+    /// loop's event phase on the first frame (see renderOverlay).
     private var pickerPending = false
     private var evalTask: Task<Void, Never>?
+    /// Completion handoff: the eval task stores here (no MainActor hop —
+    /// the unpumped SDL loop would stall it); renderOverlay takes and
+    /// completes on the main thread.
+    private var completionBox: CompletionBox?
     private var host: LispCADHost?
     private weak var engineRef: PhrostEngine?
     private weak var processorRef: CADCommandProcessor?
@@ -80,20 +91,24 @@ public final class LispCommand: FeatureCommand {
         processor.lispInvocationDepth = 1
         let broker = LispInputBroker()
         broker.drainQueue()
-        host = LispCADHost(
+        let newHost = LispCADHost(
             document: engine.document,
             selection: engine.cadSelection,
             processor: processor,
             broker: broker)
+        newHost.captureMainThreadState(
+            selectedHandles: engine.cadSelection.selectedHandles,
+            activeCommand: processor.activeCommand)
+        host = newHost
         if let preset = presetSource {
             presetSource = nil
             print("[Lisp] start \(mode) (preset \(preset.count) chars)")
             launch(argument: preset)
         } else if Self.openFilter(for: mode) != nil {
-            // Armed here, enqueued for the loop's event phase on the first
-            // frame (the dialog fails silently mid-render). The deferral
-            // also lets a typed "LOAD <path>" argument launch first, so no
-            // stray picker flashes over a path launch.
+            // Armed here, opened from the loop's event phase on the first
+            // frame (SDL_ShowOpenFileDialog fails silently mid-render). The
+            // deferral also lets a typed "LOAD <path>" argument launch
+            // first, so no stray picker flashes over a path launch.
             pickerPending = true
             processor.commandPrompt = "Select a file…"
         } else if mode == .call {
@@ -103,8 +118,8 @@ public final class LispCommand: FeatureCommand {
         }
     }
 
-    /// Native file-picker filter for the file-taking modes (nil = EVAL,
-    /// which takes an expression string instead of a path).
+    /// Native file-picker filter for the file-taking modes (nil = EVAL
+    /// and CALL, which take an expression string instead of a path).
     static func openFilter(for mode: Mode) -> NativeFileDialog.Filter? {
         switch mode {
         case .load:
@@ -120,8 +135,9 @@ public final class LispCommand: FeatureCommand {
     }
 
     /// Open the native file picker: launch on pick, end quietly on cancel.
-    /// The completion re-checks tornDown/launched — Esc (or typed text)
-    /// may have settled the command while the dialog was open.
+    /// Runs in the loop's event phase (never mid-render). The completion
+    /// re-checks tornDown/launched — Esc (or typed text) may have settled
+    /// the command while the dialog was open.
     private func showFilePicker(
         engine: PhrostEngine,
         processor: CADCommandProcessor,
@@ -150,6 +166,7 @@ public final class LispCommand: FeatureCommand {
     public func cancel(engine _: PhrostEngine, processor: CADCommandProcessor) {
         guard !tornDown else { return }
         tornDown = true
+        pickerPending = false
         evalTask?.cancel()
         evalTask = nil
         host?.broker.cancelPending()
@@ -227,6 +244,23 @@ public final class LispCommand: FeatureCommand {
                     engine: engine, processor: processor, filter: filter)
             }
         }
+        // Main-thread drains, every frame while running: selection writes
+        // first (an eval may set pickfirst and finish in the same instant),
+        // then completion.
+        if launched, !tornDown, let host {
+            if let pending = host.takePendingSelectionApply() {
+                engine.cadSelection.selectedHandles = pending
+            }
+            if let box = completionBox, let done = box.take() {
+                completionBox = nil
+                if let processor = processorRef {
+                    complete(
+                        outcome: done.outcome, environment: done.environment,
+                        engine: engine, processor: processor)
+                    return
+                }
+            }
+        }
         guard launched, let host, let processor = processorRef else { return }
         // Mirror the host's live prompt into the command line.
         if host.currentPrompt != lastPromptShown {
@@ -296,7 +330,7 @@ public final class LispCommand: FeatureCommand {
 
     private func launch(argument: String) {
         guard !launched, let host,
-              let engine = engineRef, let processor = processorRef
+              engineRef != nil, let processor = processorRef
         else { return }
         launched = true
         pickerPending = false
@@ -305,15 +339,15 @@ public final class LispCommand: FeatureCommand {
         let mode = mode
         let hostRef = host
         let session = processor.lispSession
-        evalTask = Task.detached(priority: .userInitiated) { [weak self] in
+        let box = CompletionBox()
+        completionBox = box
+        // No MainActor hop on the way out: the unpumped SDL loop would
+        // stall it. The task stores into the box; the frame poll completes.
+        evalTask = Task.detached(priority: .userInitiated) {
             let (outcome, updated) = await LispCommand.runDetached(
                 mode: mode, argument: argument, host: hostRef,
                 environment: session)
-            await MainActor.run { [weak self] in
-                self?.complete(
-                    outcome: outcome, environment: updated,
-                    engine: engine, processor: processor)
-            }
+            box.store(outcome: outcome, environment: updated)
         }
     }
 
@@ -323,10 +357,27 @@ public final class LispCommand: FeatureCommand {
         case cancelled
     }
 
+    /// Single-shot completion handoff from the eval task to the frame poll.
+    private final class CompletionBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: (outcome: Outcome, environment: LispEnvironment)?
+
+        func store(outcome: Outcome, environment: LispEnvironment) {
+            lock.withLock { value = (outcome, environment) }
+        }
+
+        func take() -> (outcome: Outcome, environment: LispEnvironment)? {
+            lock.withLock {
+                defer { value = nil }
+                return value
+            }
+        }
+    }
+
     /// Off-actor evaluation body. Only Sendable captures (mode, argument,
-    /// host, environment); the host serializes all drawing effects on
-    /// MainActor. The environment is checked back out so defuns and globals
-    /// persist in the processor session across runs.
+    /// host, environment); nothing inside hops to MainActor. The environment
+    /// is checked back out so defuns and globals persist in the processor
+    /// session across runs.
     private static func runDetached(
         mode: Mode, argument: String, host: LispCADHost,
         environment: LispEnvironment

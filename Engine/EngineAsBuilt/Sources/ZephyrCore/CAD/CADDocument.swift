@@ -181,35 +181,47 @@ public final class UndoManager {
     var _undoGroupDepth: Int = 0
     var _pendingGroupSnapshot: CADDocumentSnapshot?
 
+    /// Serializes all stack/group state. Recursive: group methods nest
+    /// (end → push, backTo → end/pop). Needed because Lisp evaluation
+    /// runs off the main thread while the UI reads depth and the user
+    /// can undo concurrently.
+    let undoLock = NSRecursiveLock()
+
     public var maxDepth: Int = 256
 
     public init() {}
 
     public func pushUndo(_ snapshot: CADDocumentSnapshot) {
-        undoStack.append(snapshot)
-        if maxDepth > 0, undoStack.count > maxDepth {
-            undoStack.removeFirst()
+        undoLock.withLock {
+            undoStack.append(snapshot)
+            if maxDepth > 0, undoStack.count > maxDepth {
+                undoStack.removeFirst()
+            }
+            redoStack.removeAll()
         }
-        redoStack.removeAll()
     }
 
     public func popUndo(currentSnapshot: CADDocumentSnapshot) -> CADDocumentSnapshot? {
-        guard !undoStack.isEmpty else { return nil }
-        redoStack.append(currentSnapshot)
-        return undoStack.removeLast()
+        undoLock.withLock {
+            guard !undoStack.isEmpty else { return nil }
+            redoStack.append(currentSnapshot)
+            return undoStack.removeLast()
+        }
     }
 
     public func popRedo(currentSnapshot: CADDocumentSnapshot) -> CADDocumentSnapshot? {
-        guard !redoStack.isEmpty else { return nil }
-        undoStack.append(currentSnapshot)
-        return redoStack.removeLast()
+        undoLock.withLock {
+            guard !redoStack.isEmpty else { return nil }
+            undoStack.append(currentSnapshot)
+            return redoStack.removeLast()
+        }
     }
 
-    public var canUndo: Bool { !undoStack.isEmpty }
-    public var canRedo: Bool { !redoStack.isEmpty }
+    public var canUndo: Bool { undoLock.withLock { !undoStack.isEmpty } }
+    public var canRedo: Bool { undoLock.withLock { !redoStack.isEmpty } }
 
-    public var undoDepth: Int { undoStack.count }
-    public var redoDepth: Int { redoStack.count }
+    public var undoDepth: Int { undoLock.withLock { undoStack.count } }
+    public var redoDepth: Int { undoLock.withLock { redoStack.count } }
 }
 
 // =========================================================================

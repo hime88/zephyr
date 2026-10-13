@@ -27,7 +27,8 @@ import ZephyrLisp
 // * `'`-prefixed transparent commands are rejected (interactive-only).
 // * `_L` = most recently created entity, `_P` = previous selection set.
 
-@MainActor
+// UNISOLATED by design (see LispCADHost): runs on the eval task, which
+// cannot hop to MainActor under the unpumped SDL loop.
 enum LispScriptedCommands {
 
     /// Audited scripted set. Everything else is `.interactiveReject`.
@@ -528,7 +529,7 @@ enum LispScriptedCommands {
     private static func runSelect(_ operands: inout [LispValue], host: LispCADHost) throws {
         let targets = try takeSelection(&operands, command: "SELECT", host: host)
         host.previousSelection = targets
-        host.selection.selectedHandles = targets
+        host.setPickfirst(targets)
     }
 
     // MARK: - UNDO / U

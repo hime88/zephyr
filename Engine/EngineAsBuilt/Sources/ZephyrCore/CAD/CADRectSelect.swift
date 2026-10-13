@@ -12,7 +12,8 @@ import Foundation
 // `selectedHandles` set based on the results.
 // =========================================================================
 
-@MainActor
+// UNISOLATED by design: stateless geometric queries over explicit
+// parameters (Lisp evaluation calls these off-main and cannot hop).
 public enum CADRectSelect {
 
     // MARK: - Public API

@@ -21,17 +21,28 @@ import ZephyrLisp
 // * Selection sets live in `selectionSets` keyed by small integers;
 //   ids recycle never (monotonic) so stale ids fail closed.
 
-@MainActor
-final class LispCADHost: LispHost {
+/// Threading: UNISOLATED by design. The evaluator runs on a background
+/// task and the app's SDL loop never pumps the main dispatch queue, so any
+/// MainActor hop from evaluation stalls forever. Everything this host
+/// touches from evaluation is therefore hop-free: the document (established
+/// off-main posture, same as regen tasks), the lock-based broker and var
+/// store, and snapshots — never the live selection manager or processor.
+/// Cross-thread state (prompt mirror, selection snapshot/apply) serializes
+/// on `stateLock`; selection writes drain to the real manager on the main
+/// thread via the driver's frame poll.
+final class LispCADHost: LispHost, @unchecked Sendable {
     let document: CADDocument
     let selection: CADSelectionManager
     let processor: CADCommandProcessor?
     let broker: LispInputBroker
     let vars: LispVarStore
-    /// Output sink. The app wires command-line history; headless keeps print.
+    /// Output sink. Must be thread-safe: invoked from the eval task.
+    /// (Today print; a future command-line history wire-up must lock.)
     var output: (String) -> Void = { print($0, terminator: "") }
 
-    // MARK: - Session state
+    private let stateLock = NSLock()
+
+    // MARK: - Session state (eval-task confined)
 
     /// Most recently created entity (entlast / _L).
     var lastCreated: UUID?
@@ -46,8 +57,61 @@ final class LispCADHost: LispHost {
 
     // MARK: - Prompt mirror (for the driver's overlay)
 
-    private(set) var currentPrompt: String = ""
-    private(set) var pendingBase: [Double]?
+    private var _currentPrompt: String = ""
+    private var _pendingBase: [Double]?
+    var currentPrompt: String { stateLock.withLock { _currentPrompt } }
+    var pendingBase: [Double]? { stateLock.withLock { _pendingBase } }
+    private func setPrompt(_ prompt: String, base: [Double]?) {
+        stateLock.withLock {
+            _currentPrompt = prompt
+            _pendingBase = base
+        }
+    }
+
+    // MARK: - Main-thread snapshots (captured by the driver on start)
+
+    /// Pickfirst selection frozen at command start (_I, ssgetfirst reads).
+    private var _impliedSelection: Set<UUID> = []
+    /// Legacy active command name for CMDNAMES (empty under feature commands).
+    var activeCommandSnapshot: String?
+    /// Pending pickfirst write for the driver's frame drain (sssetfirst).
+    private var _pendingSelectionApply: Set<UUID>?
+    private var _hasPendingSelectionApply = false
+
+    /// Freeze main-thread state for the run. Called on main before launch;
+    /// the eval task then touches only the snapshots, never live actors.
+    func captureMainThreadState(selectedHandles: Set<UUID>, activeCommand: String?) {
+        stateLock.withLock {
+            _impliedSelection = selectedHandles
+            _pendingSelectionApply = nil
+            _hasPendingSelectionApply = false
+        }
+        activeCommandSnapshot = activeCommand
+    }
+
+    /// Current pickfirst view for this run (snapshot + in-run updates).
+    func impliedHandles() -> Set<UUID> {
+        stateLock.withLock { _impliedSelection }
+    }
+
+    /// Set pickfirst now (in-run reads see it) and enqueue the real
+    /// selection-manager write for the driver's main-thread frame drain.
+    func setPickfirst(_ handles: Set<UUID>) {
+        stateLock.withLock {
+            _impliedSelection = handles
+            _pendingSelectionApply = handles
+            _hasPendingSelectionApply = true
+        }
+    }
+
+    /// Take the pending pickfirst write, if any. Called on main each frame.
+    func takePendingSelectionApply() -> Set<UUID>? {
+        stateLock.withLock {
+            guard _hasPendingSelectionApply else { return nil }
+            _hasPendingSelectionApply = false
+            return _pendingSelectionApply
+        }
+    }
 
     init(
         document: CADDocument,
@@ -76,8 +140,7 @@ final class LispCADHost: LispHost {
     // MARK: - Line input
 
     func requestLine(prompt: String) async throws -> String? {
-        currentPrompt = prompt
-        pendingBase = nil
+        setPrompt(prompt, base: nil)
         let event = try await broker.requestCancellable(.line(prompt: prompt))
         guard case let .line(text) = event else { return nil }
         return text
@@ -87,8 +150,7 @@ final class LispCADHost: LispHost {
 
     func requestPoint(prompt: String, base: [Double]?) async throws -> [Double]? {
         while true {
-            currentPrompt = prompt
-            pendingBase = base
+            setPrompt(prompt, base: base)
             let event = try await broker.requestCancellable(.point(prompt: prompt))
             guard case let .point(answer) = event else { continue }
             guard let coords = answer else { return nil } // Bare Enter.
@@ -104,8 +166,7 @@ final class LispCADHost: LispHost {
         prompt: String, base: [Double]?
     ) async throws -> LispPointInput? {
         while true {
-            currentPrompt = prompt
-            pendingBase = base
+            setPrompt(prompt, base: base)
             let event = try await broker.requestCancellable(.point(prompt: prompt))
             guard case let .point(answer) = event else { continue }
             guard let coords = answer else { return nil }
@@ -116,8 +177,7 @@ final class LispCADHost: LispHost {
 
     func requestEntity(prompt: String) async throws -> (handle: String, point: [Double])? {
         while true {
-            currentPrompt = prompt
-            pendingBase = nil
+            setPrompt(prompt, base: nil)
             let event = try await broker.requestCancellable(.entity(prompt: prompt))
             guard case let .entity(handle, point) = event else { continue }
             if let handle {
@@ -136,8 +196,7 @@ final class LispCADHost: LispHost {
     }
 
     func readDeviceEvent() async throws -> LispValue {
-        currentPrompt = ""
-        pendingBase = nil
+        setPrompt("", base: nil)
         let event = try await broker.requestCancellable(.device)
         guard case let .device(value) = event else {
             throw LispError.hostError("grread: internal device-event mismatch")
@@ -150,7 +209,7 @@ final class LispCADHost: LispHost {
         // Passive: first pickfirst entity + its center. Nested-block paths
         // do not exist in the flat entity store, so the result is
         // entsel-shaped (ename + pick point).
-        guard let handle = selection.selectedHandles.sorted(by: { $0.uuidString < $1.uuidString }).first,
+        guard let handle = impliedHandles().sorted(by: { $0.uuidString < $1.uuidString }).first,
               let entity = document.entity(for: handle)
         else { return nil }
         let center = entityCenter(entity) ?? Vector3(x: 0, y: 0, z: 0)
@@ -163,14 +222,14 @@ final class LispCADHost: LispHost {
     // MARK: - System variables
 
     func getSystemVar(_ name: String) async -> LispValue? {
-        vars.get(name, document: document, processor: processor)
+        vars.get(name, document: document, activeCommand: activeCommandSnapshot)
     }
 
     func setSystemVar(_ name: String, _ value: LispValue) async {
         // setvar validates existence first; a rejection message here would
         // have nowhere to go, so rejections are programmer errors. The
         // driver-facing validation lives in LispVarStore.set.
-        if name == "LASTPOINT" || vars.get(name, document: document, processor: processor) != nil {
+        if name == "LASTPOINT" || vars.get(name, document: document, activeCommand: activeCommandSnapshot) != nil {
             _ = vars.set(name, value, document: document)
         }
     }
@@ -178,7 +237,7 @@ final class LispCADHost: LispHost {
     /// Throwing setvar used by tests and the driver (protocol method above
     /// cannot throw, so validation surfaces here).
     func setSystemVarChecked(_ name: String, _ value: LispValue) throws {
-        if vars.get(name, document: document, processor: processor) == nil, name != "LASTPOINT" {
+        if vars.get(name, document: document, activeCommand: activeCommandSnapshot) == nil, name != "LASTPOINT" {
             throw LispError.hostError("unknown system variable: \(name)")
         }
         if let message = vars.set(name, value, document: document) {
@@ -577,7 +636,7 @@ final class LispCADHost: LispHost {
             else { return nil }
             return storeSelection([last])
         case "I", "_I": // Implied (pickfirst) selection.
-            let matches = selection.selectedHandles
+            let matches = impliedHandles()
                 .filter { document.entity(for: $0) != nil }
                 .filter { predicate(document.entity(for: $0)!) }
             guard !matches.isEmpty else { return nil }
@@ -630,8 +689,7 @@ final class LispCADHost: LispHost {
     private func pickSelection(filter predicate: @escaping (CADEntity) -> Bool) async throws -> Int? {
         var picked: [UUID] = []
         while true {
-            currentPrompt = "Select objects:"
-            pendingBase = nil
+            setPrompt("Select objects:", base: nil)
             let event = try await broker.requestCancellable(.entity(prompt: "Select objects:"))
             guard case let .entity(handle, point) = event else { continue }
             if let handle, let uuid = LispEntityAdapter.handle(fromEname: handle) {
@@ -714,7 +772,7 @@ final class LispCADHost: LispHost {
     }
 
     func ssGetFirst() async throws -> LispValue {
-        let live = selection.selectedHandles
+        let live = impliedHandles()
             .filter { document.entity(for: $0) != nil }
             .sorted(by: { $0.uuidString < $1.uuidString })
         guard !live.isEmpty else { return .nilValue }
@@ -725,13 +783,13 @@ final class LispCADHost: LispHost {
 
     func ssSetFirst(_ set: Int?) async throws -> LispValue {
         guard let set else {
-            selection.clearSelection()
+            setPickfirst([])
             return .nilValue
         }
         guard let members = selectionSets[set] else {
             throw LispError.hostError("sssetfirst: invalid selection set")
         }
-        selection.selectedHandles = Set(members.filter { document.entity(for: $0) != nil })
+        setPickfirst(Set(members.filter { document.entity(for: $0) != nil }))
         return .nilValue
     }
 
@@ -813,7 +871,7 @@ final class LispCADHost: LispHost {
         _ a: Vector3, _ b: Vector3, style: CADSelectionManager.RectSelectStyle
     ) -> Set<UUID> {
         let minX = min(a.x, b.x), minY = min(a.y, b.y)
-        return selection.handlesInRect(
+        return CADRectSelect.handlesInRect(
             worldX: minX, worldY: minY,
             worldW: max(a.x, b.x) - minX, worldH: max(a.y, b.y) - minY,
             document: document, style: style)

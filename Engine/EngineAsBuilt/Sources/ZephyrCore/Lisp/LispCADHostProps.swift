@@ -10,7 +10,8 @@ import ZephyrLisp
 // mirror); coordinates are WORLD (callers never see local geometry).
 // Every setter funnels through replaceEntity: one call, one undo entry.
 
-@MainActor
+// UNISOLATED by design (see LispCADHost): property access runs on the
+// eval task, which cannot hop to MainActor under the unpumped SDL loop.
 extension LispCADHost {
     enum PropAccess {
         case readOnly, readWrite
