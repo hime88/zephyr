@@ -5,6 +5,10 @@
 //
 // All process-local except xdroom (entity xdata via the host).
 import Foundation
+#if os(Windows)
+import WinSDK
+import ucrt
+#endif
 
 public enum EnvBuiltins {
     static let table: [String: LispBuiltin] = [
@@ -73,6 +77,9 @@ public enum EnvBuiltins {
         Darwin.setenv(name, value, 1)
         #elseif canImport(Glibc)
         Glibc.setenv(name, value, 1)
+        #elseif os(Windows)
+        _putenv_s(name, value)
+        SetEnvironmentVariableA(name, value)
         #endif
         return .string(value)
     }

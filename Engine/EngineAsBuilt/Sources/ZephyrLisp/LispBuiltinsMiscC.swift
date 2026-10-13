@@ -197,7 +197,10 @@ enum MiscCBuiltins {
         do {
             let process = Process()
             #if os(Windows)
-                process.executableURL = URL(fileURLWithPath: app)
+                guard let exeURL = resolveWindowsExecutable(app) else {
+                    return .nilValue
+                }
+                process.executableURL = exeURL
                 process.arguments = file.map { [$0] }
             #else
                 var command = "exec \(shellQuote(app))"
@@ -213,6 +216,38 @@ enum MiscCBuiltins {
             return .nilValue
         }
     }
+
+    #if os(Windows)
+    private static func resolveWindowsExecutable(_ app: String) -> URL? {
+        if FileManager.default.fileExists(atPath: app) {
+            return URL(fileURLWithPath: app)
+        }
+        let env = ProcessInfo.processInfo.environment
+        var searchDirs: [String] = []
+        if let path = env["PATH"] {
+            searchDirs.append(contentsOf: path.split(separator: ";").map(String.init))
+        }
+        if let systemRoot = env["SystemRoot"] {
+            searchDirs.append("\(systemRoot)\\System32")
+        }
+        let extensions: [String]
+        if app.contains(".") {
+            extensions = [""]
+        } else {
+            let pathext = env["PATHEXT"] ?? ".COM;.EXE;.BAT;.CMD"
+            extensions = pathext.split(separator: ";").map(String.init)
+        }
+        for dir in searchDirs {
+            for ext in extensions {
+                let candidate = (dir as NSString).appendingPathComponent(app + ext)
+                if FileManager.default.fileExists(atPath: candidate) {
+                    return URL(fileURLWithPath: candidate)
+                }
+            }
+        }
+        return nil
+    }
+    #endif
 
     private static func shellQuote(_ text: String) -> String {
         "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"

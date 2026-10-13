@@ -32,41 +32,46 @@ final class LispExampleOracleTests: XCTestCase {
     /// headless, with the verified reason. The implementation is
     /// correct in every case (triaged in step 4e); the vendored
     /// oracle HTML is left pristine for upstream sync.
-    private static let allowlist: [String: String] = [
-        // Annotation drops the duplicate: (vl-sort '(3 1 2 3) '<)
-        // is (1 2 3 3); impl verified.
-        "vl-sort": "annotation drops duplicate element",
-        // Annotation uses `1.`-style dotted notation, which the reader
-        // (correctly, like AutoCAD) parses as real 1.0; the value
-        // (cons 1 2) -> (1 . 2) is verified by unit test.
-        "cons": "dotted-pair annotation unparseable",
-        // Same `2.` notation as cons; (vl-list* 1 2 3) -> (1 2 . 3).
-        "vl-list*": "dotted-pair annotation unparseable",
-        // (cdr '(10. 20)): `10.` is real 10.0, so cdr is (20);
-        // annotation claims 20.
-        "cdr": "annotation misreads `10.` real literal",
-        // (vl-string-translate "abc" "123" "cabin") is "312in"
-        // (a->1, b->2, c->3); annotation "31bin" drops the 2.
-        "vl-string-translate": "annotation typo drops a mapping",
-        // Examples reference unbound dict/ss/tracee variables
-        // (documentation shorthand for drawing state); the type
-        // errors are correct AutoCAD behavior for nil arguments.
-        "dictadd": "example uses unbound dict var",
-        "dictnext": "example uses unbound dict var",
-        "dictremove": "example uses unbound dict var",
-        "dictrename": "example uses unbound dict var",
-        "dictsearch": "example uses unbound dict var",
-        "sslength": "example uses unbound selection set",
-        "ssname": "example uses unbound selection set",
-        "ssnamex": "example uses unbound selection set",
-        "trace": "example traces an undefined function",
-        "untrace": "example untraces an undefined function",
-        "vl-catch-all-error-p": "example uses unbound error object",
-        // Zephyr reports its own engine string by design.
-        "ver": "vendor string differs by design",
+    private static let allowlist: [String: String] = {
+        var list: [String: String] = [
+            // Annotation drops the duplicate: (vl-sort '(3 1 2 3) '<)
+            // is (1 2 3 3); impl verified.
+            "vl-sort": "annotation drops duplicate element",
+            // Annotation uses `1.`-style dotted notation, which the reader
+            // (correctly, like AutoCAD) parses as real 1.0; the value
+            // (cons 1 2) -> (1 . 2) is verified by unit test.
+            "cons": "dotted-pair annotation unparseable",
+            // Same `2.` notation as cons; (vl-list* 1 2 3) -> (1 2 . 3).
+            "vl-list*": "dotted-pair annotation unparseable",
+            // (cdr '(10. 20)): `10.` is real 10.0, so cdr is (20);
+            // annotation claims 20.
+            "cdr": "annotation misreads `10.` real literal",
+            // (vl-string-translate "abc" "123" "cabin") is "312in"
+            // (a->1, b->2, c->3); annotation "31bin" drops the 2.
+            "vl-string-translate": "annotation typo drops a mapping",
+            // Examples reference unbound dict/ss/tracee variables
+            // (documentation shorthand for drawing state); the type
+            // errors are correct AutoCAD behavior for nil arguments.
+            "dictadd": "example uses unbound dict var",
+            "dictnext": "example uses unbound dict var",
+            "dictremove": "example uses unbound dict var",
+            "dictrename": "example uses unbound dict var",
+            "dictsearch": "example uses unbound dict var",
+            "sslength": "example uses unbound selection set",
+            "ssname": "example uses unbound selection set",
+            "ssnamex": "example uses unbound selection set",
+            "trace": "example traces an undefined function",
+            "untrace": "example untraces an undefined function",
+            "vl-catch-all-error-p": "example uses unbound error object",
+            // Zephyr reports its own engine string by design.
+            "ver": "vendor string differs by design",
+        ]
+        #if !os(Windows)
         // Windows-only path; nil on this platform is correct.
-        "vl-file-directory-p": "example path is Windows-only",
-    ]
+        list["vl-file-directory-p"] = "example path is Windows-only"
+        #endif
+        return list
+    }()
 
     override func tearDown() {
         for key in UserDefaults.standard.dictionaryRepresentation().keys
