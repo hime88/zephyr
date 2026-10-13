@@ -16,7 +16,8 @@ import ZephyrLisp
 // Lifecycle:
 // * start: refuses nested runs (depth guard), claims invocation depth 1,
 //   builds the CAD host, and either launches immediately (source preset or
-//   argument already delivered) or prompts for the file path / expression.
+//   argument already delivered), arms the native file picker for the first
+//   frame (LOAD/SCRIPT with no preset), or prompts for the expression (EVAL).
 // * Evaluation runs in a detached task (off MainActor); every host effect
 //   hops back as needed. Completion, Esc cancel, and errors all funnel
 //   through cancel(), which is idempotent: cancel task, cancel pending
@@ -40,12 +41,18 @@ public final class LispCommand: FeatureCommand {
         case eval
         /// SCRIPT: run a .scr command script through the scripted commands.
         case script
+        /// CALL: evaluate the argument (a `(C:NAME)` form) against the
+        /// persistent session, for processor `c:` dispatch.
+        case call
     }
 
     private let mode: Mode
     private var presetSource: String?
     private var launched = false
     private var tornDown = false
+    /// Bare LOAD/SCRIPT: open the native picker on the first frame unless
+    /// a typed path launched the command first (see start()).
+    private var pickerPending = false
     private var evalTask: Task<Void, Never>?
     private var host: LispCADHost?
     private weak var engineRef: PhrostEngine?
@@ -80,13 +87,63 @@ public final class LispCommand: FeatureCommand {
             broker: broker)
         if let preset = presetSource {
             presetSource = nil
+            print("[Lisp] start \(mode) (preset \(preset.count) chars)")
             launch(argument: preset)
+        } else if Self.openFilter(for: mode) != nil {
+            // Armed here, enqueued for the loop's event phase on the first
+            // frame (the dialog fails silently mid-render). The deferral
+            // also lets a typed "LOAD <path>" argument launch first, so no
+            // stray picker flashes over a path launch.
+            pickerPending = true
+            processor.commandPrompt = "Select a file…"
+        } else if mode == .call {
+            processor.commandPrompt = "Enter function call to run:"
         } else {
-            switch mode {
-            case .load: processor.commandPrompt = "Enter Lisp file path to LOAD:"
-            case .eval: processor.commandPrompt = "Enter expression to EVAL:"
-            case .script: processor.commandPrompt = "Enter script file path to run:"
+            processor.commandPrompt = "Enter expression to EVAL:"
+        }
+    }
+
+    /// Native file-picker filter for the file-taking modes (nil = EVAL,
+    /// which takes an expression string instead of a path).
+    static func openFilter(for mode: Mode) -> NativeFileDialog.Filter? {
+        switch mode {
+        case .load:
+            NativeFileDialog.Filter(
+                label: "AutoLISP files (*.lsp, *.mnl)",
+                extensions: ["lsp", "mnl"])
+        case .script:
+            NativeFileDialog.Filter(
+                label: "Script files (*.scr)", extensions: ["scr"])
+        case .eval, .call:
+            nil
+        }
+    }
+
+    /// Open the native file picker: launch on pick, end quietly on cancel.
+    /// The completion re-checks tornDown/launched — Esc (or typed text)
+    /// may have settled the command while the dialog was open.
+    private func showFilePicker(
+        engine: PhrostEngine,
+        processor: CADCommandProcessor,
+        filter: NativeFileDialog.Filter
+    ) {
+        NativeFileDialog.showOpenDialog(window: engine.window, filters: [filter]) {
+            [weak self, weak processor] urls in
+            guard let self, let processor,
+                  !self.tornDown, !self.launched
+            else {
+                print("[Lisp] picker result ignored (settled while open)")
+                return
             }
+            guard let url = urls.first else {
+                print("[Lisp] picker cancelled")
+                if let engine = self.engineRef {
+                    processor.finishFeatureCommand(engine: engine)
+                }
+                return
+            }
+            print("[Lisp] picked \(url.path)")
+            self.launch(argument: url.path)
         }
     }
 
@@ -154,6 +211,22 @@ public final class LispCommand: FeatureCommand {
     }
 
     public func renderOverlay(cam: CameraTransform, engine: PhrostEngine) {
+        if pickerPending, !launched, !tornDown {
+            pickerPending = false
+            // SDL_ShowOpenFileDialog fails silently mid-render: hand the open
+            // to the loop's event phase via pendingDialogRequest (same as
+            // PDFImport). Re-checked there — Esc or typed text may settle
+            // the command before the deferred open runs.
+            engine.pendingDialogRequest = { [weak self, weak engine] in
+                guard let self, let engine,
+                      !self.tornDown, !self.launched,
+                      let filter = Self.openFilter(for: self.mode),
+                      let processor = self.processorRef
+                else { return }
+                self.showFilePicker(
+                    engine: engine, processor: processor, filter: filter)
+            }
+        }
         guard launched, let host, let processor = processorRef else { return }
         // Mirror the host's live prompt into the command line.
         if host.currentPrompt != lastPromptShown {
@@ -226,14 +299,20 @@ public final class LispCommand: FeatureCommand {
               let engine = engineRef, let processor = processorRef
         else { return }
         launched = true
+        pickerPending = false
         processor.commandPrompt = "Lisp running… (Esc cancels)"
+        print("[Lisp] launch \(mode)")
         let mode = mode
         let hostRef = host
+        let session = processor.lispSession
         evalTask = Task.detached(priority: .userInitiated) { [weak self] in
-            let outcome = await LispCommand.runDetached(
-                mode: mode, argument: argument, host: hostRef)
+            let (outcome, updated) = await LispCommand.runDetached(
+                mode: mode, argument: argument, host: hostRef,
+                environment: session)
             await MainActor.run { [weak self] in
-                self?.complete(outcome: outcome, engine: engine, processor: processor)
+                self?.complete(
+                    outcome: outcome, environment: updated,
+                    engine: engine, processor: processor)
             }
         }
     }
@@ -245,40 +324,63 @@ public final class LispCommand: FeatureCommand {
     }
 
     /// Off-actor evaluation body. Only Sendable captures (mode, argument,
-    /// host); the host serializes all drawing effects on MainActor.
+    /// host, environment); the host serializes all drawing effects on
+    /// MainActor. The environment is checked back out so defuns and globals
+    /// persist in the processor session across runs.
     private static func runDetached(
-        mode: Mode, argument: String, host: LispCADHost
-    ) async -> Outcome {
+        mode: Mode, argument: String, host: LispCADHost,
+        environment: LispEnvironment
+    ) async -> (Outcome, LispEnvironment) {
+        var env = environment
         do {
             switch mode {
             case .load:
                 let source = try readTextFile(argument: argument, what: "LOAD")
+                print("[Lisp] read \(source.count) chars from \(argument)")
                 let forms = try LispReader().readAll(source)
-                var env = LispEnvironment()
+                print("[Lisp] parsed \(forms.count) form(s)")
                 let result = try await LispEvaluator().run(forms, env: &env, host: host)
-                return .value(result)
-            case .eval:
+                print("[Lisp] eval done: \(result.prin1String)")
+                return (.value(result), env)
+            case .eval, .call:
                 let forms = try LispReader().readAll(argument)
-                var env = LispEnvironment()
                 let result = try await LispEvaluator().run(forms, env: &env, host: host)
-                return .value(result)
+                print("[Lisp] eval done: \(result.prin1String)")
+                return (.value(result), env)
             case .script:
                 try await runScriptFile(argument: argument, host: host)
-                return .value(.nilValue)
+                return (.value(.nilValue), env)
             }
         } catch let error as LispError {
-            if case .userCancel = error { return .cancelled }
-            return .error("\(error)")
+            if case .userCancel = error { return (.cancelled, env) }
+            return (.error("\(error)"), env)
         } catch is CancellationError {
-            return .cancelled
+            return (.cancelled, env)
         } catch {
-            return .error("\(error)")
+            return (.error("\(error)"), env)
         }
     }
 
     private func complete(
-        outcome: Outcome, engine: PhrostEngine, processor: CADCommandProcessor
+        outcome: Outcome, environment: LispEnvironment,
+        engine: PhrostEngine, processor: CADCommandProcessor
     ) {
+        // Check the session back in first: forms evaluated before a cancel
+        // keep their defuns and globals, like AutoCAD.
+        print("[Lisp] complete \(outcome)")
+        processor.lispSession = environment
+        // Advertise newly loaded routines in command autocomplete.
+        for name in environment.functions.keys where name.hasPrefix("C:") {
+            let bare = String(name.dropFirst(2))
+            if !CommandDescriptor.allCommands.contains(where: {
+                $0.canonicalName == bare
+            }) {
+                CommandDescriptor.allCommands.append(CommandDescriptor(
+                    canonicalName: bare,
+                    category: .lisp,
+                    description: "AutoLISP routine (c:\(bare.lowercased()))"))
+            }
+        }
         guard !tornDown, let host else { return }
         switch outcome {
         case let .value(result):
@@ -462,7 +564,8 @@ public enum LispDescriptors {
         aliases: [],
         category: .lisp,
         syntax: "<file>",
-        description: "Load and evaluate an AutoLISP (.lsp) file")
+        description: "Load and evaluate an AutoLISP (.lsp) file (opens a file picker)",
+        bareEnterExecutes: true)
     public static let eval = CommandDescriptor(
         canonicalName: "EVAL",
         aliases: [],
@@ -474,5 +577,6 @@ public enum LispDescriptors {
         aliases: ["SCR"],
         category: .lisp,
         syntax: "<file>",
-        description: "Run a command script (.scr) file")
+        description: "Run a command script (.scr) file (opens a file picker)",
+        bareEnterExecutes: true)
 }

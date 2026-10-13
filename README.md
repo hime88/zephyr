@@ -246,9 +246,9 @@ Native AutoLISP engine with **305 builtins** — the full inventoried set, verif
 
 | Command | Alias | Description |
 |---|---|---|
-| LOAD | | Load and evaluate a `.lsp` file |
+| LOAD | | Load and evaluate a `.lsp` file (opens a file picker) |
 | EVAL | | Evaluate a single Lisp expression string |
-| SCRIPT | `SCR` | Run a `.scr` command script |
+| SCRIPT | `SCR` | Run a `.scr` command script (opens a file picker) |
 
 ```lisp
 ;; Color all circles red
@@ -261,6 +261,8 @@ Native AutoLISP engine with **305 builtins** — the full inventoried set, verif
             (append e (list '(62 . 1)))))
   (setq i (1+ i)))
 ```
+
+Runnable examples live in `Engine/EngineAsBuilt/Tools/lisp/examples/` (`SHAPES`, `SELCOUNT`, `REDCIRCLES`, `INPUTDEMO`) — `LOAD` one and run its command. Each is executed by `LispExamplesTests`, so they double as compatibility checks. Loaded `c:` routines stay resident for the session and run by bare name (built-ins win on collision); `setq` globals persist across `EVAL` runs too.
 
 Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, ActiveX automation, and ARX/VLX/VBA application loading.
 

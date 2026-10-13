@@ -83,4 +83,31 @@ final class LispCommandTests: XCTestCase {
             XCTAssertTrue("\(error)".contains("SCRIPT line 1"), "\(error)")
         }
     }
+
+    func testOpenFilter() {
+        let load = LispCommand.openFilter(for: .load)
+        XCTAssertEqual(load?.extensions, ["lsp", "mnl"])
+        let script = LispCommand.openFilter(for: .script)
+        XCTAssertEqual(script?.extensions, ["scr"])
+        XCTAssertNil(LispCommand.openFilter(for: .eval))
+    }
+
+    func testBareEnterDescriptors() {
+        // Bare Enter must execute (the picker supplies the file).
+        XCTAssertTrue(LispDescriptors.load.bareEnterExecutes)
+        XCTAssertTrue(LispDescriptors.script.bareEnterExecutes)
+        XCTAssertFalse(LispDescriptors.eval.bareEnterExecutes)
+        // Spot-check: other parameterized commands still wait for arguments.
+        let others = CommandDescriptor.allCommands.filter {
+            !$0.syntax.isEmpty
+                && $0.canonicalName != "LOAD"
+                && $0.canonicalName != "SCRIPT"
+        }
+        XCTAssertFalse(others.isEmpty)
+        for desc in others {
+            XCTAssertFalse(
+                desc.bareEnterExecutes,
+                "\(desc.canonicalName) must keep parameter-entry behavior")
+        }
+    }
 }

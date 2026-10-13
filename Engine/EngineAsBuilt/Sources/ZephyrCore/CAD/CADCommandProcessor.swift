@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSDL
+import ZephyrLisp
 
 // =========================================================================
 // MARK: - CADCommandProcessor
@@ -153,6 +154,10 @@ public struct CommandDescriptor: Sendable {
     public let syntax: String
     /// One-sentence description of what the command does.
     public let description: String
+    /// Bare Enter executes the command even though `syntax` is non-empty:
+    /// parameters are optional (LOAD/SCRIPT open a file picker instead).
+    /// Without this, Enter on a parameterized command waits for arguments.
+    public let bareEnterExecutes: Bool
 
     /// All strings that match this command (canonical name + all aliases).
     public var allMatches: [String] {
@@ -164,13 +169,15 @@ public struct CommandDescriptor: Sendable {
         aliases: [String] = [],
         category: CommandCategory,
         syntax: String = "",
-        description: String = ""
+        description: String = "",
+        bareEnterExecutes: Bool = false
     ) {
         self.canonicalName = canonicalName.uppercased()
         self.aliases = aliases.map { $0.uppercased() }
         self.category = category
         self.syntax = syntax
         self.description = description
+        self.bareEnterExecutes = bareEnterExecutes
     }
 
     /// Master list of every known command, used for autocomplete matching.
@@ -386,6 +393,11 @@ public final class CADCommandProcessor {
     /// Backing store for `lispInvocationDepth` (see LispInvocationContext.swift).
     var _lispInvocationDepth: Int = 0
 
+    /// Persistent AutoLISP session: defuns and setq globals survive across
+    /// LOAD/EVAL/c: runs (one session per app; AutoCAD scopes per-document).
+    /// Each run checks a copy in/out; the depth guard keeps runs single-flight.
+    public var lispSession = LispEnvironment()
+
     public var arrayAssociativity: Bool =
         UserDefaults.standard.object(forKey: "Zephyr.ArrayAssociativity") as? Bool ?? true {
         didSet {
@@ -455,6 +467,20 @@ public final class CADCommandProcessor {
         cmd.cancel(engine: engine, processor: self)
         activeFeatureCommand = nil
         commandPrompt = nil
+    }
+
+    /// Run a loaded AutoLISP `c:` function by bare command name (already
+    /// uppercased). Returns false when no such function is defined — the
+    /// caller treats the input as an unknown command.
+    internal func startLispCall(_ name: String, engine: PhrostEngine) -> Bool {
+        guard activeFeatureCommand == nil,
+              lispSession.functions["C:\(name)"] != nil
+        else { return false }
+        print("[Lisp] c: dispatch \(name)")
+        let cmd = LispCommand(mode: .call, source: "(C:\(name))")
+        activeFeatureCommand = cmd
+        cmd.start(engine: engine, processor: self)
+        return true
     }
 
     @discardableResult
@@ -1339,6 +1365,12 @@ public final class CADCommandProcessor {
                 let parts = upper.split(maxSplits: 1, whereSeparator: \.isWhitespace)
                 let commandName = parts.first.map(String.init) ?? upper
                 guard let factory = featureCommandRegistry[commandName] else {
+                    // AutoLISP c: dispatch: a bare name matching a loaded
+                    // (defun c:NAME ...) runs it. Built-ins and feature
+                    // commands win; anything with arguments stays unknown.
+                    if parts.count == 1, startLispCall(commandName, engine: eng) {
+                        return
+                    }
                     clearCommand()
                     return
                 }

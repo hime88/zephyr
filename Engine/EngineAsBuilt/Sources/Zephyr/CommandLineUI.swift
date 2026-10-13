@@ -231,7 +231,7 @@ struct CommandLineUI {
                     }
                 } else if !inputMatches.isEmpty && clampedIndex >= 0 && clampedIndex < inputMatches.count {
                     let desc = inputMatches[clampedIndex].descriptor
-                    if !desc.syntax.isEmpty {
+                    if !desc.syntax.isEmpty && !desc.bareEnterExecutes {
                         prepareForParameterEntry(engine: engine, descriptor: desc)
                     } else {
                         engine.commandProcessor.commandLineActive = false
@@ -244,6 +244,10 @@ struct CommandLineUI {
                         if newTextFromInput.count > cmdLen {
                             engine.commandProcessor.commandLineActive = false
                             engine.commandProcessor.executeCommand(newTextFromInput)
+                        } else if hintDesc.bareEnterExecutes {
+                            // Bare "NAME " + Enter: run it (LOAD/SCRIPT pick a file).
+                            engine.commandProcessor.commandLineActive = false
+                            engine.commandProcessor.executeCommand(hintDesc.canonicalName)
                         } else {
                             prepareForParameterEntry(engine: engine, descriptor: hintDesc)
                         }
