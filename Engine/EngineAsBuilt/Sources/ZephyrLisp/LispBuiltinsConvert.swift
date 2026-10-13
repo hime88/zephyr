@@ -154,7 +154,7 @@ enum ConvertBuiltins {
     static func formatDegreesMinutesSeconds(_ radians: Double, precision: Int) -> String {
         // Round to precision decimals on the seconds field.
         let scale = pow(10.0, Double(precision))
-        var totalSeconds = (radians * 180 / Double.pi * 3600 * scale).rounded() / scale
+        let totalSeconds = (radians * 180 / Double.pi * 3600 * scale).rounded() / scale
         var degrees = Int(totalSeconds / 3600)
         var remainder = totalSeconds - Double(degrees * 3600)
         var minutes = Int(remainder / 60)
