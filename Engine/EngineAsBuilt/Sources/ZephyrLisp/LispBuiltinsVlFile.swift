@@ -157,7 +157,7 @@ enum VlFileBuiltins {
         for name in names {
             var isDir: ObjCBool = false
             let full = (path as NSString).appendingPathComponent(name)
-            FileManager.default.fileExists(atPath: full, isDirectory: &isDir)
+            _ = FileManager.default.fileExists(atPath: full, isDirectory: &isDir)
             if isDir.boolValue, !includeDirs { continue }
             if Wildcard.matchAlternatives(text: Array(name), pattern: pattern) {
                 out.append(name)

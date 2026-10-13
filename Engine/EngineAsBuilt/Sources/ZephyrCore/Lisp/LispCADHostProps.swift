@@ -687,7 +687,7 @@ extension LispCADHost {
                 throw LispError.hostError(
                     "setpropertyvalue: unknown property \"\(prop)\" for HATCH")
             }
-        case let .spline(controlPoints, knots, degree, weights, color):
+        case let .spline(_, knots, degree, weights, color):
             guard prop == "CONTROLPOINTS" else {
                 throw LispError.hostError(
                     "setpropertyvalue: unknown property \"\(prop)\" for SPLINE")
@@ -722,7 +722,7 @@ extension LispCADHost {
                 throw LispError.hostError(
                     "setpropertyvalue: unknown property \"\(prop)\" for RAY")
             }
-        case let .image(insertion, uAxis, vAxis, imageName, clipBoundary, tint):
+        case let .image(_, uAxis, vAxis, imageName, clipBoundary, tint):
             guard prop == "INSERTIONPOINT" else {
                 throw LispError.hostError(
                     "setpropertyvalue: unknown property \"\(prop)\" for IMAGE")
@@ -731,7 +731,7 @@ extension LispCADHost {
                 insertion: localPoint(try propPoint(value, property: prop), t),
                 uAxis: uAxis, vAxis: vAxis, imageName: imageName,
                 clipBoundary: clipBoundary, tint: tint)
-        case let .table(data, origin, color):
+        case let .table(data, _, color):
             guard prop == "POSITION" else {
                 throw LispError.hostError(
                     "setpropertyvalue: unknown property \"\(prop)\" for ACAD_TABLE")
