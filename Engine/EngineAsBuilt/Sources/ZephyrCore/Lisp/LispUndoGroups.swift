@@ -24,16 +24,16 @@ extension UndoManager {
     // MARK: - Group state
 
     /// Number of currently open UNDO groups (Begin without matching End).
-    public var undoGroupDepth: Int { _undoGroupDepth }
+    public var undoGroupDepth: Int { undoLock.withLock { _undoGroupDepth } }
 
     /// UNDOCTL bit 0: 1 while a group is open, 0 otherwise.
     /// (Higher AutoCAD UNDOCTL bits describe XREF/zoom state Zephyr has no
     /// equivalent for and always read 0.)
-    public var undoControlFlags: Int { _undoGroupDepth > 0 ? 1 : 0 }
+    public var undoControlFlags: Int { undoLock.withLock { _undoGroupDepth > 0 ? 1 : 0 } }
 
     /// Open an UNDO group. Groups nest; only the outermost End commits.
     public func beginUndoGroup() {
-        _undoGroupDepth += 1
+        undoLock.withLock { _undoGroupDepth += 1 }
     }
 
     /// Close the most recently opened UNDO group.
@@ -47,13 +47,15 @@ extension UndoManager {
     ///   End (AutoCAD prints "No group to end" and continues).
     @discardableResult
     public func endUndoGroup() -> Bool {
-        guard _undoGroupDepth > 0 else { return false }
-        _undoGroupDepth -= 1
-        if _undoGroupDepth == 0, let first = _pendingGroupSnapshot {
-            _pendingGroupSnapshot = nil
-            pushUndo(first)
+        undoLock.withLock {
+            guard _undoGroupDepth > 0 else { return false }
+            _undoGroupDepth -= 1
+            if _undoGroupDepth == 0, let first = _pendingGroupSnapshot {
+                _pendingGroupSnapshot = nil
+                pushUndo(first)
+            }
+            return true
         }
-        return true
     }
 
     /// Route a snapshot push through the group machinery.
@@ -62,12 +64,14 @@ extension UndoManager {
     /// first pre-state is retained; later pushes are dropped because the
     /// coalesced entry restores the pre-group state directly.
     public func pushUndoGrouped(_ snapshot: CADDocumentSnapshot) {
-        if _undoGroupDepth > 0 {
-            if _pendingGroupSnapshot == nil {
-                _pendingGroupSnapshot = snapshot
+        undoLock.withLock {
+            if _undoGroupDepth > 0 {
+                if _pendingGroupSnapshot == nil {
+                    _pendingGroupSnapshot = snapshot
+                }
+            } else {
+                pushUndo(snapshot)
             }
-        } else {
-            pushUndo(snapshot)
         }
     }
 
@@ -77,8 +81,10 @@ extension UndoManager {
     /// the pre-group pre-state is dropped so a half-run script cannot leave
     /// a dangling group behind. Committed stack entries are untouched.
     public func discardOpenUndoGroups() {
-        _undoGroupDepth = 0
-        _pendingGroupSnapshot = nil
+        undoLock.withLock {
+            _undoGroupDepth = 0
+            _pendingGroupSnapshot = nil
+        }
     }
 
     // MARK: - Mark / Back
@@ -88,7 +94,9 @@ extension UndoManager {
     /// The mark counts an uncommitted open group as one entry, matching
     /// what `undoDepth` will read once the group closes.
     public func markUndo() -> Int {
-        undoDepth + (_pendingGroupSnapshot == nil ? 0 : 1)
+        undoLock.withLock {
+            undoDepth + (_pendingGroupSnapshot == nil ? 0 : 1)
+        }
     }
 
     /// Undo back to a position previously recorded with `markUndo`.
@@ -101,17 +109,19 @@ extension UndoManager {
     /// - Returns: The snapshot to restore (the state at the mark), or `nil`
     ///   if `mark` is out of range (negative, or beyond current depth).
     public func backToUndoMark(_ mark: Int, currentSnapshot: CADDocumentSnapshot) -> CADDocumentSnapshot? {
-        // Commit any open group first so the mark arithmetic is exact.
-        while _undoGroupDepth > 0 { endUndoGroup() }
-        guard mark >= 0, mark <= undoStackCountForLisp else { return nil }
-        var current = currentSnapshot
-        var restored: CADDocumentSnapshot? = currentSnapshot
-        while undoStackCountForLisp > mark {
-            guard let previous = popUndo(currentSnapshot: current) else { return nil }
-            current = previous
-            restored = previous
+        undoLock.withLock {
+            // Commit any open group first so the mark arithmetic is exact.
+            while _undoGroupDepth > 0 { endUndoGroup() }
+            guard mark >= 0, mark <= undoStackCountForLisp else { return nil }
+            var current = currentSnapshot
+            var restored: CADDocumentSnapshot? = currentSnapshot
+            while undoStackCountForLisp > mark {
+                guard let previous = popUndo(currentSnapshot: current) else { return nil }
+                current = previous
+                restored = previous
+            }
+            return restored
         }
-        return restored
     }
 }
 

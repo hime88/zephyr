@@ -36,6 +36,14 @@ final class LispCorpusAcceptanceTests: XCTestCase {
         return try await LispEvaluator().run(forms, env: &env, host: host)
     }
 
+    /// Mirrors the driver's frame poll: applies the host's pending
+    /// pickfirst write to the live selection manager.
+    private func drainSelection(_ host: LispCADHost) {
+        if let pending = host.takePendingSelectionApply() {
+            host.selection.selectedHandles = pending
+        }
+    }
+
     private func loadCorpus(
         _ name: String, host: LispCADHost, env: inout LispEnvironment
     ) async throws {
@@ -160,10 +168,16 @@ final class LispCorpusAcceptanceTests: XCTestCase {
             .map(\.handle)
         XCTAssertEqual(smallRed.count, 3)
         host.selection.selectedHandles = Set(smallRed.prefix(2))
+        // Mirror start(): freeze pickfirst into the host snapshot.
+        host.captureMainThreadState(
+            selectedHandles: host.selection.selectedHandles,
+            activeCommand: nil)
         try await loadCorpus("cleanup.lsp", host: host, env: &env)
         host.broker.offer(.point([-10, -10]))
         host.broker.offer(.point([80, 30]))
         _ = try await eval("(c:CleanSpeckles)", host: host, env: &env)
+        // Mirror the frame poll: apply the pending pickfirst write.
+        drainSelection(host)
         // All three small red speckles highlighted; big red + blues spared.
         XCTAssertEqual(host.selection.selectedHandles, Set(smallRed))
         let output = captured as String
@@ -202,6 +216,7 @@ final class LispCorpusAcceptanceTests: XCTestCase {
         host.broker.offer(.point([-10, -10]))
         host.broker.offer(.point([50, 50]))
         _ = try await eval("(c:SelectByColors)", host: host, env: &env)
+        drainSelection(host)
         XCTAssertEqual(host.selection.selectedHandles, redInWindow)
         XCTAssertTrue(
             (captured as String).contains("Success: Selected 2 objects"),

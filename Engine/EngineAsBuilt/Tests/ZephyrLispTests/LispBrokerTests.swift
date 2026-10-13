@@ -54,6 +54,16 @@ final class LispBrokerTests: XCTestCase {
     func testCancelPendingThrowsUserCancel() async throws {
         let broker = await LispInputBroker()
         async let answer = broker.requestCancellable(.entity(prompt: "p"))
+        // Wait until the request is provably suspended, then cancel it.
+        var suspended = false
+        for _ in 0..<10_000 {
+            if await broker.hasPending {
+                suspended = true
+                break
+            }
+            await Task.yield()
+        }
+        XCTAssertTrue(suspended, "request never suspended")
         await broker.cancelPending()
         do {
             _ = try await answer
@@ -63,6 +73,21 @@ final class LispBrokerTests: XCTestCase {
         }
         let settles = await broker.settleCount
         XCTAssertEqual(settles, 1)
+    }
+
+    func testIdleCancelArmsNextRequest() async throws {
+        let broker = await LispInputBroker()
+        // Cancel with nothing outstanding arms the flag (a cancel racing
+        // request startup wins): the next request throws without suspending.
+        await broker.cancelPending()
+        do {
+            _ = try await broker.requestCancellable(.line(prompt: "p"))
+            XCTFail("expected cancel")
+        } catch let error as LispError {
+            XCTAssertEqual(error, .userCancel)
+        }
+        let pending = await broker.hasPending
+        XCTAssertFalse(pending)
     }
 
     func testTaskCancelSettlesOnce() async throws {
@@ -118,6 +143,17 @@ final class LispBrokerTests: XCTestCase {
     func testSpamFuzzSettlesExactlyOnce() async throws {
         let broker = await LispInputBroker()
         async let answer = broker.requestCancellable(.point(prompt: "p"))
+        // Wait until the request is provably suspended: without the wait,
+        // offers race request startup and the winner is timing-dependent.
+        var suspended = false
+        for _ in 0..<10_000 {
+            if await broker.hasPending {
+                suspended = true
+                break
+            }
+            await Task.yield()
+        }
+        XCTAssertTrue(suspended, "request never suspended")
         // 200 rapid offers of mixed kinds; only point offers can settle,
         // and only the first of those.
         for index in 0..<200 {

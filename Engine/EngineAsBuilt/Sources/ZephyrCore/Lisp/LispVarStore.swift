@@ -14,11 +14,14 @@ import ZephyrLisp
 // * MEMORY variables persist per host instance with AutoCAD-compatible
 //   defaults and light validation (ranges, known names).
 //
-// The store is a reference type owned by the CAD host; concurrent access
-// serializes on the host's actor. Values cross isolation as LispValue.
+// The store is a reference type owned by the CAD host. UNISOLATED by
+// design (see LispCADHost): the memory dict serializes on a lock, live
+// reads consult the document directly, and CMDNAMES arrives as a snapshot
+// string because the processor is MainActor-bound. Values cross threads
+// as LispValue.
 
-@MainActor
-final class LispVarStore: Sendable {
+final class LispVarStore: @unchecked Sendable {
+    private let lock = NSLock()
     private var memory: [String: LispValue] = LispVarStore.defaults
 
     // MARK: - Defaults
@@ -90,10 +93,11 @@ final class LispVarStore: Sendable {
 
     // MARK: - Access
 
-    /// Reads a variable. Live variables consult the document/processor;
-    /// everything else comes from memory. Returns nil for unknown names.
+    /// Reads a variable. Live variables consult the document directly;
+    /// CMDNAMES arrives pre-snapshotted (the processor is MainActor-bound).
+    /// Everything else comes from memory. Returns nil for unknown names.
     func get(
-        _ name: String, document: CADDocument, processor: CADCommandProcessor?
+        _ name: String, document: CADDocument, activeCommand: String?
     ) -> LispValue? {
         switch name {
         case "CLAYER":
@@ -105,13 +109,13 @@ final class LispVarStore: Sendable {
             return .int(document.undoManager.undoControlFlags)
         case "CMDNAMES":
             // Feature commands carry no registry name; legacy commands do.
-            return .string(processor?.activeCommand ?? "")
+            return .string(activeCommand ?? "")
         case "MILLISECS":
             return .int(Int(Date().timeIntervalSince1970 * 1000))
         case "LASTPOINT":
-            return memory["LASTPOINT"] ?? .nilValue
+            return lock.withLock { memory["LASTPOINT"] ?? .nilValue }
         default:
-            return memory[name]
+            return lock.withLock { memory[name] }
         }
     }
 
@@ -165,7 +169,7 @@ final class LispVarStore: Sendable {
             store(name, value)
             return nil
         default:
-            let known = memory[name] != nil || name == "LASTPOINT"
+            let known = lock.withLock { memory[name] != nil } || name == "LASTPOINT"
             guard known else { return nil } // Caller rejects unknown names.
             store(name, value)
             return nil
@@ -173,6 +177,6 @@ final class LispVarStore: Sendable {
     }
 
     private func store(_ name: String, _ value: LispValue) {
-        memory[name] = value
+        lock.withLock { memory[name] = value }
     }
 }
