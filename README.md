@@ -2,7 +2,7 @@
 
 **A native, GPU-accelerated 2D CAD application — free, open source, and built from scratch in Swift.**
 
-Zephyr is a drafting app that runs natively on macOS (Metal) and Windows (Direct3D 12). It reads DWG and DXF, exports PDF with Bluebeam-compatible measurements, and is designed to replace QCAD/LibreCAD as the go-to free alternative to AutoCAD LT. No subscriptions, no telemetry, no Qt/OpenGL legacy stack.
+Zephyr is a drafting app that runs natively on macOS (Metal), Windows (Direct3D 12), and Linux (Vulkan). It reads DWG and DXF, exports PDF with Bluebeam-compatible measurements, and is designed to replace QCAD/LibreCAD as the go-to free alternative to AutoCAD LT. No subscriptions, no telemetry, no Qt/OpenGL legacy stack.
 
 ![Zephyr screenshot](docs/uploads/zephyr.png)
 
@@ -28,15 +28,16 @@ If you look at the subscription costs for AutoCAD LT, it's **$540 a year** if yo
 
 On top of that, finding great cross-platform tools that treat macOS and Linux as first-class citizens is a nightmare. Most polished solutions are strictly Windows-only. For example, while Autodesk finally added AutoLISP support to AutoCAD LT on Windows recently (2024), their official documentation explicitly states that AutoLISP is completely blocked on AutoCAD LT for Mac. If you're on a Mac and need LISP automation, they force you to step up to the full AutoCAD license at over **$2,000 a year**.
 
-> **Note:** We highly encourage looking at other excellent free open-source software like **QCAD**, **LibreCAD**, **FreeCAD**, **SolveSpace**, **Open CAD Studio** and **Open 2D Studio** as powerful options to try in your drafting workflows. Zephyr exists alongside these community solutions as a performance-oriented alternative, utilizing Direct3D 12 on Windows and Metal on macOS through a single Swift GPU pipeline to feel native on both.
+> **Note:** We highly encourage looking at other excellent free open-source software like **QCAD**, **LibreCAD**, **FreeCAD**, **SolveSpace**, **Open CAD Studio** and **Open 2D Studio** as powerful options to try in your drafting workflows. Zephyr exists alongside these community solutions as a performance-oriented alternative, utilizing Direct3D 12 on Windows, Metal on macOS, and Vulkan on Linux through a single Swift GPU pipeline to feel native on all three.
 
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
-| **Language** | Swift (~85k LOC) |
+| **Language** | Swift (~105k lines, excl. blanks/comments) |
 | **GPU (macOS)** | Metal via SDL3 |
 | **GPU (Windows)** | Direct3D 12 via SDL3 |
+| **GPU (Linux)** | Vulkan via SDL3 |
 | **UI** | ImGui (SDL3 GPU backend) |
 | **DXF I/O** | Swift port of libdxfrw) |
 | **DWG I/O** | ODA CLI bridge (import/export) |
@@ -50,7 +51,7 @@ On top of that, finding great cross-platform tools that treat macOS and Linux as
 
 - **QCAD/LibreCAD replacement** — DXF parsing that actually works: MText formatting, SHX shape fonts, NURBS splines, dimension styles, and title blocks all render correctly. No raw escape codes leaking into labels, no scrambled curves, no missing logos.
 - **AutoCAD LT alternative** — AutoCAD muscle memory preserved. `L`, `PL`, `C`, `REC`, `M`, `TR`, `J` all work. Command palette with fuzzy autocomplete, polar tracking, object snap tracking, grips, and a full snap engine.
-- **GPU-native** — Metal on macOS, Direct3D 12 on Windows. Single Swift rendering pipeline. 120 FPS canvas with pixel-perfect GPU picking. No OpenGL emulation layer.
+- **GPU-native** — Metal on macOS, Direct3D 12 on Windows, Vulkan on Linux. Single Swift rendering pipeline. 120 FPS canvas with pixel-perfect GPU picking. No OpenGL emulation layer.
 - **Free forever** — GPL v3. No account, no email gate, no subscription. ~14 MB download.
 
 ## Current Features
@@ -59,12 +60,12 @@ On top of that, finding great cross-platform tools that treat macOS and Linux as
 - **DWG import/export** — Full read/write via libreDWG. Blocks, layers, text styles, hatches, splines, polylines with bulge, dimensions. Native DWG round-trip.
 - **DXF import/export** — R2007 round-trip. Dimensions, splines, hatches, leaders all preserved. Layer transparency (group code 440) supported.
 - **PDF export** — Vector PDF 1.7 with Bluebeam Revu-compatible Measurement dictionary.
-- **PDF import** — Cross-platform: PDFKit on macOS, PDFium on Windows. Page selector with preview. Raster underlay at 150 DPI.
+- **PDF import** — Cross-platform: PDFKit on macOS, PDFium on Windows/Linux. Page selector with preview. Raster underlay at 150 DPI.
 - **EAB native format** — Fast binary save/load. zstd compression, BVH spatial index, viewport-culled partial loads.
 
 ### Swift DXF Module (SwiftDXFrw)
 
-Zephyr's DXF pipeline runs entirely in Swift — a native port of [libdxfrw](https://github.com/LibreCAD/libdxfrw) that eliminates the C++ bridge and its ABI pitfalls. ~5k lines of Swift across `DXFReader`, `DXFWriter`, `DXFEntity`, `DXFColorTable`, and `DXFTextCodec`. The port preserves every enhancement from the original C++ fork while adding Swift-native safety and cross-platform builds with zero C++ toolchain dependency.
+Zephyr's DXF pipeline runs entirely in Swift — a native port of [libdxfrw](https://github.com/LibreCAD/libdxfrw) that eliminates the C++ bridge and its ABI pitfalls. ~7.7k lines of Swift (excluding blanks/comments) across `DXFReader`, `DXFWriter`, `DXFEntity`, `DXFColorTable`, and `DXFTextCodec`. The port preserves every enhancement from the original C++ fork while adding Swift-native safety and cross-platform builds with zero C++ toolchain dependency.
 
 | Feature | Description |
 |---|---|
@@ -74,7 +75,7 @@ Zephyr's DXF pipeline runs entirely in Swift — a native port of [libdxfrw](htt
 | **Attribute text & block attribute support** | `ATTRIB` and `ATTDEF` entity types with tag, flag, and text value extraction. Block inserts carry their full attribute payload. |
 | **Background fill color** | Hatch background fill (ACI group 63) surfaced independently from pattern color, matching AutoCAD's background fill mechanic. |
 | **Encoding/codec improvements** | Strips malformed `$DWGCODEPAGE` headers, auto-detects and sanitizes MText embedded objects, error recovery for charset conversion. Binary DXF sniffing with hex-dump diagnostics for bad input. |
-| **Zero-C++ dependency** | Compiles on macOS and Windows via Swift Package Manager. No vcpkg, no CMake, no iconv linkage — pure Swift with Foundation's encoding support. |
+| **Zero-C++ dependency** | Compiles on macOS, Windows, and Linux via Swift Package Manager. No vcpkg, no CMake, no iconv linkage — pure Swift with Foundation's encoding support. |
 
 ### Drawing Commands
 | Command | Alias | Description |
@@ -279,7 +280,7 @@ Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, ActiveX
 - **Status bar** — Coordinates, snap mode indicators, entity count, undo/redo depth.
 
 ### Rendering Engine
-- **Metal** (macOS) and **Direct3D 12** (Windows) via SDL3 GPU API
+- **Metal** (macOS), **Direct3D 12** (Windows), and **Vulkan** (Linux) via SDL3 GPU API
 - **Multi-sample anti-aliasing** (MSAA)
 - **GPU-based entity picking** — 9×9 pixel-perfect ID rendering
 - **BVH spatial index** — Accelerated hit testing and viewport culling
@@ -327,6 +328,10 @@ sh compile-macos.sh
 # Windows (ARM64, via Visual Studio Native Tools)
 cd Engine\EngineAsBuilt
 .\compile.ps1
+
+# Linux (first run ./setup-linux.sh from the repo root for dependencies)
+cd Engine/EngineAsBuilt
+./compile-linux.sh
 ```
 
 ---
