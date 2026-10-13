@@ -52,6 +52,32 @@ public final class LispCommand: FeatureCommand {
     private var tornDown = false
     /// Bare LOAD/SCRIPT: open the native picker on the first frame unless
     /// a typed path launched the command first (see start()).
+    private enum Outcome: Sendable {
+        case value(LispValue)
+        case error(String)
+        case cancelled
+    }
+
+    private final class CompletionBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var pending: (Outcome, LispEnvironment)?
+
+        func store(outcome: Outcome, environment: LispEnvironment) {
+            lock.lock()
+            pending = (outcome, environment)
+            lock.unlock()
+        }
+
+        func take() -> (Outcome, LispEnvironment)? {
+            lock.lock()
+            defer { lock.unlock() }
+            let res = pending
+            pending = nil
+            return res
+        }
+    }
+
+    private let completionBox = CompletionBox()
     private var pickerPending = false
     private var evalTask: Task<Void, Never>?
     private var host: LispCADHost?
@@ -150,6 +176,7 @@ public final class LispCommand: FeatureCommand {
     public func cancel(engine _: PhrostEngine, processor: CADCommandProcessor) {
         guard !tornDown else { return }
         tornDown = true
+        _ = completionBox.take()
         evalTask?.cancel()
         evalTask = nil
         host?.broker.cancelPending()
@@ -211,6 +238,13 @@ public final class LispCommand: FeatureCommand {
     }
 
     public func renderOverlay(cam: CameraTransform, engine: PhrostEngine) {
+        if let (outcome, updated) = completionBox.take(),
+           let processor = processorRef {
+            complete(
+                outcome: outcome, environment: updated,
+                engine: engine, processor: processor)
+            return
+        }
         if pickerPending, !launched, !tornDown {
             pickerPending = false
             // SDL_ShowOpenFileDialog fails silently mid-render: hand the open
@@ -305,22 +339,20 @@ public final class LispCommand: FeatureCommand {
         let mode = mode
         let hostRef = host
         let session = processor.lispSession
+        let box = completionBox
         evalTask = Task.detached(priority: .userInitiated) { [weak self] in
             let (outcome, updated) = await LispCommand.runDetached(
                 mode: mode, argument: argument, host: hostRef,
                 environment: session)
+            box.store(outcome: outcome, environment: updated)
             await MainActor.run { [weak self] in
-                self?.complete(
-                    outcome: outcome, environment: updated,
-                    engine: engine, processor: processor)
+                if let (outcome, updated) = box.take() {
+                    self?.complete(
+                        outcome: outcome, environment: updated,
+                        engine: engine, processor: processor)
+                }
             }
         }
-    }
-
-    private enum Outcome {
-        case value(LispValue)
-        case error(String)
-        case cancelled
     }
 
     /// Off-actor evaluation body. Only Sendable captures (mode, argument,
@@ -382,6 +414,8 @@ public final class LispCommand: FeatureCommand {
             }
         }
         guard !tornDown, let host else { return }
+        tornDown = true
+        _ = completionBox.take()
         switch outcome {
         case let .value(result):
             if !result.isNil {
@@ -404,6 +438,8 @@ public final class LispCommand: FeatureCommand {
                 "Warning: \(depth) unbalanced UNDO group(s) auto-closed.\n")
         }
         evalTask = nil
+        processor.lispInvocationDepth = 0
+        self.host = nil
         processor.finishFeatureCommand(engine: engine)
     }
 

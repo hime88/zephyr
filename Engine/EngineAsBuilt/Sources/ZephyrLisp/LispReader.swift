@@ -213,7 +213,7 @@ private struct Cursor: Sendable {
 
     mutating func advance() {
         guard !isEOF else { return }
-        if text[index] == "\n" {
+        if text[index].isNewline {
             line += 1
             column = 1
         } else {
@@ -228,13 +228,14 @@ private struct Cursor: Sendable {
             if ch.isWhitespace {
                 advance()
             } else if ch == ";" {
-                while !isEOF, text[index] != "\n" { advance() }
+                while !isEOF, !text[index].isNewline { advance() }
             } else {
                 return
             }
         }
     }
 }
+
 
 private extension Character {
     var isLispDelimiter: Bool {
