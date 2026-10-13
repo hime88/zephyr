@@ -243,8 +243,37 @@ if ($LASTEXITCODE -ne 0) {
 
 # 7. Stage DLLs and Compile Shaders
 $config = "release"
-$dllDest = "$swiftBuildDir\.build\$swiftTriple\$config"
-New-Item -ItemType Directory -Path $dllDest -Force | Out-Null
+Push-Location "$swiftBuildDir"
+try {
+    $showBinCmd = "swift build -c release --show-bin-path"
+    $binDirOutput = cmd.exe /c "call `"$vcvarsPath`" $vcvarsArch >nul 2>&1 && $showBinCmd"
+    $dllDest = ($binDirOutput | Where-Object { $_ -and -not ($_ -match "warning:") } | Select-Object -Last 1).Trim()
+} catch {
+    $dllDest = $null
+}
+Pop-Location
+
+# Fallback to locating the freshly built Zephyr.exe or the legacy triple path
+if (-not $dllDest -or -not (Test-Path $dllDest)) {
+    $foundExe = Get-ChildItem "$swiftBuildDir\.build" -Recurse -Filter "Zephyr.exe" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($foundExe) {
+        $dllDest = $foundExe.DirectoryName
+    } else {
+        $dllDest = "$swiftBuildDir\.build\$swiftTriple\$config"
+    }
+}
+
+$destDirs = @($dllDest)
+$legacyDest = "$swiftBuildDir\.build\$swiftTriple\$config"
+if ($legacyDest -ne $dllDest -and (Test-Path $legacyDest)) {
+    $destDirs += $legacyDest
+}
+
+foreach ($dest in $destDirs) {
+    New-Item -ItemType Directory -Path $dest -Force | Out-Null
+}
 Write-Host "`n### Staging Binaries to $dllDest ###" -ForegroundColor Yellow
 
 $dxcCandidates = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter "dxc.exe" -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -match "\\$dxcArch$" }
@@ -267,25 +296,41 @@ if ($dxcCandidates) {
         "call `"$vcvarsPath`" $vcvarsArch >nul 2>&1"
     ) + $dxcLines)
     cmd.exe /c $dxcScriptPath
+
+    if ($destDirs.Count -gt 1) {
+        foreach ($dest in ($destDirs | Where-Object { $_ -ne $dllDest })) {
+            Copy-Item -Path "$dllDest\*.dxil" -Destination $dest -Force -ErrorAction SilentlyContinue
+        }
+    }
 } else {
     Write-Warning "dxc.exe not found. Shaders were not compiled."
 }
 
-# Copy DLLs
-Copy-Item -Path "$DevRoot\SDL3\lib\SDL3.dll"       -Destination $dllDest -Force
-Copy-Item -Path "$DevRoot\SDL3\lib\SDL3_image.dll" -Destination $dllDest -Force
-Copy-Item -Path "$DevRoot\SDL3\lib\SDL3_ttf.dll"   -Destination $dllDest -Force
+foreach ($dest in $destDirs) {
+    # Copy DLLs
+    Copy-Item -Path "$DevRoot\SDL3\lib\SDL3.dll"       -Destination $dest -Force
+    Copy-Item -Path "$DevRoot\SDL3\lib\SDL3_image.dll" -Destination $dest -Force
+    Copy-Item -Path "$DevRoot\SDL3\lib\SDL3_ttf.dll"   -Destination $dest -Force
 
-if (Test-Path "$DevRoot\pdfium\bin\pdfium.dll") { Copy-Item -LiteralPath "$DevRoot\pdfium\bin\pdfium.dll" -Destination $dllDest -Force }
+    if (Test-Path "$DevRoot\pdfium\bin\pdfium.dll") { Copy-Item -LiteralPath "$DevRoot\pdfium\bin\pdfium.dll" -Destination $dest -Force }
 
-Copy-Item -Path "$DevRoot\vcpkg\installed\$vcpkgTriplet\bin\iconv-2.dll" -Destination $dllDest -Force -ErrorAction SilentlyContinue
+    Copy-Item -Path "$DevRoot\vcpkg\installed\$vcpkgTriplet\bin\iconv-2.dll" -Destination $dest -Force -ErrorAction SilentlyContinue
 
-# Assets
-foreach ($asset in @("Fonts", "Plot Styles")) {
-    if (Test-Path "$swiftBuildDir\$asset") {
-        $assetDest = "$dllDest\$asset"
-        New-Item -ItemType Directory -Path $assetDest -Force | Out-Null
-        Copy-Item -Path "$swiftBuildDir\$asset\*" -Destination $assetDest -Force -Recurse -ErrorAction SilentlyContinue
+    # Assets
+    foreach ($asset in @("Fonts", "Plot Styles")) {
+        if (Test-Path "$swiftBuildDir\$asset") {
+            $assetDest = "$dest\$asset"
+            New-Item -ItemType Directory -Path $assetDest -Force | Out-Null
+            Copy-Item -Path "$swiftBuildDir\$asset\*" -Destination $assetDest -Force -Recurse -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# If legacy directory exists and differs from SwiftPM product output, mirror executables so legacy launch paths work
+if ($destDirs.Count -gt 1) {
+    foreach ($dest in ($destDirs | Where-Object { $_ -ne $dllDest })) {
+        Copy-Item -Path "$dllDest\*.exe" -Destination $dest -Force -ErrorAction SilentlyContinue
+        Copy-Item -Path "$dllDest\*.lib" -Destination $dest -Force -ErrorAction SilentlyContinue
     }
 }
 
