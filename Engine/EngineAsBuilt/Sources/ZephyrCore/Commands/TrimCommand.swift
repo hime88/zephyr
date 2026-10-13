@@ -3,250 +3,134 @@ import CSDL3
 import ImGui
 import SwiftSDL
 
-private final class TrimMutationState {
-    var didModify = false
-}
-
 // =========================================================================
 // MARK: - TrimCommand
 // =========================================================================
 
-/// TRIM — Quick-mode trim with exploding cutting edges.
-///
-/// **Workflow (AutoCAD-style quick trim):**
-///   1. Type `TRIM` (or `TR`). All visible entities become potential cutting edges.
-///   2. Click on an entity near the portion you want to remove.
-///   3. The entity is shortened/trimmed to nearest intersection(s) with cutting edges,
-///      keeping the side you clicked on. Command stays active — Esc to finish.
-///
-/// **Algorithm (per click):**
-///   - **Step 1** — Hit-test at RAW (unsnapped) click. Unsnapped coords preserve correct
-///     side-selection logic that snap would corrupt.
-///   - **Step 2** — Exclude block references as trim targets (must explode first).
-///   - **Step 3** — Find nearest primitive in entity's `localGeometry` by distance to click.
-///   - **Step 4** — Collect cutting edges: explode every primitive from all OTHER visible
-///     entities into line segments. Curved primitives use high-precision adaptive
-///     tessellation so intersections are suitable for subsequent trim/join operations.
-///       * Polygon/FillPolygon/Rect → edge loops
-///   - **Step 5** — Compute intersection(s) between target and all cutting segments.
-///   - **Step 6** — Compute click parameter `tClick` along target. Pick intersection
-///     whose parameter is closest to `tClick`:
-///       * `tClick < tHit` → click before intersection → trim start-side (remove [0..tHit])
-///       * `tClick > tHit` → click after intersection → trim end-side (remove [tHit..1])
-///   - **Step 7** — Apply trim: update entity geometry via doc. Delete entity if no primitives remain.
-///
-/// **Per-primitive trim strategies:**
-///   - `.line` — Direct segment-segment intersection, parameterized line trim.
-///   - `.arc` — Segment-circle intersection on arc sweep, parameterized angle trim.
-///   - `.circle` — Multi-intersection: click selects which arc segment to remove.
-///     Converts circle to arc spanning the non-removed portion. Requires ≥2 intersections.
-///   - All others (polygons, splines, ellipses, rects, etc.) — Exploded to segments,
-///     trimmed by segment-segment intersection along parameterized polyline.
-///     Result rebuilt as `.line()` primitives.
-///
-/// **Scope:** Endpoint/segment trim only — shortens or removes portion of entity.
-/// Does not split entity into two pieces or bridge-trim middle sections between two
-/// intersections (v2).
+/// TRIM — AutoCAD-style trim command supporting cutting edge selection,
+/// single-click trimming, crossing/window box trimming, fence trimming,
+/// in-session undo, and on-the-fly option switching.
 @MainActor
 public final class TrimCommand: FeatureCommand {
 
-    // MARK: - State
+    // MARK: - Mode & Enums
 
-    /// True while command is waiting for clicks; Esc or empty-space click sets false.
+    /// Operating mode for the TRIM command.
+    public enum TrimMode: String, CaseIterable, Sendable {
+        /// Classic AutoCAD: Select cutting edges first (or press Enter for <select all>).
+        case standard
+        /// Modern AutoCAD: All visible objects act as cutting edges by default.
+        case quick
+    }
+
+    /// Internal lifecycle step of the TRIM command.
+    private enum TrimStep {
+        /// Waiting for user to click cutting edges or press Enter to commit.
+        case selectCuttingEdges
+        /// Interactive box selection to add cutting edges.
+        case edgeBoxSelecting(startWorld: Vector3, startScreen: SDL_FPoint)
+
+        /// Waiting for user to click an object to trim, or click empty space to box select.
+        case selectTrimTarget
+        /// Interactive box selection to batch-trim multiple target objects.
+        case targetBoxSelecting(startWorld: Vector3, startScreen: SDL_FPoint)
+        /// Interactive polyline fence selection to trim everything crossed by the fence.
+        case fenceSelecting(points: [Vector3])
+
+        /// eRase sub-mode: click objects to delete directly without leaving TRIM.
+        case eraseSelecting
+        /// Interactive box selection for eRase mode.
+        case eraseBoxSelecting(startWorld: Vector3, startScreen: SDL_FPoint)
+    }
+
+    // MARK: - Static Configuration
+
+    /// User's preferred TRIM mode across sessions. Defaults to `.standard` (classic AutoCAD).
+    public static var preferredMode: TrimMode = .standard
+
+    // MARK: - Instance State
+
     private var active: Bool = true
+    private var currentMode: TrimMode = TrimCommand.preferredMode
+    private var step: TrimStep = .selectCuttingEdges
+
+    /// Handles of entities explicitly selected as cutting edges. Empty means all visible entities act as cutting edges.
+    private var selectedCuttingHandles: Set<UUID> = []
+
+    /// Cached world-space cutting segments.
+    private var cachedCuttingSegments: [(Vector3, Vector3)] = []
+    /// Cached exact line cutting segments (for NURBS spline precision pass).
+    private var cachedExactLineSegments: [(Vector3, Vector3)] = []
+
+    /// Number of operations executed in this active session (for in-session undo).
+    private var operationsInSession: Int = 0
+
+    /// Current mouse position in world space.
+    private var currentMouseWorldX: Double = 0
+    private var currentMouseWorldY: Double = 0
+    /// Current mouse position in screen space.
+    private var currentMouseScreenX: Float = 0
+    private var currentMouseScreenY: Float = 0
 
     // MARK: - Init
 
     public init() {}
 
-    public var isSnappingEnabled: Bool { return false }
+    // MARK: - FeatureCommand Conformance
 
-    // MARK: - FeatureCommand conformance
+    public var isSnappingEnabled: Bool {
+        if case .fenceSelecting = step { return true }
+        return false
+    }
+
+    public func getDrawingSnapPoints() -> [Vector3] {
+        if case .fenceSelecting(let points) = step {
+            return points
+        }
+        return []
+    }
 
     public func start(engine: PhrostEngine, processor: CADCommandProcessor) {
         active = true
-        processor.commandPrompt = "Click on an object to trim (Esc to cancel)."
+        operationsInSession = 0
+        currentMode = Self.preferredMode
+
+        // Check for pre-selected entities
+        let preselected = engine.cadSelection.selectedHandles.filter { handle in
+            guard let entity = engine.document.entity(for: handle) else { return false }
+            guard let layer = engine.document.layer(for: entity.layerID), layer.isVisible else { return false }
+            return entity.blockID == nil
+        }
+
+        if !preselected.isEmpty {
+            // Adopt pre-selected objects as cutting edges immediately (AutoCAD behavior)
+            selectedCuttingHandles = Set(preselected)
+            engine.cadSelection.clearSelection()
+            recompileCuttingSegments(in: engine.document)
+            step = .selectTrimTarget
+            processor.commandPrompt = "Cutting edge(s) selected (\(selectedCuttingHandles.count)). Select object to trim or [Fence/Crossing/Cutting edges/Mode/eRase/Undo]:"
+        } else if currentMode == .standard {
+            selectedCuttingHandles.removeAll()
+            step = .selectCuttingEdges
+            processor.commandPrompt = "Select cutting edges ... Select objects or <select all>:"
+        } else {
+            selectedCuttingHandles.removeAll()
+            recompileCuttingSegments(in: engine.document)
+            step = .selectTrimTarget
+            processor.commandPrompt = "Select object to trim or [Fence/Crossing/Cutting edges/Mode/eRase/Undo]:"
+        }
     }
 
     public func cancel(engine: PhrostEngine, processor: CADCommandProcessor) {
         active = false
+        step = .selectCuttingEdges
+        selectedCuttingHandles.removeAll()
+        cachedCuttingSegments.removeAll()
+        cachedExactLineSegments.removeAll()
+        processor.commandPrompt = nil
     }
 
-    // MARK: - Helpers
-
-    /// Explodes a primitive into a list of world-space line segments using the given transform.
-    ///
-    /// Each primitive type is tessellated into a high-precision polyline approximation:
-    ///   - Line → single segment
-    ///   - Polygon / FillPolygon / FillComplexPolygon / Gradient → closed loop of edges
-    ///   - Circle / arc / ellipse → adaptive subdivision bounded by chord error
-    ///   - Spline → dense NURBS evaluation
-    ///   - Rect / FillRect → 4 corners as closed loop
-    /// Used for collecting cutting edges (world space) and for exploded target trimming (local space).
-    private func explode(primitive: CADPrimitive, t: Transform3D) -> [(Vector3, Vector3)] {
-        /// Returns enough segments to keep the sagitta below roughly one ten-millionth
-        /// of the radius. The cap prevents pathological geometry from making TRIM
-        /// unresponsive while still improving the previous 32–48 segment curves by
-        /// nearly two orders of magnitude.
-        func curvedSegmentCount(radius: Double, span: Double = 2.0 * .pi) -> Int {
-            guard radius > 1e-12, span > 0 else { return 2 }
-            let relativeChordError = 1e-7
-            let maxStep = 2.0 * acos(max(-1.0, min(1.0, 1.0 - relativeChordError)))
-            guard maxStep.isFinite, maxStep > 0 else { return 4096 }
-            return max(2, min(4096, Int(ceil(span / maxStep))))
-        }
-
-        var segs: [(Vector3, Vector3)] = []
-        switch primitive {
-        case .line(let ls, let le, _):
-            // Single line: transform both endpoints.
-            segs.append((t.transformPoint(ls), t.transformPoint(le)))
-        case .polygon(let pts, _), .fillPolygon(let pts, _), .fillComplexPolygon(let pts, _, _), .gradient(let pts, _, _, _, _, _):
-            // Closed polygon: edge between consecutive points + closing edge.
-            guard pts.count >= 2 else { return [] }
-            for i in 0..<(pts.count - 1) { segs.append((t.transformPoint(pts[i]), t.transformPoint(pts[i+1]))) }
-            segs.append((t.transformPoint(pts.last!), t.transformPoint(pts.first!)))
-        case .polyline(let path, _):
-            let pts = path.tessellatedPoints(segmentsPerRadian: 48)
-            guard pts.count >= 2 else { return [] }
-            for i in 0..<(pts.count - 1) { segs.append((t.transformPoint(pts[i]), t.transformPoint(pts[i+1]))) }
-        case .circle(let center, let radius, _):
-            let seg = curvedSegmentCount(radius: radius)
-            var pts: [Vector3] = []
-            for i in 0..<seg {
-                let a = 2.0 * Double.pi * Double(i) / Double(seg)
-                pts.append(t.transformPoint(Vector3(x: center.x + cos(a) * radius, y: center.y + sin(a) * radius, z: center.z)))
-            }
-            for i in 0..<(pts.count - 1) { segs.append((pts[i], pts[i+1])) }
-            segs.append((pts.last!, pts.first!))
-        case .arc(let center, let radius, let startAngle, let endAngle, _):
-            var span = endAngle - startAngle
-            if span < 0 { span += 2.0 * Double.pi }
-            let seg = curvedSegmentCount(radius: radius, span: span)
-            var pts: [Vector3] = []
-            for i in 0...seg {
-                let a = startAngle + span * Double(i) / Double(seg)
-                pts.append(t.transformPoint(Vector3(x: center.x + cos(a) * radius, y: center.y + sin(a) * radius, z: center.z)))
-            }
-            for i in 0..<(pts.count - 1) { segs.append((pts[i], pts[i+1])) }
-        case .ellipse(let center, let majorAxis, let minorRatio, _):
-            let majorLen = majorAxis.magnitude
-            let minorLen = majorLen * minorRatio
-            let segsCount = curvedSegmentCount(radius: max(majorLen, abs(minorLen)))
-            let rot = atan2(majorAxis.y, majorAxis.x)
-            let cosRot = cos(rot); let sinRot = sin(rot)
-            for i in 0..<segsCount {
-                let t1 = Double(i) * 2.0 * .pi / Double(segsCount)
-                let t2a = Double((i + 1) % segsCount) * 2.0 * .pi / Double(segsCount)
-                let p1 = Vector3(
-                    x: majorLen * cos(t1) * cosRot - minorLen * sin(t1) * sinRot + center.x,
-                    y: majorLen * cos(t1) * sinRot + minorLen * sin(t1) * cosRot + center.y,
-                    z: center.z)
-                let p2 = Vector3(
-                    x: majorLen * cos(t2a) * cosRot - minorLen * sin(t2a) * sinRot + center.x,
-                    y: majorLen * cos(t2a) * sinRot + minorLen * sin(t2a) * cosRot + center.y,
-                    z: center.z)
-                segs.append((t.transformPoint(p1), t.transformPoint(p2)))
-            }
-        case .spline(let controlPoints, let knots, let degree, let weights, _):
-            // Dense evaluation is used here because these segments are construction
-            // geometry for intersections, not merely display geometry.
-            let w = weights ?? Array(repeating: 1.0, count: controlPoints.count)
-            let segmentCount = min(4096, max(512, controlPoints.count * 128))
-            let evaluated = NURBSEvaluator.evaluateByKnotSpans(
-                degree: degree,
-                knots: knots,
-                controlPoints: controlPoints,
-                weights: w,
-                segmentsPerSpan: max(4, segmentCount / 8))
-            if evaluated.count >= 2 {
-                for i in 0..<(evaluated.count - 1) {
-                    segs.append((t.transformPoint(evaluated[i]), t.transformPoint(evaluated[i+1])))
-                }
-            }
-        case .penStroke(let vertices, _, _):
-            guard vertices.count >= 2 else { break }
-            for i in 0..<(vertices.count - 1) {
-                segs.append((t.transformPoint(vertices[i].position), t.transformPoint(vertices[i+1].position)))
-            }
-        case .rect(let origin, let size, _), .fillRect(let origin, let size, _):
-            // Four corners as closed polyline.
-            let corners = [
-                origin,
-                Vector3(x: origin.x + size.x, y: origin.y, z: origin.z),
-                Vector3(x: origin.x + size.x, y: origin.y + size.y, z: origin.z),
-                Vector3(x: origin.x, y: origin.y + size.y, z: origin.z),
-            ]
-            for i in 0..<4 {
-                segs.append((t.transformPoint(corners[i]), t.transformPoint(corners[(i+1)%4])))
-            }
-        default: break
-        }
-        return segs
-    }
-
-    /// Computes intersection points between a finite line segment and a circle.
-    ///
-    /// Solves the quadratic: `|A + t*(B-A) - C|² = r²` for t ∈ [0, 1] (with 1e-9 slop).
-    /// Returns 0, 1, or 2 world-space intersection points. Used by arc/circle trim
-    /// to find where cutting edges intersect circular geometry.
-    ///
-    /// - Parameters:
-    ///   - segmentA, segmentB: world-space endpoints of the cutting segment
-    ///   - circleCenter: world-space center of the target circle/arc
-    ///   - radius: world-space radius (accounting for scale)
-    /// - Returns: up to 2 intersection points (de-duplicated if t values are within 1e-12)
-    private func intersectSegmentCircle(
-        segmentA: Vector3, segmentB: Vector3,
-        circleCenter: Vector3, radius: Double
-    ) -> [Vector3] {
-        let dir = Vector3(x: segmentB.x - segmentA.x, y: segmentB.y - segmentA.y, z: segmentB.z - segmentA.z)
-        let dx = dir.x; let dy = dir.y
-        let fx = segmentA.x - circleCenter.x; let fy = segmentA.y - circleCenter.y
-
-        let a = dx * dx + dy * dy
-        let b = 2.0 * (fx * dx + fy * dy)
-        let c = fx * fx + fy * fy - radius * radius
-
-        let discriminant = b * b - 4.0 * a * c
-        if discriminant < 0 { return [] }
-
-        let sqrtD = sqrt(discriminant)
-        let t1 = (-b - sqrtD) / (2.0 * a)
-        let t2 = (-b + sqrtD) / (2.0 * a)
-
-        var result: [Vector3] = []
-        // t must be within [0, 1] (with small epsilon for numerical stability)
-        if t1 >= -1e-9 && t1 <= 1.0 + 1e-9 {
-            result.append(Vector3(x: segmentA.x + t1 * dx, y: segmentA.y + t1 * dy, z: segmentA.z))
-        }
-        if t2 >= -1e-9 && t2 <= 1.0 + 1e-9 && abs(t2 - t1) > 1e-12 {
-            result.append(Vector3(x: segmentA.x + t2 * dx, y: segmentA.y + t2 * dy, z: segmentA.z))
-        }
-        return result
-    }
-
-    /// Extracts the color from a primitive, if it carries one.
-    ///
-    /// Used when rebuilding exploded primitives (splines, polygons, etc.) as `.line()` primitives
-    /// so the resulting lines retain the original entity's color. Returns nil for primitives
-    /// that have no intrinsic color (e.g. `.isVisible`, `.handle`, `.blockRef`).
-    private func colorForPrimitive(_ p: CADPrimitive) -> ColorRGBA? {
-        switch p {
-        case .line(_, _, let c): return c
-        case .arc(_, _, _, _, let c): return c
-        case .circle(_, _, let c): return c
-        case .ellipse(_, _, _, let c): return c
-        case .spline(_, _, _, _, let c): return c
-        case .penStroke(_, _, let c): return c
-        case .polygon(_, let c): return c
-        case .polyline(_, let c): return c
-        case .rect(_, _, let c): return c
-        case .fillPolygon(_, let c): return c
-        case .fillRect(_, _, let c): return c
-        default: return nil
-        }
-    }
+    // MARK: - Mouse Click Handling
 
     public func handleMouseClick(
         worldX: Double, worldY: Double,
@@ -254,703 +138,664 @@ public final class TrimCommand: FeatureCommand {
     ) -> CommandResult {
         guard active else { return .finished }
 
-        // Use RAW (unsnapped) coords so side-selection is not corrupted
-        // by snap pulling the click onto the intersection itself.
         let rawScreenX = engine.interaction.lastMouseX
         let rawScreenY = engine.interaction.lastMouseY
-        let (rawWX, rawWY) = engine.camera.screenToWorld(screenX: Float(rawScreenX), screenY: Float(rawScreenY), windowWidth: engine.windowWidth, windowHeight: engine.windowHeight)
+        let (rawWX, rawWY) = engine.camera.screenToWorld(
+            screenX: Float(rawScreenX), screenY: Float(rawScreenY),
+            windowWidth: engine.windowWidth, windowHeight: engine.windowHeight
+        )
         let rawClick = Vector3(x: rawWX, y: rawWY, z: 0)
-
         let doc = engine.document
 
-        // ── Step 1: Hit-test for entity under click ──
-        // Use simplifyComplexBlocks: false for precise primitive picking.
-        guard let hitHandle = CADHitTesting.hitTest(
-            worldX: rawWX, worldY: rawWY,
-            document: doc,
-            threshold: 12.0 / engine.camera.zoom,
-            simplifyComplexBlocks: false
-        ) else {
-            // Clicked empty space → finish command.
-            active = false
-            processor.commandPrompt = nil
-            return .finished
-        }
+        switch step {
 
-        // ── Step 2: Exclude block references ──
-        guard let entity = doc.entity(for: hitHandle) else { return .continue }
-        guard entity.blockID == nil else {
-            processor.commandPrompt = "Cannot trim block references. Explode them first."
-            return .continue
-        }
-
-        // ── Step 3: Find nearest primitive in localGeometry ──
-        guard let localGeom = entity.localGeometry, !localGeom.isEmpty else {
-            processor.commandPrompt = "Entity has no local geometry."
-            return .continue
-        }
-
-        let transform = entity.transform
-        let invTransform = transform.inverse()
-
-        // Find closest primitive (any type) by squared distance to raw click.
-        var bestPrimIndex: Int? = nil
-        var bestPrimDistSq: Double = .infinity
-
-        for (i, prim) in localGeom.enumerated() {
-            if let d = CADHitTesting.distanceSqToPrimitive(prim, point: rawClick, transform: transform, t2: .infinity) {
-                if d < bestPrimDistSq {
-                    bestPrimDistSq = d
-                    bestPrimIndex = i
-                }
-            }
-        }
-
-        guard let primIndex = bestPrimIndex else {
-            processor.commandPrompt = "No primitive found."
-            return .continue
-        }
-
-        let targetPrim = localGeom[primIndex]
-
-        // ── Step 4: Collect cutting edges from all OTHER visible entities ──
-        // Every primitive from every other entity is exploded into line segments.
-        // Skip invisible layers, block references, and the target entity itself.
-        //
-        // Two separate edge collections are maintained:
-        //   - `cuttingSegments`: All cutting edges (lines kept as exact segments;
-        //     everything else tessellated via explode()). Used by line/arc/circle/polyline
-        //     trim paths.
-        //   - `exactLineCuttingSegments`: ONLY the exact `.line` primitives, transformed
-        //     directly without tessellation. Used by the spline trim path for a dedicated
-        //     high-precision second pass (see Step 5–7 spline case). This separation is
-        //     critical because: a line endpoint that was created from a spline's tessellated
-        //     trim point will visually touch the spline but miss the true NURBS intersection
-        //     by a sub-pixel amount. The spline path handles this via edge-extension and
-        //     endpoint-touch detection on these exact segments.
-        var cuttingSegments: [(Vector3, Vector3)] = []
-        var exactLineCuttingSegments: [(Vector3, Vector3)] = []
-        for otherEntity in doc.entitiesView {
-            guard otherEntity.handle != hitHandle else { continue }
-            guard let layer = doc.layer(for: otherEntity.layerID), layer.isVisible else { continue }
-            guard otherEntity.blockID == nil else { continue }
-            guard let geom = doc.resolvedGeometry(for: otherEntity) else { continue }
-            for prim in geom {
-                if case .line(let start, let end, _) = prim {
-                    let segment = (otherEntity.transform.transformPoint(start), otherEntity.transform.transformPoint(end))
-                    cuttingSegments.append(segment)
-                    exactLineCuttingSegments.append(segment)
+        // ── Phase 1: Selecting Cutting Edges ──
+        case .selectCuttingEdges:
+            if let hitHandle = CADHitTesting.hitTest(
+                worldX: rawWX, worldY: rawWY,
+                document: doc,
+                threshold: 12.0 / engine.camera.zoom,
+                simplifyComplexBlocks: false
+            ), let entity = doc.entity(for: hitHandle), entity.blockID == nil {
+                if selectedCuttingHandles.contains(hitHandle) {
+                    selectedCuttingHandles.remove(hitHandle)
                 } else {
-                    cuttingSegments.append(contentsOf: explode(primitive: prim, t: otherEntity.transform))
+                    selectedCuttingHandles.insert(hitHandle)
                 }
-            }
-        }
-
-        // ── Step 5–7: Trim based on primitive type ──
-        // newGeometry is a mutable copy; deleteTarget/updateTarget mutate it in-place.
-        var newGeometry = localGeom
-        let mutationState = TrimMutationState()
-
-        /// Removes the target primitive from the geometry copy.
-        func deleteTarget() {
-            newGeometry.remove(at: primIndex)
-            mutationState.didModify = true
-        }
-
-        /// Replaces the target primitive with new primitives at same index.
-        func updateTarget(_ newPrims: [CADPrimitive]) {
-            newGeometry.remove(at: primIndex)
-            newGeometry.insert(contentsOf: newPrims, at: primIndex)
-            mutationState.didModify = true
-        }
-
-        switch targetPrim {
-
-        // ── .line: segment-segment intersection, parameterized trim ──
-        case .line(let ls, let le, let color):
-            // Convert line to world space.
-            let ws = transform.transformPoint(ls)
-            let we = transform.transformPoint(le)
-            let segDX = we.x - ws.x; let segDY = we.y - ws.y
-            let segLenSq = segDX * segDX + segDY * segDY
-            if segLenSq <= 1e-18 { deleteTarget(); break }
-
-            // Compute tClick: the click's projection onto the segment, clamped to [0,1].
-            let dpX: Double = rawClick.x - ws.x
-            let dpY: Double = rawClick.y - ws.y
-            let dot: Double = dpX * segDX + dpY * segDY
-            var tClick: Double = dot / segLenSq
-            tClick = max(0.0, min(1.0, tClick))
-
-            // Find all segment-segment intersections with cutting edges.
-            // Exclude intersections at endpoints (tolerance 1e-9) — those aren't trims.
-            struct Hit { let point: Vector3; let t: Double }
-            var hits: [Hit] = []
-
-            for edge in cuttingSegments {
-                guard let res = CADGeometryMath.segmentSegmentIntersection(a: ws, b: we, c: edge.0, d: edge.1) else { continue }
-                if res.t > 1e-9 && res.t < 1.0 - 1e-9 { hits.append(Hit(point: res.point, t: res.t)) }
-            }
-
-            if hits.isEmpty {
-                // A numerical miss must never destroy otherwise valid geometry.
-                break
+                recompileCuttingSegments(in: doc)
+                processor.commandPrompt = "Select cutting edges: \(selectedCuttingHandles.count) selected. (Press Enter to finish, or click empty space to box select)"
+                return .handled
             } else {
-                var tBefore = 0.0
-                var tAfter = 1.0
-                for h in hits {
-                    if h.t < tClick && h.t > tBefore { tBefore = h.t }
-                    if h.t > tClick && h.t < tAfter { tAfter = h.t }
-                }
-                
-                var newPrims: [CADPrimitive] = []
-                if tBefore > 1e-9 {
-                    let localBefore = Vector3(
-                        x: ls.x + tBefore * (le.x - ls.x),
-                        y: ls.y + tBefore * (le.y - ls.y),
-                        z: ls.z + tBefore * (le.z - ls.z))
-                    newPrims.append(.line(start: ls, end: localBefore, color: color))
-                }
-                if tAfter < 1.0 - 1e-9 {
-                    let localAfter = Vector3(
-                        x: ls.x + tAfter * (le.x - ls.x),
-                        y: ls.y + tAfter * (le.y - ls.y),
-                        z: ls.z + tAfter * (le.z - ls.z))
-                    newPrims.append(.line(start: localAfter, end: le, color: color))
-                }
-                if newPrims.isEmpty {
-                    break
-                } else {
-                    updateTarget(newPrims)
+                // Clicked in empty space → begin box selection of cutting edges
+                step = .edgeBoxSelecting(startWorld: rawClick, startScreen: SDL_FPoint(x: Float(rawScreenX), y: Float(rawScreenY)))
+                processor.commandPrompt = "Specify opposite corner:"
+                return .handled
+            }
+
+        case .edgeBoxSelecting(let startWorld, let startScreen):
+            let minX = min(startWorld.x, rawClick.x)
+            let maxX = max(startWorld.x, rawClick.x)
+            let minY = min(startWorld.y, rawClick.y)
+            let maxY = max(startWorld.y, rawClick.y)
+            let isCrossing = Float(rawScreenX) < startScreen.x
+            let style: CADSelectionManager.RectSelectStyle = isCrossing ? .crossing : .window
+
+            let handles = CADRectSelect.handlesInRect(
+                worldX: minX, worldY: minY,
+                worldW: maxX - minX, worldH: maxY - minY,
+                document: doc, style: style
+            )
+
+            for h in handles {
+                if let ent = doc.entity(for: h), ent.blockID == nil,
+                   let layer = doc.layer(for: ent.layerID), layer.isVisible {
+                    selectedCuttingHandles.insert(h)
                 }
             }
 
-        // ── .arc: segment-circle intersection on arc sweep, parameterized angle trim ──
-        case .arc(let center, let radius, let startAngle, let endAngle, let color):
-            // Convert arc to world space: center + rotation, radius * scale.
-            let wc = transform.transformPoint(center)
-            let s = transform.scale
-            let wr = radius * max(abs(s.x), abs(s.y))
-            let wsa = startAngle + transform.rotation
-            let wea = endAngle + transform.rotation
-            // Normalize sweep to positive CCW range.
-            var span = wea - wsa
-            if span < 0 { span += 2 * .pi }
+            recompileCuttingSegments(in: doc)
+            step = .selectCuttingEdges
+            processor.commandPrompt = "Select cutting edges: \(selectedCuttingHandles.count) selected. (Press Enter to finish or pick more)"
+            return .handled
 
-            // Find segment-circle intersections that lie on the arc's CCW sweep.
-            struct Hit { let point: Vector3; let angle: Double }
-            var hits: [Hit] = []
-
-            for edge in cuttingSegments {
-                let pts = intersectSegmentCircle(segmentA: edge.0, segmentB: edge.1, circleCenter: wc, radius: wr)
-                for pt in pts {
-                    let a: Double = atan2(pt.y - wc.y, pt.x - wc.x)
-                    let wsaSpan: Double = wsa + span
-                    if CADGeometryMath.angleIsOnCCWSweep(angle: a, start: wsa, end: wsaSpan) {
-                        hits.append(Hit(point: pt, angle: a))
-                    }
+        // ── Phase 2: Selecting Trim Targets ──
+        case .selectTrimTarget:
+            if let hitHandle = CADHitTesting.hitTest(
+                worldX: rawWX, worldY: rawWY,
+                document: doc,
+                threshold: 12.0 / engine.camera.zoom,
+                simplifyComplexBlocks: false
+            ) {
+                // Single-click trim on entity
+                let success = performSingleTrim(on: hitHandle, rawClick: rawClick, engine: engine, processor: processor)
+                if success {
+                    processor.commandPrompt = "Trimmed. Select object to trim or [Fence/Crossing/Cutting edges/Mode/eRase/Undo]:"
                 }
-            }
-
-            if hits.isEmpty {
-                break
+                return .handled
             } else {
-                // Compute click angle and normalize within [0, 2π).
-                let rawAngle = atan2(rawClick.y - wc.y, rawClick.x - wc.x)
-                let twoPi = 2.0 * .pi
-                func norm(_ v: Double) -> Double { var r = v.truncatingRemainder(dividingBy: twoPi); if r < 0 { r += twoPi }; return r }
-                
-                // clickT is the angle from arc start to click, normalized.
-                let rawDiff: Double = rawAngle - wsa
-                let clickT: Double = norm(rawDiff)
-                
-                var tBefore = 0.0
-                var tAfter = span
-                for h in hits {
-                    let hT = norm(h.angle - wsa)
-                    if hT < clickT && hT > tBefore { tBefore = hT }
-                    if hT > clickT && hT < tAfter { tAfter = hT }
-                }
-
-                var newPrims: [CADPrimitive] = []
-                if tBefore > 1e-5 {
-                    let localEnd = startAngle + tBefore
-                    newPrims.append(.arc(center: center, radius: radius, startAngle: startAngle, endAngle: localEnd, color: color))
-                }
-                if tAfter < span - 1e-5 {
-                    let localStart = startAngle + tAfter
-                    let localEnd = startAngle + span
-                    newPrims.append(.arc(center: center, radius: radius, startAngle: localStart, endAngle: localEnd, color: color))
-                }
-                
-                if newPrims.isEmpty {
-                    break
-                } else {
-                    updateTarget(newPrims)
-                }
+                // Clicked empty space → begin box selection to batch-trim!
+                step = .targetBoxSelecting(startWorld: rawClick, startScreen: SDL_FPoint(x: Float(rawScreenX), y: Float(rawScreenY)))
+                processor.commandPrompt = "Specify opposite corner:"
+                return .handled
             }
 
-        // ── .circle: multi-intersection → pick arc segment to remove, convert to .arc ──
-        // Circle trim deletes the arc between two consecutive intersection points
-        // that contains the click, converting the circle into the remaining arc.
-        // Requires ≥2 distinct intersections on the circle.
-        case .circle(let center, let radius, let color):
-            let wc = transform.transformPoint(center)
-            let s = transform.scale
-            let wr = radius * max(abs(s.x), abs(s.y))
+        case .targetBoxSelecting(let startWorld, let startScreen):
+            let minX = min(startWorld.x, rawClick.x)
+            let maxX = max(startWorld.x, rawClick.x)
+            let minY = min(startWorld.y, rawClick.y)
+            let maxY = max(startWorld.y, rawClick.y)
+            let isCrossing = Float(rawScreenX) < startScreen.x
 
-            struct Hit { let point: Vector3; let angle: Double }
-            var hits: [Hit] = []
+            let trimmedCount = performBoxTrim(
+                boxMin: Vector3(x: minX, y: minY, z: 0),
+                boxMax: Vector3(x: maxX, y: maxY, z: 0),
+                isCrossing: isCrossing,
+                engine: engine, processor: processor
+            )
 
-            // Collect all segment-circle intersection points (no sweep filtering — full circle).
-            for edge in cuttingSegments {
-                let pts = intersectSegmentCircle(segmentA: edge.0, segmentB: edge.1, circleCenter: wc, radius: wr)
-                for pt in pts {
-                    let a = atan2(pt.y - wc.y, pt.x - wc.x)
-                    hits.append(Hit(point: pt, angle: a))
-                }
-            }
-
-            if hits.isEmpty {
-                break
+            step = .selectTrimTarget
+            if trimmedCount > 0 {
+                processor.commandPrompt = "\(trimmedCount) object(s) trimmed. Select object to trim or [Fence/Crossing/Cutting edges/Mode/eRase/Undo]:"
             } else {
-                let clickAngle = atan2(rawClick.y - wc.y, rawClick.x - wc.x)
-                let twoPi = 2.0 * .pi
-                func norm(_ v: Double) -> Double { var r = v.truncatingRemainder(dividingBy: twoPi); if r < 0 { r += twoPi }; return r }
-
-                // Deduplicate intersection angles (within 1e-5 tolerance) and sort CCW.
-                var sortedAngles: [Double] = []
-                for h in hits {
-                    let a = norm(h.angle)
-                    if !sortedAngles.contains(where: { abs($0 - a) < 1e-5 || abs($0 - a) > twoPi - 1e-5 }) {
-                        sortedAngles.append(a)
-                    }
-                }
-                sortedAngles.sort()
-                
-                if sortedAngles.isEmpty {
-                    break
-                } else if sortedAngles.count < 2 {
-                    processor.commandPrompt = "Circle needs at least 2 distinct intersections to trim."
-                } else {
-                    // Find which angular segment contains the click.
-                    // segmentIndex is the start of the removed arc.
-                    var segmentIndex = sortedAngles.count - 1
-                    let cAngle = norm(clickAngle)
-                    for i in 0..<sortedAngles.count {
-                        if cAngle < sortedAngles[i] {
-                            segmentIndex = (i == 0) ? sortedAngles.count - 1 : i - 1
-                            break
-                        }
-                    }
-                    
-                    // Remove arc from one intersection to the next (CCW).
-                    // The kept arc goes from removeEnd to removeStart.
-                    let removeStartW = sortedAngles[segmentIndex]
-                    let removeEndW = sortedAngles[(segmentIndex + 1) % sortedAngles.count]
-                    
-                    // Convert back to local angles by subtracting entity rotation.
-                    let localStart = removeEndW - transform.rotation
-                    let localEnd = removeStartW - transform.rotation
-                    
-                    // Circle becomes an arc covering the non-removed portion.
-                    updateTarget([.arc(center: center, radius: radius, startAngle: localStart, endAngle: localEnd, color: color)])
-                }
+                processor.commandPrompt = "No valid trim intersections found. Select object to trim or [Fence/Crossing/Cutting edges/Mode/eRase/Undo]:"
             }
+            return .handled
 
-        // ── .spline: NURBS subdivision trim (preserves spline type) ──
-        // Uses knot-insertion (Boehm's algorithm) to split the NURBS curve at
-        // the intersection parameter, preserving the original spline representation.
-        //
-        // ── Precision strategy for spline–line intersections ──
-        // This addresses a real-world failure mode: when a line endpoint was created
-        // from a spline's previous tessellated trim point, the endpoint visually touches
-        // the spline but misses the true NURBS intersection by a sub-pixel amount.
-        // The tessellated polyline approximation of the spline creates a tiny gap (on
-        // the order of microns in world space) that segment-segment intersection never
-        // catches.
-        //
-        // Two mechanisms close this gap:
-        //   1. **Edge extension** — Each exact line cutting segment is extended by
-        //      `localTolerance` (~4 screen pixels) at both ends before intersection
-        //      testing, so an intersection *just* past the endpoint is still found.
-        //   2. **Endpoint-touch detection** — Each exact line endpoint is projected
-        //      onto the spline; if the distance is within `localTolerance`, the
-        //      projected NURBS parameter is registered as a valid trim hit.
-        //
-        // The intersection search itself runs in two passes:
-        //   - Pass 1: All cutting edges (tessellated) at 96 search segments.
-        //   - Pass 2: Exact line edges only, extended by tolerance, at 256 search
-        //     segments — plus endpoint-touch checks on both original endpoints.
-        case .spline(let controlPoints, let knots, let degree, let weights, let color):
-            let w = weights ?? Array(repeating: 1.0, count: controlPoints.count)
-            let p = degree
-            let minT = knots[p]
-            let maxT = knots[controlPoints.count]
-            /// Dynamic hit-deduplication tolerance — scales with the spline's
-            /// parameter range so wide/long splines use the same relative precision.
-            let parameterDuplicateTolerance = max(1e-6, (maxT - minT) * 1e-7)
-            let scale = max(abs(transform.scale.x), abs(transform.scale.y), 1e-9)
-            /// Screen-space tolerance converted to local (unscaled) coordinates.
-            /// ~4 screen pixels at the current zoom, divided by entity scale.
-            /// Capped at 1e-7 to avoid degenerate ultra-small values.
-            let localTolerance = max(1e-7, (4.0 / engine.camera.zoom) / scale)
-            let localToleranceSq = localTolerance * localTolerance
+        case .fenceSelecting(var points):
+            points.append(rawClick)
+            step = .fenceSelecting(points: points)
+            processor.commandPrompt = "Specify next fence point or press Enter to finish (\(points.count) points):"
+            return .handled
 
-            let localEdges: [(Vector3, Vector3)] = cuttingSegments.map { edge in
-                (invTransform.transformPoint(edge.0),
-                 invTransform.transformPoint(edge.1))
-            }
-            let localExactLineEdges: [(Vector3, Vector3)] = exactLineCuttingSegments.map { edge in
-                (invTransform.transformPoint(edge.0),
-                 invTransform.transformPoint(edge.1))
-            }
-
-            struct SplineHit { let t: Double; let point: Vector3 }
-            var hits: [SplineHit] = []
-
-            func appendHit(t: Double, point: Vector3) {
-                guard t > minT + 1e-8, t < maxT - 1e-8 else { return }
-                if !hits.contains(where: { abs($0.t - t) < parameterDuplicateTolerance }) {
-                    hits.append(SplineHit(t: t, point: point))
-                }
-            }
-
-            /// Extends a line segment at both ends by `amount` in world/local units.
-            /// Used to close the tiny gap between a line endpoint (e.g. a previous
-            /// trim result) and the true NURBS intersection point. By extending the
-            /// segment, the intersection search finds hits that lie infinitesimally
-            /// past the exact endpoint — where the spline physically crosses but the
-            /// unscaled segment ends just short.
-            func extendedEdge(_ edge: (Vector3, Vector3), by amount: Double) -> (Vector3, Vector3) {
-                let dx = edge.1.x - edge.0.x
-                let dy = edge.1.y - edge.0.y
-                let len = hypot(dx, dy)
-                guard len > 1e-12 else { return edge }
-                let ux = dx / len
-                let uy = dy / len
-                return (
-                    Vector3(x: edge.0.x - ux * amount, y: edge.0.y - uy * amount, z: edge.0.z),
-                    Vector3(x: edge.1.x + ux * amount, y: edge.1.y + uy * amount, z: edge.1.z)
-                )
-            }
-
-            /// Detects when a line cutting-edge endpoint lies close enough to the
-            /// spline to count as a valid trim intersection. Projects the endpoint
-            /// onto the NURBS curve using a high-segment closest-parameter search
-            /// and validates the true NURBS distance against `localTolerance`.
-            ///
-            /// This is the key fix for the failure mode where a line endpoint
-            /// (created from a prior spline trim's tessellated output) visually
-            /// touches the spline but misses the exact NURBS intersection by a
-            /// sub-pixel gap in world space.
-            func addEndpointTouchHit(_ endpoint: Vector3) {
-                let t = NURBSEvaluator.findClosestParameter(
-                    degree: p,
-                    knots: knots,
-                    controlPoints: controlPoints,
-                    weights: w,
-                    to: endpoint,
-                    segments: 256)
-
-                guard let point = NURBSEvaluator.evaluateAt(
-                    degree: p,
-                    knots: knots,
-                    controlPoints: controlPoints,
-                    weights: w,
-                    at: t) else { return }
-
-                let dx = point.x - endpoint.x
-                let dy = point.y - endpoint.y
-                if dx * dx + dy * dy <= localToleranceSq {
-                    appendHit(t: t, point: point)
-                }
-            }
-
-            func findHits(on edge: (Vector3, Vector3), searchSegments: Int) {
-                let results = NURBSEvaluator.findIntersectionParameters(
-                    degree: p,
-                    knots: knots,
-                    controlPoints: controlPoints,
-                    weights: w,
-                    segmentA: edge.0,
-                    segmentB: edge.1,
-                    searchSegments: searchSegments
-                )
-                for result in results {
-                    appendHit(t: result.t, point: result.point)
-                }
-            }
-
-            // ── Pass 1: Coarse intersection search over all cutting edges ──
-            // Tessellated primitives (arcs, circles, other splines, etc.) and exact
-            // line segments. 96 segments per edge is sufficient for the adaptive
-            // Newton refinement inside findIntersectionParameters.
-            for edge in localEdges {
-                findHits(on: edge, searchSegments: 96)
-            }
-
-            // ── Pass 2: High-precision pass on exact line cutting edges ──
-            // These are the edges most likely to exhibit the sub-pixel-gap failure
-            // mode (a line endpoint from a prior trim just barely missing the NURBS).
-            //
-            // Two complementary strategies are applied:
-            //   a) Extend each edge by `localTolerance` (~4 screen px), then search
-            //      with 256 segments — catches intersections that lie just past the
-            //      literal segment endpoints.
-            //   b) Check both original endpoints against the spline — catches the
-            //      case where an endpoint sits ON the spline curve but the extended
-            //      segment's line sweeps past it without intersecting.
-            for edge in localExactLineEdges {
-                findHits(on: extendedEdge(edge, by: localTolerance), searchSegments: 256)
-                addEndpointTouchHit(edge.0)
-                addEndpointTouchHit(edge.1)
-            }
-
-            if hits.isEmpty {
-                break
+        // ── Phase 3: eRase Mode ──
+        case .eraseSelecting:
+            if let hitHandle = CADHitTesting.hitTest(
+                worldX: rawWX, worldY: rawWY,
+                document: doc,
+                threshold: 12.0 / engine.camera.zoom,
+                simplifyComplexBlocks: false
+            ) {
+                doc.pushUndo()
+                operationsInSession += 1
+                doc.removeEntities(handles: [hitHandle])
+                doc.invalidateEntityGrid()
+                doc.markEdited(regenerate: true)
+                engine.tabManager.markActiveDirty()
+                recompileCuttingSegments(in: doc)
+                processor.commandPrompt = "Object erased. Select objects to erase or press Enter to return to Trim:"
+                return .handled
             } else {
-                // Compute click parameter along the spline.
-                // Find closest point on the evaluated polyline to the click,
-                // then get the corresponding NURBS parameter.
-                let invClick = invTransform.transformPoint(rawClick)
-                let tClick = NURBSEvaluator.findClosestParameter(
-                    degree: p,
-                    knots: knots,
-                    controlPoints: controlPoints,
-                    weights: w,
-                    to: invClick,
-                    segments: 96)
-
-                var tBefore = minT
-                var tAfter = maxT
-
-                for h in hits {
-                    if h.t < tClick && h.t > tBefore { tBefore = h.t }
-                    if h.t > tClick && h.t < tAfter { tAfter = h.t }
-                }
-
-                var newPrims: [CADPrimitive] = []
-                var subdivisionFailed = false
-
-                if tBefore > minT + 1e-6 {
-                    if let split = NURBSEvaluator.subdivide(
-                        degree: p, knots: knots, controlPoints: controlPoints, weights: w, at: tBefore
-                    ) {
-                        newPrims.append(.spline(
-                            controlPoints: split.left.controlPoints,
-                            knots: split.left.knots,
-                            degree: p,
-                            weights: split.left.weights,
-                            color: color))
-                    } else {
-                        subdivisionFailed = true
-                    }
-                }
-
-                if tAfter < maxT - 1e-6 {
-                    if let split = NURBSEvaluator.subdivide(
-                        degree: p, knots: knots, controlPoints: controlPoints, weights: w, at: tAfter
-                    ) {
-                        newPrims.append(.spline(
-                            controlPoints: split.right.controlPoints,
-                            knots: split.right.knots,
-                            degree: p,
-                            weights: split.right.weights,
-                            color: color))
-                    } else {
-                        subdivisionFailed = true
-                    }
-                }
-
-                if subdivisionFailed {
-                    // Subdivision failed — fall back to polyline trim.
-                    fallthrough
-                }
-
-                if newPrims.isEmpty {
-                    break
-                } else {
-                    updateTarget(newPrims)
-                }
+                step = .eraseBoxSelecting(startWorld: rawClick, startScreen: SDL_FPoint(x: Float(rawScreenX), y: Float(rawScreenY)))
+                processor.commandPrompt = "Specify opposite corner:"
+                return .handled
             }
 
-        // ── default: exploded polyline trim (polygons, ellipses, rects, etc.) ──
-        // Generic trim for any non-line/non-arc/non-circle/non-spline primitive:
-        //   1. Explode primitive into local-space segments (no transform).
-        //   2. Build cumulative length array for parameterizing along polyline.
-        //   3. Find closest segment to click → compute global tClick ∈ [0,1].
-        //   4. Intersect all cutting edges (inverse-transformed to local) with exploded segments.
-        //   5. Choose intersection closest to tClick.
-        //   6. Rebuild the kept portion as `.line()` primitives.
-        default:
-            // Explode in local space (identity transform) for parameterization.
-            let targetSegs = explode(primitive: targetPrim, t: .identity)
-            if targetSegs.isEmpty { deleteTarget(); break }
+        case .eraseBoxSelecting(let startWorld, let startScreen):
+            let minX = min(startWorld.x, rawClick.x)
+            let maxX = max(startWorld.x, rawClick.x)
+            let minY = min(startWorld.y, rawClick.y)
+            let maxY = max(startWorld.y, rawClick.y)
+            let isCrossing = Float(rawScreenX) < startScreen.x
+            let style: CADSelectionManager.RectSelectStyle = isCrossing ? .crossing : .window
 
-            // Cumulative length array: cumLen[i] = total length from start to segment i start.
-            var cumLen: [Double] = [0]
-            for s in targetSegs {
-                let dx: Double = s.1.x - s.0.x
-                let dy: Double = s.1.y - s.0.y
-                let dxSq: Double = dx * dx
-                let dySq: Double = dy * dy
-                let segLen: Double = sqrt(dxSq + dySq)
-                cumLen.append(cumLen.last! + segLen)
+            let handles = CADRectSelect.handlesInRect(
+                worldX: minX, worldY: minY,
+                worldW: maxX - minX, worldH: maxY - minY,
+                document: doc, style: style
+            )
+
+            if !handles.isEmpty {
+                doc.pushUndo()
+                operationsInSession += 1
+                doc.removeEntities(handles: handles)
+                doc.invalidateEntityGrid()
+                doc.markEdited(regenerate: true)
+                engine.tabManager.markActiveDirty()
+                recompileCuttingSegments(in: doc)
+                processor.commandPrompt = "\(handles.count) object(s) erased. Select objects to erase or press Enter to return to Trim:"
             }
-            let totalLen = cumLen.last!
-            guard totalLen > 1e-9 else { deleteTarget(); break }
-
-            // Find which segment contains the click and compute global tClick.
-            var bestSegIdx = 0
-            var bestDistSq = Double.infinity
-            var bestSegTClick = 0.0
-            let invClick = invTransform.transformPoint(rawClick)
-            for (i, s) in targetSegs.enumerated() {
-                let dx: Double = s.1.x - s.0.x
-                let dy: Double = s.1.y - s.0.y
-                let dxSq: Double = dx * dx
-                let dySq: Double = dy * dy
-                let ls: Double = dxSq + dySq
-                var t: Double = 0.0
-                if ls > 1e-18 {
-                    let dX: Double = invClick.x - s.0.x
-                    let dY: Double = invClick.y - s.0.y
-                    let dot: Double = dX * dx + dY * dy
-                    t = dot / ls
-                    t = max(0.0, min(1.0, t))
-                }
-                let qx = s.0.x + t*dx
-                let qy = s.0.y + t*dy
-                let distDX = invClick.x - qx
-                let distDY = invClick.y - qy
-                let distSq = (distDX * distDX) + (distDY * distDY)
-                if distSq < bestDistSq {
-                    bestDistSq = distSq
-                    bestSegIdx = i
-                    bestSegTClick = t
-                }
-            }
-            let tClick = (cumLen[bestSegIdx] + bestSegTClick * (cumLen[bestSegIdx+1] - cumLen[bestSegIdx])) / totalLen
-
-            // Find all intersections between cutting edges and exploded segments.
-            // Edges transformed to local space via inverse transform.
-            struct Hit { let localPoint: Vector3; let t: Double }
-            var hits: [Hit] = []
-
-            for edge in cuttingSegments {
-                let localEdge0 = invTransform.transformPoint(edge.0)
-                let localEdge1 = invTransform.transformPoint(edge.1)
-
-                for (i, s) in targetSegs.enumerated() {
-                    guard let res = CADGeometryMath.segmentSegmentIntersection(a: s.0, b: s.1, c: localEdge0, d: localEdge1) else { continue }
-                    if res.t >= -1e-9 && res.t <= 1.0 + 1e-9 {
-                        let segLen = cumLen[i+1] - cumLen[i]
-                        let globalT = (cumLen[i] + res.t * segLen) / totalLen
-                        if globalT > 1e-9 && globalT < 1.0 - 1e-9 {
-                            hits.append(Hit(localPoint: res.point, t: globalT))
-                        }
-                    }
-                }
-            }
-
-            if hits.isEmpty {
-                break
-            } else {
-                var tBefore = 0.0
-                var tAfter = 1.0
-                for h in hits {
-                    if h.t < tClick && h.t > tBefore { tBefore = h.t }
-                    if h.t > tClick && h.t < tAfter { tAfter = h.t }
-                }
-
-                var newPrims: [CADPrimitive] = []
-                let color = colorForPrimitive(targetPrim)
-                
-                /// Builds `.line()` primitives for the portion of the exploded polyline
-                /// between global parameters startT and endT (both in [0,1]).
-                /// Skips degenerate segments (<1e-9 length).
-                func buildLines(fromT startT: Double, toT endT: Double) {
-                    guard endT > startT else { return }
-                    for (i, s) in targetSegs.enumerated() {
-                        let segStartT = cumLen[i] / totalLen
-                        let segEndT = cumLen[i+1] / totalLen
-                        
-                        if segEndT <= startT + 1e-9 { continue }
-                        if segStartT >= endT - 1e-9 { continue }
-                        
-                        let startDiff: Double = startT - segStartT
-                        let endDiff: Double = endT - segStartT
-                        let segDiff: Double = segEndT - segStartT
-                        let localStartFraction: Double = max(0.0, startDiff / segDiff)
-                        let localEndFraction: Double = min(1.0, endDiff / segDiff)
-                        
-                        let dx: Double = s.1.x - s.0.x
-                        let dy: Double = s.1.y - s.0.y
-                        let pA = Vector3(x: s.0.x + localStartFraction * dx, y: s.0.y + localStartFraction * dy, z: s.0.z)
-                        let pB = Vector3(x: s.0.x + localEndFraction * dx, y: s.0.y + localEndFraction * dy, z: s.0.z)
-                        
-                        let diffX: Double = pB.x - pA.x
-                        let diffY: Double = pB.y - pA.y
-                        let diffXSq: Double = diffX * diffX
-                        let diffYSq: Double = diffY * diffY
-                        if diffXSq + diffYSq > 1e-9 {
-                            newPrims.append(.line(start: pA, end: pB, color: color))
-                        }
-                    }
-                }
-
-                if tBefore > 1e-9 {
-                    buildLines(fromT: 0.0, toT: tBefore)
-                }
-                if tAfter < 1.0 - 1e-9 {
-                    buildLines(fromT: tAfter, toT: 1.0)
-                }
-                
-                if newPrims.isEmpty {
-                    break
-                } else {
-                    updateTarget(newPrims)
-                }
-            }
+            step = .eraseSelecting
+            return .handled
         }
-
-        // ── Step 8: Apply the change ──
-        if !mutationState.didModify {
-            processor.commandPrompt = "No valid trim intersection found. Geometry was left unchanged."
-            return .continue
-        } else if newGeometry.isEmpty {
-            // No primitives remain → delete entity entirely.
-            doc.removeEntities(handles: Set([hitHandle]))
-            engine.cadSelection.clearSelection()
-        } else {
-            doc.updateEntityGeometry(for: hitHandle, geometry: newGeometry)
-        }
-
-        engine.tabManager.markActiveDirty()
-        processor.commandPrompt = "Trimmed. Click another object or Esc to finish."
-
-        return .continue
     }
+
+    // MARK: - Mouse Motion
 
     public func handleMouseMotion(
         worldX: Double, worldY: Double,
         engine: PhrostEngine, processor: CADCommandProcessor
     ) {
-        // No-op — no live preview for trim (would be expensive with explode).
+        currentMouseWorldX = worldX
+        currentMouseWorldY = worldY
+        currentMouseScreenX = Float(engine.interaction.lastMouseX)
+        currentMouseScreenY = Float(engine.interaction.lastMouseY)
     }
+
+    // MARK: - Key Down Handling
 
     public func handleKeyDown(
         scancode: SDL_Scancode, engine: PhrostEngine, processor: CADCommandProcessor
     ) -> CommandResult {
-        if scancode == SDL_SCANCODE_ESCAPE {
-            active = false
-            return .finished
+        switch scancode {
+        case SDL_SCANCODE_ESCAPE:
+            switch step {
+            case .edgeBoxSelecting:
+                step = .selectCuttingEdges
+                processor.commandPrompt = "Select cutting edges ... Select objects or <select all>:"
+                return .handled
+            case .targetBoxSelecting, .fenceSelecting, .eraseSelecting, .eraseBoxSelecting:
+                step = .selectTrimTarget
+                processor.commandPrompt = "Select object to trim or [Fence/Crossing/Cutting edges/Mode/eRase/Undo]:"
+                return .handled
+            case .selectCuttingEdges, .selectTrimTarget:
+                active = false
+                return .finished
+            }
+
+        case SDL_SCANCODE_RETURN, SDL_SCANCODE_KP_ENTER, SDL_SCANCODE_SPACE:
+            switch step {
+            case .selectCuttingEdges:
+                // Commit cutting edges
+                recompileCuttingSegments(in: engine.document)
+                step = .selectTrimTarget
+                if selectedCuttingHandles.isEmpty {
+                    processor.commandPrompt = "All objects selected as cutting edges. Select object to trim or [Fence/Crossing/Cutting edges/Mode/eRase/Undo]:"
+                } else {
+                    processor.commandPrompt = "\(selectedCuttingHandles.count) cutting edge(s) selected. Select object to trim or [Fence/Crossing/Cutting edges/Mode/eRase/Undo]:"
+                }
+                return .handled
+
+            case .fenceSelecting(let points):
+                if points.count >= 2 {
+                    let count = performFenceTrim(points: points, engine: engine, processor: processor)
+                    processor.commandPrompt = "\(count) object(s) trimmed by fence. Select object to trim or [Fence/Crossing/Cutting edges/Mode/eRase/Undo]:"
+                }
+                step = .selectTrimTarget
+                return .handled
+
+            case .eraseSelecting:
+                step = .selectTrimTarget
+                processor.commandPrompt = "Select object to trim or [Fence/Crossing/Cutting edges/Mode/eRase/Undo]:"
+                return .handled
+
+            case .selectTrimTarget:
+                active = false
+                return .finished
+
+            default:
+                return .continue
+            }
+
+        // Shortcuts when in .selectTrimTarget:
+        case SDL_SCANCODE_F where isWaitingForTarget:
+            step = .fenceSelecting(points: [])
+            processor.commandPrompt = "Specify first fence point:"
+            return .handled
+
+        case SDL_SCANCODE_C where isWaitingForTarget:
+            processor.commandPrompt = "Crossing selection: click first corner in drawing area."
+            return .handled
+
+        case SDL_SCANCODE_E where isWaitingForTarget:
+            step = .selectCuttingEdges
+            processor.commandPrompt = "Select cutting edges ... Select objects or <select all>:"
+            return .handled
+
+        case SDL_SCANCODE_M where isWaitingForTarget:
+            currentMode = (currentMode == .standard) ? .quick : .standard
+            Self.preferredMode = currentMode
+            recompileCuttingSegments(in: engine.document)
+            processor.commandPrompt = "TRIM mode set to \(currentMode.rawValue.uppercased()). Select object to trim or [Fence/Crossing/Cutting edges/Mode/eRase/Undo]:"
+            return .handled
+
+        case SDL_SCANCODE_R where isWaitingForTarget:
+            step = .eraseSelecting
+            processor.commandPrompt = "Select objects to erase or press Enter to return to Trim:"
+            return .handled
+
+        case SDL_SCANCODE_U where isWaitingForTarget:
+            return performUndo(engine: engine, processor: processor)
+
+        default:
+            return .continue
         }
+    }
+
+    private var isWaitingForTarget: Bool {
+        if case .selectTrimTarget = step { return true }
+        return false
+    }
+
+    // MARK: - Command Text Handling
+
+    public func handleCommandText(
+        _ text: String,
+        engine: PhrostEngine,
+        processor: CADCommandProcessor
+    ) -> CommandResult {
+        let upper = text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+
+        switch step {
+        case .selectCuttingEdges:
+            if upper == "ALL" || upper == "SELECT ALL" || upper == "" {
+                selectedCuttingHandles.removeAll()
+                recompileCuttingSegments(in: engine.document)
+                step = .selectTrimTarget
+                processor.commandPrompt = "All objects selected as cutting edges. Select object to trim or [Fence/Crossing/Cutting edges/Mode/eRase/Undo]:"
+                return .handled
+            } else if upper == "M" || upper == "MODE" {
+                currentMode = (currentMode == .standard) ? .quick : .standard
+                Self.preferredMode = currentMode
+                recompileCuttingSegments(in: engine.document)
+                processor.commandPrompt = "TRIM mode set to \(currentMode.rawValue.uppercased()). Select cutting edges ... Select objects or <select all>:"
+                return .handled
+            }
+
+        case .selectTrimTarget:
+            switch upper {
+            case "F", "FENCE":
+                step = .fenceSelecting(points: [])
+                processor.commandPrompt = "Specify first fence point:"
+                return .handled
+
+            case "C", "CROSSING":
+                processor.commandPrompt = "Crossing selection: click first corner in drawing area."
+                return .handled
+
+            case "E", "CUTTING", "EDGES", "CUTTING EDGES":
+                step = .selectCuttingEdges
+                processor.commandPrompt = "Select cutting edges ... Select objects or <select all>:"
+                return .handled
+
+            case "M", "MODE":
+                currentMode = (currentMode == .standard) ? .quick : .standard
+                Self.preferredMode = currentMode
+                recompileCuttingSegments(in: engine.document)
+                processor.commandPrompt = "TRIM mode set to \(currentMode.rawValue.uppercased()). Select object to trim or [Fence/Crossing/Cutting edges/Mode/eRase/Undo]:"
+                return .handled
+
+            case "R", "ERASE":
+                step = .eraseSelecting
+                processor.commandPrompt = "Select objects to erase or press Enter to return to Trim:"
+                return .handled
+
+            case "U", "UNDO":
+                return performUndo(engine: engine, processor: processor)
+
+            default:
+                break
+            }
+
+        default:
+            break
+        }
+
         return .continue
     }
 
+    public func commandTextOptions(for input: String) -> [FeatureCommandTextOption] {
+        switch step {
+        case .selectCuttingEdges:
+            return [
+                .init(value: "ALL", title: "Select all", aliases: ["A"]),
+                .init(value: "M", title: "Mode", aliases: ["MODE"], description: "Toggle Quick vs Standard")
+            ]
+        case .selectTrimTarget:
+            return [
+                .init(value: "F", title: "Fence", aliases: ["FENCE"], description: "Draw fence line to trim"),
+                .init(value: "C", title: "Crossing", aliases: ["CROSSING"], description: "Crossing window trim"),
+                .init(value: "E", title: "Cutting edges", aliases: ["CUTTING", "EDGES"], description: "Change cutting edges"),
+                .init(value: "M", title: "Mode", aliases: ["MODE"], description: "Toggle Quick vs Standard"),
+                .init(value: "R", title: "eRase", aliases: ["ERASE"], description: "Delete entities directly"),
+                .init(value: "U", title: "Undo", aliases: ["UNDO"], description: "Revert last trim operation")
+            ]
+        default:
+            return []
+        }
+    }
+
+    // MARK: - Trimming Execution
+
+    private func performSingleTrim(
+        on hitHandle: UUID,
+        rawClick: Vector3,
+        engine: PhrostEngine,
+        processor: CADCommandProcessor
+    ) -> Bool {
+        let doc = engine.document
+        guard let entity = doc.entity(for: hitHandle) else { return false }
+        guard entity.blockID == nil else {
+            processor.commandPrompt = "Cannot trim block references. Explode them first."
+            return false
+        }
+
+        let preSnapshot = doc.snapshot()
+        let criterion = TrimCriterion.click(point: rawClick)
+
+        let (newGeom, modified, errorMsg) = TrimGeometryEngine.trimEntity(
+            entity: entity,
+            document: doc,
+            criterion: criterion,
+            cuttingSegments: cachedCuttingSegments,
+            exactLines: cachedExactLineSegments,
+            zoom: engine.camera.zoom
+        )
+
+        if let errorMsg {
+            processor.commandPrompt = errorMsg
+            return false
+        }
+
+        guard modified, let geom = newGeom else {
+            processor.commandPrompt = "No valid trim intersection found. Geometry was left unchanged."
+            return false
+        }
+
+        doc.pushUndo(preSnapshot)
+        operationsInSession += 1
+
+        if geom.isEmpty {
+            doc.removeEntities(handles: [hitHandle])
+            engine.cadSelection.clearSelection()
+        } else {
+            doc.updateEntityGeometryLive(for: hitHandle, geometry: geom)
+        }
+
+        doc.invalidateEntityGrid()
+        doc.markEdited(regenerate: true)
+        engine.tabManager.markActiveDirty()
+
+        // If the trimmed entity was a cutting edge, refresh cached cutting edges
+        if selectedCuttingHandles.contains(hitHandle) || selectedCuttingHandles.isEmpty {
+            recompileCuttingSegments(in: doc)
+        }
+
+        return true
+    }
+
+    private func performBoxTrim(
+        boxMin: Vector3, boxMax: Vector3, isCrossing: Bool,
+        engine: PhrostEngine, processor: CADCommandProcessor
+    ) -> Int {
+        let doc = engine.document
+        let criterion = TrimCriterion.rect(min: boxMin, max: boxMax, isCrossing: isCrossing)
+        let style: CADSelectionManager.RectSelectStyle = isCrossing ? .crossing : .window
+
+        let candidateHandles = CADRectSelect.handlesInRect(
+            worldX: boxMin.x, worldY: boxMin.y,
+            worldW: boxMax.x - boxMin.x, worldH: boxMax.y - boxMin.y,
+            document: doc, style: style
+        )
+
+        guard !candidateHandles.isEmpty else { return 0 }
+
+        let preSnapshot = doc.snapshot()
+        var modifiedEntities: [(UUID, [CADPrimitive])] = []
+        var deletedHandles: Set<UUID> = []
+
+        for handle in candidateHandles {
+            guard let entity = doc.entity(for: handle) else { continue }
+            guard let layer = doc.layer(for: entity.layerID), layer.isVisible else { continue }
+            guard entity.blockID == nil else { continue }
+
+            let (newGeom, modified, _) = TrimGeometryEngine.trimEntity(
+                entity: entity,
+                document: doc,
+                criterion: criterion,
+                cuttingSegments: cachedCuttingSegments,
+                exactLines: cachedExactLineSegments,
+                zoom: engine.camera.zoom
+            )
+
+            if modified, let geom = newGeom {
+                if geom.isEmpty {
+                    deletedHandles.insert(handle)
+                } else {
+                    modifiedEntities.append((handle, geom))
+                }
+            }
+        }
+
+        guard !modifiedEntities.isEmpty || !deletedHandles.isEmpty else { return 0 }
+
+        doc.pushUndo(preSnapshot)
+        operationsInSession += 1
+
+        for (handle, geom) in modifiedEntities {
+            doc.updateEntityGeometryLive(for: handle, geometry: geom)
+        }
+        for handle in deletedHandles {
+            doc.removeEntities(handles: [handle])
+        }
+
+        doc.invalidateEntityGrid()
+        doc.markEdited(regenerate: true)
+        engine.tabManager.markActiveDirty()
+
+        recompileCuttingSegments(in: doc)
+
+        return modifiedEntities.count + deletedHandles.count
+    }
+
+    private func performFenceTrim(
+        points: [Vector3],
+        engine: PhrostEngine,
+        processor: CADCommandProcessor
+    ) -> Int {
+        guard points.count >= 2 else { return 0 }
+        let doc = engine.document
+        let preSnapshot = doc.snapshot()
+
+        var modifiedEntities: [UUID: [CADPrimitive]] = [:]
+        var deletedHandles: Set<UUID> = []
+
+        for i in 0..<(points.count - 1) {
+            let p1 = points[i]
+            let p2 = points[i + 1]
+            let criterion = TrimCriterion.fence(p1: p1, p2: p2)
+
+            for entity in doc.entitiesView {
+                let handle = entity.handle
+                guard !deletedHandles.contains(handle) else { continue }
+                guard let layer = doc.layer(for: entity.layerID), layer.isVisible else { continue }
+                guard entity.blockID == nil else { continue }
+
+                // Quick bounding box rejection
+                let segMinX = min(p1.x, p2.x)
+                let segMaxX = max(p1.x, p2.x)
+                let segMinY = min(p1.y, p2.y)
+                let segMaxY = max(p1.y, p2.y)
+                if let bb = entity.worldBoundingBox {
+                    if bb.max.x < segMinX || bb.min.x > segMaxX ||
+                       bb.max.y < segMinY || bb.min.y > segMaxY {
+                        continue
+                    }
+                }
+
+                // If already partially modified in earlier fence segments, use current state
+                var currentEntity = entity
+                if let intermediate = modifiedEntities[handle] {
+                    currentEntity.localGeometry = intermediate
+                }
+
+                let (newGeom, modified, _) = TrimGeometryEngine.trimEntity(
+                    entity: currentEntity,
+                    document: doc,
+                    criterion: criterion,
+                    cuttingSegments: cachedCuttingSegments,
+                    exactLines: cachedExactLineSegments,
+                    zoom: engine.camera.zoom
+                )
+
+                if modified, let geom = newGeom {
+                    if geom.isEmpty {
+                        deletedHandles.insert(handle)
+                        modifiedEntities.removeValue(forKey: handle)
+                    } else {
+                        modifiedEntities[handle] = geom
+                    }
+                }
+            }
+        }
+
+        guard !modifiedEntities.isEmpty || !deletedHandles.isEmpty else { return 0 }
+
+        doc.pushUndo(preSnapshot)
+        operationsInSession += 1
+
+        for (handle, geom) in modifiedEntities {
+            doc.updateEntityGeometryLive(for: handle, geometry: geom)
+        }
+        for handle in deletedHandles {
+            doc.removeEntities(handles: [handle])
+        }
+
+        doc.invalidateEntityGrid()
+        doc.markEdited(regenerate: true)
+        engine.tabManager.markActiveDirty()
+
+        recompileCuttingSegments(in: doc)
+
+        return modifiedEntities.count + deletedHandles.count
+    }
+
+    private func performUndo(engine: PhrostEngine, processor: CADCommandProcessor) -> CommandResult {
+        guard operationsInSession > 0 else {
+            processor.commandPrompt = "Nothing to undo in this TRIM session."
+            return .handled
+        }
+
+        engine.document.undo()
+        operationsInSession -= 1
+        recompileCuttingSegments(in: engine.document)
+        processor.commandPrompt = "Undo trim. Select object to trim or [Fence/Crossing/Cutting edges/Mode/eRase/Undo]:"
+        return .handled
+    }
+
+    private func recompileCuttingSegments(in doc: CADDocument) {
+        let (allSegs, exactLines) = TrimGeometryEngine.collectCuttingSegments(
+            document: doc,
+            cuttingHandles: selectedCuttingHandles.isEmpty ? nil : selectedCuttingHandles,
+            excludedHandle: nil
+        )
+        self.cachedCuttingSegments = allSegs
+        self.cachedExactLineSegments = exactLines
+    }
+
+    // MARK: - Overlay Rendering
+
     public func renderOverlay(cam: CameraTransform, engine: PhrostEngine) {
-        // No overlay — trim shows no preview graphics.
+        guard active else { return }
+        guard let drawList = igGetForegroundDrawList_ViewportPtr(nil) else { return }
+
+        // 1. Highlight Cutting Edges (cyan glow)
+        if !selectedCuttingHandles.isEmpty {
+            let cuttingEdgeCol = makeCol32(0, 220, 255, 230)
+            for segment in cachedCuttingSegments {
+                let p1 = EngineCameraManager.worldToScreen(worldX: segment.0.x, worldY: segment.0.y, cam: cam)
+                let p2 = EngineCameraManager.worldToScreen(worldX: segment.1.x, worldY: segment.1.y, cam: cam)
+                ImDrawListAddLine(drawList, ImVec2(x: p1.x, y: p1.y), ImVec2(x: p2.x, y: p2.y), cuttingEdgeCol, 2.0)
+            }
+        }
+
+        // 2. Selection Box Overlay
+        switch step {
+        case .edgeBoxSelecting(let startWorld, let startScreen),
+             .targetBoxSelecting(let startWorld, let startScreen),
+             .eraseBoxSelecting(let startWorld, let startScreen):
+
+            let p1 = EngineCameraManager.worldToScreen(worldX: startWorld.x, worldY: startWorld.y, cam: cam)
+            let p3 = EngineCameraManager.worldToScreen(worldX: currentMouseWorldX, worldY: currentMouseWorldY, cam: cam)
+
+            let minSX = min(p1.x, p3.x)
+            let maxSX = max(p1.x, p3.x)
+            let minSY = min(p1.y, p3.y)
+            let maxSY = max(p1.y, p3.y)
+
+            let p1Draw = ImVec2(x: minSX, y: minSY)
+            let p2Draw = ImVec2(x: maxSX, y: minSY)
+            let p3Draw = ImVec2(x: maxSX, y: maxSY)
+            let p4Draw = ImVec2(x: minSX, y: maxSY)
+
+            let isCrossing = currentMouseScreenX < startScreen.x
+            let borderCol: UInt32
+            let fillCol: UInt32
+
+            if isCrossing {
+                // Green crossing window
+                borderCol = makeCol32(64, 220, 80, 240)
+                fillCol = makeCol32(64, 180, 80, 45)
+            } else {
+                // Blue window
+                borderCol = makeCol32(0, 150, 255, 240)
+                fillCol = makeCol32(0, 128, 255, 45)
+            }
+
+            ImDrawListAddRectFilled(drawList, p1Draw, p3Draw, fillCol, 0.0, 0)
+            ImDrawListAddLine(drawList, p1Draw, p2Draw, borderCol, 1.5)
+            ImDrawListAddLine(drawList, p2Draw, p3Draw, borderCol, 1.5)
+            ImDrawListAddLine(drawList, p3Draw, p4Draw, borderCol, 1.5)
+            ImDrawListAddLine(drawList, p4Draw, p1Draw, borderCol, 1.5)
+
+        // 3. Fence Line Overlay
+        case .fenceSelecting(let points):
+            let fenceCol = makeCol32(255, 170, 0, 240)
+            if !points.isEmpty {
+                for i in 0..<(points.count - 1) {
+                    let s1 = EngineCameraManager.worldToScreen(worldX: points[i].x, worldY: points[i].y, cam: cam)
+                    let s2 = EngineCameraManager.worldToScreen(worldX: points[i+1].x, worldY: points[i+1].y, cam: cam)
+                    ImDrawListAddLine(drawList, ImVec2(x: s1.x, y: s1.y), ImVec2(x: s2.x, y: s2.y), fenceCol, 2.0)
+                }
+                // Rubber-band from last point to cursor
+                if let last = points.last {
+                    let sLast = EngineCameraManager.worldToScreen(worldX: last.x, worldY: last.y, cam: cam)
+                    let sCur = EngineCameraManager.worldToScreen(worldX: currentMouseWorldX, worldY: currentMouseWorldY, cam: cam)
+                    ImDrawListAddLine(drawList, ImVec2(x: sLast.x, y: sLast.y), ImVec2(x: sCur.x, y: sCur.y), fenceCol, 1.5)
+                }
+            }
+
+        default:
+            break
+        }
     }
 }
