@@ -52,7 +52,7 @@ On top of that, finding great cross-platform tools that treat macOS and Linux as
 - **QCAD/LibreCAD replacement** — DXF parsing that actually works: MText formatting, SHX shape fonts, NURBS splines, dimension styles, and title blocks all render correctly. No raw escape codes leaking into labels, no scrambled curves, no missing logos.
 - **AutoCAD LT alternative** — AutoCAD muscle memory preserved. `L`, `PL`, `C`, `REC`, `M`, `TR`, `J` all work. Command palette with fuzzy autocomplete, polar tracking, object snap tracking, grips, and a full snap engine.
 - **GPU-native** — Metal on macOS, Direct3D 12 on Windows, Vulkan on Linux. Single Swift rendering pipeline. 120 FPS canvas with pixel-perfect GPU picking. No OpenGL emulation layer.
-- **Free forever** — GPL v3. No account, no email gate, no subscription. ~14 MB download.
+- **Free forever** — GPL v3. No account, no email gate, no subscription.
 
 ## Current Features
 
