@@ -239,7 +239,7 @@
           <li style="display:flex; gap:10px;"><span style="color:var(--accent);">✓</span> Universal binary, Apple silicon native</li>
           <li style="display:flex; gap:10px;"><span style="color:var(--accent);">✓</span> Real Cmd shortcuts, real trackpad gestures</li>
           <li style="display:flex; gap:10px;"><span style="color:var(--accent);">✓</span> High DPI on every external display</li>
-          <li style="display:flex; gap:10px;"><span style="color:var(--accent);">✓</span> Files app, Quick Look, drag‑and‑drop</li>
+          <li style="display:flex; gap:10px;"><span style="color:var(--accent);">✓</span> Drag‑and‑drop to open files</li>
         </ul>
       </div>
       <!-- win card -->
@@ -408,8 +408,9 @@
         <div style="font-family:'Geist Mono'; font-size:32px; font-weight:500; letter-spacing:-0.02em;">DWG</div>
         <div style="display:flex; gap:6px; margin-top:8px; margin-bottom:18px;">
           <span style="font-family:'Geist Mono'; font-size:10px; padding:2px 7px; background:var(--accent); color:var(--navy); border-radius:3px;">IMPORT</span>
+          <span style="font-family:'Geist Mono'; font-size:10px; padding:2px 7px; background:var(--accent); color:var(--navy); border-radius:3px;">EXPORT</span>
         </div>
-        <div style="font-size:13px; color:var(--text-2); line-height:1.5;">Full read via libdxfrw bridge. All entity types, blocks, layers, text styles, hatches.</div>
+        <div style="font-size:13px; color:var(--text-2); line-height:1.5;">Read/write via ODA FileConverter. All entity types, blocks, layers, text styles, hatches.</div>
       </div>
       <div style="border:1px solid var(--border-soft); border-radius:12px; padding:24px; background:var(--bg-elev);">
         <div style="font-family:'Geist Mono'; font-size:32px; font-weight:500; letter-spacing:-0.02em;">DXF</div>
@@ -422,9 +423,10 @@
       <div style="border:1px solid var(--border-soft); border-radius:12px; padding:24px; background:var(--bg-elev);">
         <div style="font-family:'Geist Mono'; font-size:32px; font-weight:500; letter-spacing:-0.02em;">PDF</div>
         <div style="display:flex; gap:6px; margin-top:8px; margin-bottom:18px;">
+          <span style="font-family:'Geist Mono'; font-size:10px; padding:2px 7px; background:var(--accent); color:var(--navy); border-radius:3px;">IMPORT</span>
           <span style="font-family:'Geist Mono'; font-size:10px; padding:2px 7px; background:var(--accent); color:var(--navy); border-radius:3px;">EXPORT</span>
         </div>
-        <div style="font-size:13px; color:var(--text-2); line-height:1.5;">Vector PDF 1.7 with Bluebeam Revu‑compatible Measurement dictionary.</div>
+        <div style="font-size:13px; color:var(--text-2); line-height:1.5;">Vector PDF 1.7 with Bluebeam Revu‑compatible Measurement dictionary. Import pages as underlays.</div>
       </div>
       <div style="border:1px solid var(--border-soft); border-radius:12px; padding:24px; background:var(--bg-elev);">
         <div style="font-family:'Geist Mono'; font-size:32px; font-weight:500; letter-spacing:-0.02em;">EAB</div>
@@ -1098,10 +1100,10 @@ class Component extends DCLogic {
       workflowCells: [
         { tag: 'MEASURE',  title: 'Quick Measure',  cmd: 'MEA · MEASUREGEOM',
           body: 'Hover anywhere. Orthogonal raycasts ±X, ±Y find the nearest geometry in real time; side lengths and interior angles overlay live.' },
-        { tag: 'TABS',     title: 'Multi‑drawing tabs',  cmd: '⌘T new · ⌘W close',
+        { tag: 'TABS',     title: 'Multi‑drawing tabs',  cmd: '⌘N new · ⌘W close',
           body: 'Open every file at once. Dirty‑state tracking, unsaved‑changes confirmation, instant tab switching with no regeneration stall.' },
-        { tag: 'PALETTE',  title: 'Command line',  cmd: 'SPACE',
-          body: 'Press space. Type. 46 registered commands across 7 categories, fuzzy‑matched autocomplete with Tab cycling. AutoCAD muscle memory works.' },
+        { tag: 'PALETTE',  title: 'Command line',  cmd: 'TYPE ANY LETTER',
+          body: 'Type any letter to open. 127 registered commands across 7 categories, fuzzy‑matched autocomplete with Tab cycling. Space repeats the last command. AutoCAD muscle memory works.' },
         { tag: 'SNAP',     title: 'Snap engine',  cmd: '9 anchor types',
           body: 'Two‑tier: AABB proximity filter then exact distance to center, vertex, midpoint, insertion, quadrant, perpendicular, tangent, nearest, intersection.' },
         { tag: 'TRACK',    title: 'Polar + OTRACK',  cmd: 'OTRACK · EXT',
@@ -1112,8 +1114,8 @@ class Component extends DCLogic {
           body: 'Edit a block reference in isolation, BCLOSE to save. SIMPLIFY swaps heavy blocks for bounding‑box stand‑ins to keep pan/zoom responsive.' },
         { tag: 'LAYERS',   title: 'Layer move',  cmd: 'LM / LAYMOVE',
           body: 'Pick entities, type LM, autocomplete the destination layer. Full layer table with ACI color indexing and per‑layer line type / weight.' },
-        { tag: 'CONSTR.',  title: '17 constraints',  cmd: 'parametric',
-          body: 'Coincident, parallel, perpendicular, tangent, concentric, distance, angle, fix, midpoint, collinear, symmetric, offset — and six more.' },
+        { tag: 'CONSTR.',  title: '15 constraints',  cmd: 'parametric',
+          body: 'Coincident, parallel, perpendicular, tangent, concentric, distance, angle, fix, midpoint, collinear, symmetric, offset — and three more.' },
       ],
 
       compareRows: [
@@ -1124,7 +1126,7 @@ class Component extends DCLogic {
         { label: 'Native Windows ARM64',           zephyr: '✓',            autocad: 'Emulation',    qcad: '—' },
         { label: 'Native Linux (Vulkan)',            zephyr: '✓',            autocad: '—',            qcad: '✓' },
         { label: 'GPU‑accelerated rendering',      zephyr: '✓',            autocad: 'Partial',      qcad: '—' },
-        { label: 'DWG read',                       zephyr: '✓',            autocad: '✓',            qcad: 'Varies' },
+        { label: 'DWG read/write',                       zephyr: '✓',            autocad: '✓',            qcad: 'Varies' },
         { label: 'DXF R2007 round‑trip',           zephyr: '✓',            autocad: '✓',            qcad: '✓' },
         { label: 'PDF export w/ measurements',     zephyr: '✓ Bluebeam',   autocad: '✓',            qcad: 'Flat' },
         { label: 'AutoLISP automation',             zephyr: '✓ 305 builtins', autocad: 'Win only (LT)', qcad: '—' },

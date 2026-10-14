@@ -57,7 +57,7 @@ On top of that, finding great cross-platform tools that treat macOS and Linux as
 ## Current Features
 
 ### File I/O
-- **DWG import/export** — Full read/write via libreDWG. Blocks, layers, text styles, hatches, splines, polylines with bulge, dimensions. Native DWG round-trip.
+- **DWG import/export** — Full read/write via ODA FileConverter. Blocks, layers, text styles, hatches, splines, polylines with bulge, dimensions. Native DWG round-trip.
 - **DXF import/export** — R2007 round-trip. Dimensions, splines, hatches, leaders all preserved. Layer transparency (group code 440) supported.
 - **PDF export** — Vector PDF 1.7 with Bluebeam Revu-compatible Measurement dictionary.
 - **PDF import** — Cross-platform: PDFKit on macOS, PDFium on Windows/Linux. Page selector with preview. Raster underlay at 150 DPI.
