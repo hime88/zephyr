@@ -141,7 +141,7 @@ struct AppUI {
             DataTablePanelUI.render(engine: engine)
         }
 
-        // 8. Command line overlay at the bottom (when active via Space key).
+        // 8. Command line overlay at the bottom (opened by typing any letter key).
         CommandLineUI.render(engine: engine, dw: dw, dh: dh)
 
         // 9. Layer-move modal dialog (when moving entities between layers).

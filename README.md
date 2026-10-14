@@ -268,7 +268,7 @@ Runnable examples live in `Engine/EngineAsBuilt/Tools/lisp/examples/` (`SHAPES`,
 Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, ActiveX automation, and ARX/VLX/VBA application loading.
 
 ### UI
-- **Command palette** — Press Space, type, Tab-cycle through fuzzy-matched autocomplete. 100+ registered commands with descriptions and syntax hints.
+- **Command palette** — Type any letter to open, Tab-cycle through fuzzy-matched autocomplete. Space repeats the last command (AutoCAD-style). 100+ registered commands with descriptions and syntax hints.
 - **Multi-drawing tabs** — Open multiple files, dirty-state tracking, unsaved-changes confirmation. Tab management commands: `NEW`, `CLOSE`, `CLOSEALL`, `CLOSEALLOTHERS`.
 - **Draw palette** — Visual tool picker with categorized commands.
 - **Layer panel** — Visibility toggles, color swatches, opacity sliders, entity counts.

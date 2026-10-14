@@ -22,7 +22,7 @@ import ImGui
 //    │  ...                                     │
 //    ├──────────────────────────────────────────┤
 //    │  ↑↓ nav  ↵ run  Tab  esc dismiss         │  ← Footer
-//    │         space to invoke · fuzzy          │
+//    │         type to filter · fuzzy           │
 //    └──────────────────────────────────────────┘
 //
 // ## Item Layout
@@ -117,7 +117,7 @@ struct CommandAutocompleteUI {
     /// 2. **Item list** — Category group headers followed by individual command
     ///    rows. Items are interactive: clicking or pressing Enter on a
     ///    highlighted item executes the command.
-    /// 3. **Footer** — Keyboard shortcut hints (arrows, Enter, Tab, Esc, Space).
+    /// 3. **Footer** — Keyboard shortcut hints (arrows, Enter, Tab, Esc) plus a fuzzy-match note.
     ///
     /// - Parameters:
     ///   - engine: The engine instance providing access to the theme, fonts,
@@ -527,7 +527,7 @@ struct CommandAutocompleteUI {
         // ================================================================
         // Two lines of keyboard shortcut hints, drawn in small font:
         //   Left:  ↑↓ navigate   ↵ run   Tab complete   esc dismiss
-        //   Right: space to invoke · fuzzy match
+        //   Right: type to filter · fuzzy match
         ImGuiDummy(ImVec2(x: 0, y: 4))
 
         if let small = engine.ui.smallFont { ImGuiPushFont(small, 0.0) }
@@ -535,7 +535,7 @@ struct CommandAutocompleteUI {
         let hintsLeft = "\u{2191}\u{2193} navigate   \u{23CE} run   Tab complete   esc dismiss"
         ImGuiTextV(hintsLeft)
 
-        let hintsRight = "space to invoke \u{00B7} fuzzy match"
+        let hintsRight = "type to filter \u{00B7} fuzzy match"
         let hw = ImGuiCalcTextSize(hintsRight, nil, false, -1).x
         ImGuiSameLine(cmdW - 32 - hw, 0)
         ImGuiTextV(hintsRight)

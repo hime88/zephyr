@@ -209,7 +209,7 @@ struct ToolbarUI {
                             "%d entities selected  |  Drag to move  |  Grips to scale/rotate", selCount)
                     }
                 } else {
-                    ImGuiTextV("No selection  |  Click/drag to select  |  Space for commands")
+                    ImGuiTextV("No selection  |  Click/drag to select  |  Type for commands, Space repeats last")
                 }
             }
 

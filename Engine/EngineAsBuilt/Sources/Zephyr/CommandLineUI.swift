@@ -5,11 +5,11 @@ import ImGui
 // MARK: - CommandLineUI
 //
 // Renders the command-line interface at the bottom of the screen.
-// Activated by the Space key, this provides an AutoCAD-style command prompt
+// Activated by typing any letter key, this provides an AutoCAD-style command prompt
 // with input buffer, autocomplete popup, and Up/Down arrow history.
 //
 // Key behaviors:
-//   - Space: Toggle command line open/closed
+//   - Space: Literal space in the buffer (repeat-last-command only fires when idle)
 //   - Tab: Auto-complete to the first match
 //   - Up/Down: Navigate through autocomplete matches
 //   - Enter: Execute the current buffer or selected autocomplete match
