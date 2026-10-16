@@ -67,6 +67,8 @@ public final class EngineLoopController {
             let primaryCtx = engine.renderer.primaryCtx
             let secondaryBuildActive = engine.renderer.secondaryCtxs.values.contains {
                 $0.regenInFlight != nil || $0.vbInFlightToken != nil
+            } || engine.renderer.paneCtxs.values.contains {
+                $0.regenInFlight != nil || $0.vbInFlightToken != nil
             }
             let isActionActive =
                 interaction.dragActive || interaction.panActive || interaction.touchPanActive

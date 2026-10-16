@@ -732,14 +732,6 @@ public final class PhrostEngine {
         self.ui.hasCompletedSetup = settings.hasCompletedSetup
         self.ui.radialNavVisible = settings.radialNavVisible
 
-        // Debug milestone for multi-window support: open an empty second OS
-        // window. Set ZEPHYR_DEBUG_WINDOW=1 in the environment to enable.
-        if ProcessInfo.processInfo.environment["ZEPHYR_DEBUG_WINDOW"] == "1" {
-            if let aux = createAuxWindow(title: "Zephyr — Debug Window", width: 800, height: 600) {
-                print("[Engine] Debug aux window created (id \(aux.id)).")
-            }
-        }
-
         print("Zephyr Initialized Successfully")
     }
 
@@ -973,10 +965,12 @@ public final class PhrostEngine {
             // the pane's last displayed view. Skipped when it already showed
             // the incoming tab (re-entrant focus): its entry is intact.
             if let fromTab, fromTab != activeID,
-               let state = tabManager.tab(for: fromTab)?.cameraState {
-                paneViews.save(leafID: fromID, tabID: fromTab, state: state)
+               let tab = tabManager.tab(for: fromTab) {
+                paneViews.save(
+                    leafID: fromID, tabID: fromTab,
+                    viewIndex: tab.activeViewIndex, state: tab.cameraState)
             }
-            _ = restorePaneView(leafID: leaf.id, tabID: activeID)
+            _ = adoptPaneView(leafID: leaf.id, tabID: activeID)
         } else {
             mainPanes.rebindLeaf(mainPanes.focusedLeafID, to: activeID)
         }
@@ -985,39 +979,53 @@ public final class PhrostEngine {
 
     // MARK: - Pane Camera Views
 
-    /// Remember the live camera as `leafID`'s view of `tabID`. Call when the
-    /// pane is becoming non-focused; the focused pane needs no entry.
+    /// Remember the live camera and active drawing view as `leafID`'s view
+    /// of `tabID`. Call when the pane is becoming non-focused; the focused
+    /// pane needs no entry.
     public func savePaneView(leafID: UUID, tabID: UUID?) {
         guard let capture = tabManager.captureCameraState else { return }
-        paneViews.save(leafID: leafID, tabID: tabID, state: capture())
+        let viewIndex = tabID.flatMap { tabManager.tab(for: $0)?.activeViewIndex } ?? 0
+        paneViews.save(leafID: leafID, tabID: tabID, viewIndex: viewIndex, state: capture())
     }
 
-    /// Apply `leafID`'s remembered view of `tabID` to the live camera,
-    /// consuming the entry. Call when the pane gains focus.
+    /// Adopt `leafID`'s remembered view of `tabID` (now the active tab),
+    /// consuming the entry: sync the tab's active drawing view (Model,
+    /// paper layout, ...) so the primary pipeline and editing follow the
+    /// pane, then apply its camera. Call when the pane gains focus.
     /// - Returns: False when no view was remembered (caller keeps the live
     ///   camera — the pane was already showing it).
     @discardableResult
-    public func restorePaneView(leafID: UUID, tabID: UUID?) -> Bool {
-        guard let state = paneViews.take(leafID: leafID, tabID: tabID) else { return false }
-        tabManager.applyCameraState?(state)
+    public func adoptPaneView(leafID: UUID, tabID: UUID?) -> Bool {
+        guard let entry = paneViews.take(leafID: leafID, tabID: tabID) else { return false }
+        if let tabID, tabID == tabManager.activeTab?.id,
+           let tab = tabManager.tab(for: tabID),
+           entry.viewIndex >= 0, entry.viewIndex < tab.drawingViews.count,
+           entry.viewIndex != tab.activeViewIndex {
+            _ = tabManager.switchToView(at: entry.viewIndex)
+        }
+        tabManager.applyCameraState?(entry.state)
         return true
     }
 
     /// Give every non-focused pane showing `tabID` a remembered view for the
     /// tab switch that just completed, preserving what each pane displayed:
-    /// its own remembered view when present, else the tab's cameraState
-    /// (which the switch left untouched for the incoming tab).
+    /// its own remembered entry when present, else the tab's active drawing
+    /// view and camera (which the switch left untouched for the incoming tab).
     public func ensurePaneViews(for tabID: UUID) {
         guard mainPanes.isSplit else { return }
-        let fallback = tabManager.tab(for: tabID)?.cameraState
+        let tab = tabManager.tab(for: tabID)
+        let fallbackState = tab?.cameraState
             ?? tabManager.captureCameraState?()
             ?? CameraState.default
+        let fallbackView = tab?.activeViewIndex ?? 0
         for node in mainPanes.leaves() {
             guard case .leaf(let id, let shown) = node,
                   shown == tabID, id != mainPanes.focusedLeafID,
-                  paneViews.view(leafID: id, tabID: tabID) == nil
+                  paneViews.entry(leafID: id, tabID: tabID) == nil
             else { continue }
-            paneViews.save(leafID: id, tabID: tabID, state: fallback)
+            paneViews.save(
+                leafID: id, tabID: tabID,
+                viewIndex: fallbackView, state: fallbackState)
         }
     }
 
@@ -1132,14 +1140,14 @@ public final class PhrostEngine {
         }
         if case .leaf(_, let tabID) = leaf, let tabID {
             if tabID == tabManager.activeTab?.id {
-                _ = restorePaneView(leafID: leaf.id, tabID: tabID)
+                _ = adoptPaneView(leafID: leaf.id, tabID: tabID)
             } else if let idx = tabManager.indexOfTab(id: tabID) {
                 tabManager.switchToTab(at: idx)
                 // The switch may have refocused another pane already showing
                 // the tab (follow); only adopt this pane's view when focus
                 // stayed here, else it needs a fresh entry as a same-tab pane.
                 if mainPanes.focusedLeafID == leaf.id {
-                    _ = restorePaneView(leafID: leaf.id, tabID: tabID)
+                    _ = adoptPaneView(leafID: leaf.id, tabID: tabID)
                 } else {
                     ensurePaneViews(for: tabID)
                 }
@@ -1199,7 +1207,7 @@ public final class PhrostEngine {
         if mainPanes.focusedLeafID == gainedID,
            let tabID = mainPanes.tabID(of: gainedID),
            tabID == tabManager.activeTab?.id {
-            _ = restorePaneView(leafID: gainedID, tabID: tabID)
+            _ = adoptPaneView(leafID: gainedID, tabID: tabID)
         } else if let activeID = tabManager.activeTab?.id {
             ensurePaneViews(for: activeID)
         }

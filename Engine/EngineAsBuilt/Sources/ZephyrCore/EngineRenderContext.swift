@@ -37,6 +37,11 @@ public final class WindowRenderContext {
     /// `editRevision` the in-flight (or last launched) regen targets.
     /// Prevents relaunching every frame while a secondary build is pending.
     public var pendingRevision: UInt64? = nil
+    /// The tab + drawing view this context's geometry was built for (split
+    /// panes only). Revision numbers can coincide across view documents, so
+    /// a view change must invalidate explicitly rather than rely on them.
+    public var builtTabID: UUID? = nil
+    public var builtViewIndex: Int = -1
 
     // MARK: CAD GPU buffer (primary: migrated from the renderer)
 

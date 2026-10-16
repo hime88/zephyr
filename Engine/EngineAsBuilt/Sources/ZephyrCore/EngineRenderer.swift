@@ -36,10 +36,10 @@ public final class EngineRenderer {
     /// Render state for visible-but-inactive tabs, keyed by tab ID.
     /// Entries exist only while their tab is shown in an unfocused window.
     public var secondaryCtxs: [UUID: WindowRenderContext] = [:]
-    /// Render state for non-focused split panes showing the ACTIVE tab,
-    /// keyed by leaf ID (each such pane keeps its own zoom/pan, so sharing
-    /// the primary context's view-culled buffers is impossible).
-    /// Entries exist only while their leaf is a non-focused same-tab pane.
+    /// Render state for non-focused split panes, keyed by leaf ID. Each
+    /// pane keeps its own tab, drawing view, and camera, so sharing the
+    /// primary context's view-culled buffers is impossible.
+    /// Entries exist only while their leaf is a non-focused pane with a tab.
     public var paneCtxs: [UUID: WindowRenderContext] = [:]
     /// GPU vertex buffer holding one background quad per split pane (world
     /// space, drawn through the triangle pipeline). Recreated when the pane
@@ -546,6 +546,14 @@ public final class EngineRenderer {
         if let shown = engine.mainShownTab() {
             visibleTabs.insert(shown.id)
         }
+        // Every split leaf is visible, including inactive tabs in
+        // non-focused panes; otherwise their contexts are destroyed and
+        // recreated on every frame and can never finish rebuilding.
+        for node in engine.mainPanes.leaves() {
+            if case .leaf(_, let tabID) = node, let tabID {
+                visibleTabs.insert(tabID)
+            }
+        }
         for aux in engine.windowManager.auxWindows {
             if let hosted = aux.hostedTabID {
                 visibleTabs.insert(hosted)
@@ -555,15 +563,15 @@ public final class EngineRenderer {
             engine.dropSecondaryCtx(for: id)
         }
 
-        // Dual-view pane contexts exist only while their leaf is a
-        // non-focused pane showing the active tab; anything else is pruned,
-        // releasing its GPU buffers.
+        // Split-pane contexts exist only while their leaf is a non-focused
+        // pane showing a tab; anything else is pruned, releasing its GPU
+        // buffers.
         var livePaneLeaves = Set<UUID>()
-        if engine.mainPanes.isSplit, let activeID = engine.tabManager.activeTab?.id {
+        if engine.mainPanes.isSplit {
             let focusedID = engine.mainPanes.focusedLeafID
             for node in engine.mainPanes.leaves() {
                 if case .leaf(let id, let shown) = node,
-                   shown == activeID, id != focusedID {
+                   shown != nil, id != focusedID {
                     livePaneLeaves.insert(id)
                 }
             }
@@ -725,55 +733,25 @@ public final class EngineRenderer {
             pendingApplied: pendingApplied,
             interactive: !(engine.interaction.dragActive || engine.interaction.gripActive))
 
-        // Secondary prep per distinct inactive visible tab, sized to the
-        // union of its leaves so dual-view panes share one build.
-        var secondaryBgs: [UUID: SDL_FColor] = [:]
-        let inactiveLeaves = leaves.filter { $0.tabID != nil && $0.tabID != activeID }
-        let byTab = Dictionary(grouping: inactiveLeaves, by: { $0.tabID! })
-        for (tabID, group) in byTab {
-            guard let tab = engine.tabManager.tab(for: tabID) else { continue }
-            let view = tab.drawingViews[tab.activeViewIndex]
-            let bg = engine.ui.backgroundColor(forViewBackground: view.backgroundColor)
-            secondaryBgs[tabID] = bg
-            let ctx: WindowRenderContext
-            if let existing = secondaryCtxs[tabID] {
-                ctx = existing
-            } else {
-                ctx = WindowRenderContext(
-                    geometry: GeometryManager(),
-                    sprites: SpriteManager(),
-                    bridge: CADRendererBridge())
-                secondaryCtxs[tabID] = ctx
-            }
-            ctx.camera.applyState(tab.cameraState)
-            let doc = tab.document
-            let applied = ensureContextRegenerated(
-                ctxID: tabID, ctx: ctx, doc: doc,
-                simplifyComplexBlocks: tab.editingBlockID != nil ? false : engine.simplifyComplexBlocks,
-                splineTessellationDivisor: engine.splineTessellationDivisor,
-                background: bg, isPrimary: false)
-            let unionW = Int32(group.map(\.rect.w).max() ?? canvas.w)
-            let unionH = Int32(group.map(\.rect.h).max() ?? canvas.h)
-            routeContextVertexBuild(
-                ctx: ctx, camera: ctx.camera,
-                viewportWidth: unionW, viewportHeight: unionH,
-                pixelScale: lineWidthPixelScale,
-                background: bg, useLightDisplayPalette: EngineUIManager.isLightBackground(bg),
-                pendingApplied: applied, interactive: true)
-        }
-
-        // Dual-view prep: each non-focused pane showing the active tab gets
-        // its own context driven by its remembered view (its zoom/pan is
-        // independent of the focused pane, AutoCAD-style). A missing entry
-        // duplicates the live view (defensive; the engine maintains one).
-        let dualLeaves = leaves.filter {
-            $0.id != focusedID && $0.tabID != nil && $0.tabID == activeID
-        }
-        let liveView = engine.tabManager.captureCameraState?() ?? CameraState.default
-        for leaf in dualLeaves {
+        // Non-focused pane prep: every such pane gets its own leaf-keyed
+        // context driven by its remembered entry — which tab, which of the
+        // tab's drawing views (Model, paper layouts, ...), and which camera
+        // (AutoCAD-style independent viewports). A pane without an entry
+        // (never focused since assignment) follows its tab's active drawing
+        // view and camera until it earns an entry of its own.
+        var leafBgs: [UUID: SDL_FColor] = [:]
+        let nonFocusedLeaves = leaves.filter { $0.id != focusedID && $0.tabID != nil }
+        for leaf in nonFocusedLeaves {
             guard let tabID = leaf.tabID,
-                  let tab = engine.tabManager.tab(for: tabID) else { continue }
-            let view = engine.paneViews.view(leafID: leaf.id, tabID: tabID) ?? liveView
+                  let tab = engine.tabManager.tab(for: tabID),
+                  !tab.drawingViews.isEmpty else { continue }
+            let entry = engine.paneViews.entry(leafID: leaf.id, tabID: tabID)
+            let viewIndex = min(
+                max(entry?.viewIndex ?? tab.activeViewIndex, 0),
+                tab.drawingViews.count - 1)
+            let view = tab.drawingViews[viewIndex]
+            let bg = engine.ui.backgroundColor(forViewBackground: view.backgroundColor)
+            leafBgs[leaf.id] = bg
             let ctx: WindowRenderContext
             if let existing = paneCtxs[leaf.id] {
                 ctx = existing
@@ -784,20 +762,34 @@ public final class EngineRenderer {
                     bridge: CADRendererBridge())
                 paneCtxs[leaf.id] = ctx
             }
-            ctx.camera.applyState(view)
-            let doc = tab.document
+            ctx.camera.applyState(entry?.state ?? view.cameraState)
+            // A context retargeted to another tab or drawing view must not
+            // keep the previous document's geometry: edit revisions can
+            // coincide across view documents, so supersede explicitly
+            // (mirrors the primary path's tab-switch handling).
+            if ctx.builtTabID != tabID || ctx.builtViewIndex != viewIndex {
+                ctx.builtTabID = tabID
+                ctx.builtViewIndex = viewIndex
+                ctx.regenTask?.cancel()
+                ctx.regenTask = nil
+                ctx.regenInFlight = nil
+                ctx.bridge.cancelPending()
+                ctx.regenGeneration &+= 1
+                ctx.appliedGeneration = -1
+                ctx.builtRevision = nil
+                ctx.pendingRevision = nil
+                ctx.invalidateBuiltState(device: engine.gpuDevice)
+            }
             let applied = ensureContextRegenerated(
-                ctxID: leaf.id, ctx: ctx, doc: doc,
+                ctxID: leaf.id, ctx: ctx, doc: view.document,
                 simplifyComplexBlocks: tab.editingBlockID != nil ? false : engine.simplifyComplexBlocks,
                 splineTessellationDivisor: engine.splineTessellationDivisor,
-                background: engine.ui.backgroundColor,
-                isPrimary: false)
+                background: bg, isPrimary: false)
             routeContextVertexBuild(
                 ctx: ctx, camera: ctx.camera,
                 viewportWidth: Int32(leaf.rect.w), viewportHeight: Int32(leaf.rect.h),
                 pixelScale: lineWidthPixelScale,
-                background: engine.ui.backgroundColor,
-                useLightDisplayPalette: engine.ui.isViewportBackgroundLight,
+                background: bg, useLightDisplayPalette: EngineUIManager.isLightBackground(bg),
                 pendingApplied: applied, interactive: true)
         }
 
@@ -863,18 +855,10 @@ public final class EngineRenderer {
             ImGuiPopClipRect()
             engine.restoreMetrics(saved)
         }
-        for leaf in inactiveLeaves {
-            guard let tabID = leaf.tabID, let ctx = secondaryCtxs[tabID] else { continue }
-            let bg = secondaryBgs[tabID] ?? engine.ui.backgroundColor
-            renderLeafGridAndSprites(leaf: leaf, ctx: ctx, bg: bg, deltaSec: deltaSec)
-        }
-        // Dual-view panes: same loop, but each pane renders its own context
-        // (its own zoom/pan of the active tab).
-        for leaf in dualLeaves {
+        for leaf in nonFocusedLeaves {
             guard let ctx = paneCtxs[leaf.id] else { continue }
-            renderLeafGridAndSprites(
-                leaf: leaf, ctx: ctx, bg: engine.ui.backgroundColor,
-                deltaSec: deltaSec)
+            let bg = leafBgs[leaf.id] ?? engine.ui.backgroundColor
+            renderLeafGridAndSprites(leaf: leaf, ctx: ctx, bg: bg, deltaSec: deltaSec)
         }
 
         // 3. Feature commands UI
@@ -974,6 +958,17 @@ public final class EngineRenderer {
             }
         }
 
+        // Resolve and upload pane backgrounds before acquiring the swapchain
+        // command buffer. The upload submits its own command buffer; doing
+        // that while a swapchain texture is checked out on another command
+        // buffer is not a safe ordering for the GPU backends used here.
+        let plans = leaves.map {
+            planLeafCADPass(
+                leaf: $0, focusedID: focusedID, activeID: activeID,
+                leafBgs: leafBgs)
+        }
+        uploadPaneBgQuads(leaves: leaves, plans: plans)
+
         // Swapchain: one CAD pass per leaf, then the ImGui pass.
         guard let cmd = SDL_AcquireGPUCommandBuffer(engine.gpuDevice) else {
             print("Failed to acquire GPU command buffer")
@@ -988,13 +983,6 @@ public final class EngineRenderer {
         }
 
         if let swapchainTexture = swapchainTexture {
-            let plans = leaves.map {
-                planLeafCADPass(
-                    leaf: $0, focusedID: focusedID, activeID: activeID,
-                    secondaryBgs: secondaryBgs)
-            }
-            // Submitted on its own command buffer ahead of the passes below.
-            uploadPaneBgQuads(leaves: leaves, plans: plans)
             for (index, leaf) in leaves.enumerated() {
                 renderLeafCADPass(
                     cmd: cmd, swapchainTexture: swapchainTexture, leaf: leaf,
@@ -1110,33 +1098,49 @@ public final class EngineRenderer {
         leaf: (id: UUID, tabID: UUID?, rect: PaneRect),
         focusedID: UUID,
         activeID: UUID?,
-        secondaryBgs: [UUID: SDL_FColor]
+        leafBgs: [UUID: SDL_FColor]
     ) -> LeafPassPlan {
         // Only the focused pane showing the active tab is the primary view.
-        // Non-focused same-tab panes use their dual-view contexts (own
-        // zoom/pan); other tabs use secondary contexts; anything not ready
-        // yet paints its background with no geometry.
+        // Every other pane uses its leaf-keyed context (own tab, drawing
+        // view, and camera); anything not ready yet paints its background.
         if leaf.id == focusedID, leaf.tabID != nil, leaf.tabID == activeID {
             return LeafPassPlan(
                 bg: engine.ui.backgroundColor, ctx: primaryCtx,
                 camera: engine.camera, renderOrigin: primaryCtx.geometry.renderOrigin,
                 isPrimaryLeaf: true)
         }
-        if leaf.tabID != nil, leaf.tabID == activeID, let dual = paneCtxs[leaf.id] {
+        let bg = leafBgs[leaf.id] ?? engine.ui.backgroundColor
+        if let pane = paneCtxs[leaf.id],
+           pane.vertexBuffer != nil, pane.vertexCount > 0 {
             return LeafPassPlan(
-                bg: engine.ui.backgroundColor, ctx: dual,
-                camera: dual.camera, renderOrigin: dual.geometry.renderOrigin,
+                bg: bg, ctx: pane,
+                camera: pane.camera, renderOrigin: pane.geometry.renderOrigin,
                 isPrimaryLeaf: false)
         }
-        if let tabID = leaf.tabID, let secondary = secondaryCtxs[tabID] {
-            return LeafPassPlan(
-                bg: secondaryBgs[tabID] ?? engine.ui.backgroundColor, ctx: secondary,
-                camera: secondary.camera, renderOrigin: secondary.geometry.renderOrigin,
-                isPrimaryLeaf: false)
+        if leaf.tabID != nil, leaf.tabID == activeID {
+            // Same-tab pane still building its own context: draw the primary
+            // buffers through this pane's camera meanwhile so the pane shows
+            // geometry immediately. The buffers are culled around the focused
+            // view, which is exact at split time (both panes start on the
+            // same view) and a useful preview while the build catches up.
+            // Only valid when the pane wants the tab's active drawing view —
+            // the primary buffers hold that view's geometry.
+            let entry = leaf.tabID.flatMap {
+                engine.paneViews.entry(leafID: leaf.id, tabID: $0)
+            }
+            let activeView = leaf.tabID.flatMap {
+                engine.tabManager.tab(for: $0)?.activeViewIndex
+            } ?? 0
+            if (entry?.viewIndex ?? activeView) == activeView {
+                return LeafPassPlan(
+                    bg: bg, ctx: primaryCtx,
+                    camera: paneCtxs[leaf.id]?.camera ?? engine.camera,
+                    renderOrigin: primaryCtx.geometry.renderOrigin,
+                    isPrimaryLeaf: false)
+            }
         }
         // Empty pane or context not ready: background only. The camera is
         // arbitrary (the quad is derived from it), so use the live one.
-        let bg = leaf.tabID.flatMap { secondaryBgs[$0] } ?? engine.ui.backgroundColor
         return LeafPassPlan(
             bg: bg, ctx: nil,
             camera: engine.camera, renderOrigin: .zero,
@@ -1735,6 +1739,21 @@ public final class EngineRenderer {
             }
             ctx = c
             c.camera.applyState(tab.cameraState)
+            // Same stale-geometry guard as split panes: a drawing-view
+            // switch must supersede explicitly (revisions can coincide).
+            if c.builtTabID != tab.id || c.builtViewIndex != tab.activeViewIndex {
+                c.builtTabID = tab.id
+                c.builtViewIndex = tab.activeViewIndex
+                c.regenTask?.cancel()
+                c.regenTask = nil
+                c.regenInFlight = nil
+                c.bridge.cancelPending()
+                c.regenGeneration &+= 1
+                c.appliedGeneration = -1
+                c.builtRevision = nil
+                c.pendingRevision = nil
+                c.invalidateBuiltState(device: engine.gpuDevice)
+            }
             let doc = tab.document
             let pendingApplied = ensureContextRegenerated(
                 ctxID: tab.id, ctx: c, doc: doc,
@@ -1948,9 +1967,9 @@ public final class EngineRenderer {
         return true
     }
 
-    /// Render one auxiliary OS window: refresh its metrics, replay its input,
-    /// build its ImGui frame, and present via its own swapchain.
-    /// Debug windows show UI only (no CAD passes).
+    /// Render one auxiliary OS window with no hosted tab: metrics, input, an
+    /// empty ImGui frame, and present. Float windows always host a tab, so
+    /// this is only a safe fallback for a stray aux window.
     private func renderAuxWindow(_ aux: EngineManagedWindow, deltaSec: Double) {
         guard refreshAuxMetrics(aux) else { return }
         let windowWidth = aux.width
@@ -1963,8 +1982,6 @@ public final class EngineRenderer {
         engine.ui.replayQueuedInput(for: aux)
 
         ImGuiNewFrame()
-
-        renderAuxDebugUI(aux)
 
         ImGuiRender()
         aux.wantCaptureMouse = engine.io.pointee.WantCaptureMouse
@@ -2003,21 +2020,6 @@ public final class EngineRenderer {
         }
 
         SDL_SubmitGPUCommandBuffer(cmd)
-    }
-
-    /// Placeholder content for auxiliary windows (Phase 2 debug milestone).
-    private func renderAuxDebugUI(_ aux: EngineManagedWindow) {
-        var open = !aux.closeRequestedByUI
-        if igBegin("Debug Window", &open, 0) {
-            ImGuiTextV("Aux window id: \(aux.id)")
-            ImGuiTextV("Size: \(aux.width)x\(aux.height)  scale: \(String(format: "%.2f", aux.scaleX))")
-            ImGuiTextV("Mouse: \(String(format: "%.0f", aux.mouseX)), \(String(format: "%.0f", aux.mouseY))")
-            ImGuiTextV(aux.isFocused ? "Focused" : "Not focused")
-        }
-        igEnd()
-        if !open {
-            aux.closeRequestedByUI = true
-        }
     }
 
     /// Upload the latest ImGui draw data to the shared GPU vertex/index buffers.
