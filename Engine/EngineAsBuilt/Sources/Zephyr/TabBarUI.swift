@@ -24,6 +24,10 @@ struct TabBarUI {
     /// Tracks the last known active index to avoid spamming ImGui with SetSelected.
     static var _lastActiveIdx: Int = -1
 
+    /// Tab ID being dragged for reorder; when its payload is released outside
+    /// the window, the tab floats into its own OS window instead.
+    static var _dragTabID: UUID? = nil
+
     /// Renders the tab bar at the top of the window.
     /// - Parameters:
     ///   - engine: The engine instance.
@@ -63,11 +67,17 @@ struct TabBarUI {
                 _lastActiveIdx = activeIdx
             }
 
-            let tabBarFlags = Int32(ImGuiTabBarFlags_Reorderable.rawValue | ImGuiTabBarFlags_AutoSelectNewTabs.rawValue | ImGuiTabBarFlags_NoTooltip.rawValue)
+            // Note: deliberately NOT Reorderable — ImGui would reorder pixels without
+            // touching the model. Reorder goes through TabManager.moveTab via the
+            // drag-drop payloads below, so the model stays the source of truth.
+            let tabBarFlags = Int32(ImGuiTabBarFlags_AutoSelectNewTabs.rawValue | ImGuiTabBarFlags_NoTooltip.rawValue)
             if ImGuiBeginTabBar("DocumentTabs", tabBarFlags) {
 
                 for i in 0..<tabs.count {
                     let tab = tabs[i]
+                    // Floated tabs live in their own OS windows, not in this bar.
+                    // Model indices are preserved so reorder/close stay correct.
+                    guard !tab.isFloated else { continue }
                     let isActive = (i == activeIdx)
                     let hasUnsaved = tab.hasUnsavedChanges
                     let label = tab.displayName
@@ -91,9 +101,35 @@ struct TabBarUI {
                         ImGuiPopFont()
                     }
 
+                    // Drag to reorder. Runs for every tab (selected or not) while the
+                    // tab item is still ImGui's last item.
+                    if ImGuiBeginDragDropSource(0) {
+                        _dragTabID = tab.id
+                        var sourceIndex = Int32(i)
+                        withUnsafePointer(to: &sourceIndex) { ptr in
+                            ImGuiSetDragDropPayload(
+                                "ZEPHYR_TAB", ptr,
+                                MemoryLayout<Int32>.size,
+                                Int32(ImGuiCond_Always.rawValue))
+                        }
+                        ImGuiTextV(label)
+                        ImGuiEndDragDropSource()
+                    }
+                    if ImGuiBeginDragDropTarget() {
+                        if let payload = ImGuiAcceptDragDropPayload("ZEPHYR_TAB", 0),
+                           let data = payload.pointee.Data {
+                            let sourceIndex = Int(data.bindMemory(to: Int32.self, capacity: 1).pointee)
+                            if sourceIndex != i {
+                                engine.tabManager.moveTab(from: sourceIndex, to: i)
+                                _lastActiveIdx = engine.tabManager.activeIndex
+                            }
+                        }
+                        ImGuiEndDragDropTarget()
+                    }
+
                     if tabVisible {
                         if !isActive {
-                            engine.tabManager.switchToTab(at: i)
+                            engine.activateDockedTab(at: i)
                             _lastActiveIdx = i
                         }
                         
@@ -149,6 +185,18 @@ struct TabBarUI {
 
         if let index = requestedCloseIndex {
             _ = engine.tabManager.requestCloseTab(at: index)
+        }
+
+        // Drag-out to float: releasing a tab drag outside the window moves it
+        // into its own OS window (AutoCAD-style) instead of reordering.
+        if let dragID = _dragTabID, ImGuiGetDragDropPayload() == nil,
+           let io = ImGuiGetIO() {
+            let mouse = io.pointee.MousePos
+            let dh = io.pointee.DisplaySize.y
+            if mouse.x < 0 || mouse.y < 0 || mouse.x > dw || mouse.y > dh {
+                _ = engine.floatTab(id: dragID)
+            }
+            _dragTabID = nil
         }
 
         // Modal popup for unsaved changes when closing a dirty tab.

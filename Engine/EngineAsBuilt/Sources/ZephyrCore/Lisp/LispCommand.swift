@@ -143,7 +143,7 @@ public final class LispCommand: FeatureCommand {
         processor: CADCommandProcessor,
         filter: NativeFileDialog.Filter
     ) {
-        NativeFileDialog.showOpenDialog(window: engine.window, filters: [filter]) {
+        NativeFileDialog.showOpenDialog(window: engine.dialogParentWindow, filters: [filter]) {
             [weak self, weak processor] urls in
             guard let self, let processor,
                   !self.tornDown, !self.launched

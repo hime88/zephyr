@@ -194,6 +194,17 @@ public final class EngineCameraManager {
         )
     }
 
+    /// Transform mapping world coords to ABSOLUTE screen coords within a split
+    /// pane: a leaf-sized viewport shifted by the leaf origin.
+    public func transformForSubRect(originX: Double, originY: Double, width: Int32, height: Int32) -> CameraTransform {
+        let base = currentTransform(windowWidth: width, windowHeight: height)
+        return CameraTransform(
+            camX: base.camX, camY: base.camY, camZoom: base.camZoom,
+            camSin: base.camSin, camCos: base.camCos,
+            screenCenterX: base.screenCenterX + originX,
+            screenCenterY: base.screenCenterY + originY)
+    }
+
     /// Convert screen-space coordinates to world-space.
     internal func screenToWorld(screenX: Float, screenY: Float, windowWidth: Int32, windowHeight: Int32) -> (Double, Double) {
         let cam = currentTransform(windowWidth: windowWidth, windowHeight: windowHeight)

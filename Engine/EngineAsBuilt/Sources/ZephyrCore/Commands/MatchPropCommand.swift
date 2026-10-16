@@ -149,8 +149,10 @@ public final class MatchPropCommand: FeatureCommand {
         guard phase == .paintDestinations else { return }
 
         let drawList = igGetForegroundDrawList_ViewportPtr(nil)
-        let mx = engine.interaction.lastMouseX
-        let my = engine.interaction.lastMouseY
+        // Absolute cursor position: lastMouse is pane-local while split.
+        let mouse = ImGuiGetIO()?.pointee.MousePos ?? ImVec2(x: 0, y: 0)
+        let mx = mouse.x
+        let my = mouse.y
 
         // Simple "paint" indicator: a small filled square with a handle,
         // offset 16px right and 16px down from the cursor.

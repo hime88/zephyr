@@ -83,6 +83,9 @@ public struct DocumentTab {
     public var editingBlockID: UUID?
     /// The original document before entering block edit mode.
     public var parentDocument: CADDocument?
+    /// True while this tab lives in its own OS window instead of the main tab bar.
+    /// Runtime UI state only — never persisted to disk.
+    public var isFloated: Bool = false
 
     public init(document: CADDocument = CADDocument(),
                 fileURL: URL? = nil,
@@ -92,7 +95,8 @@ public struct DocumentTab {
                 editingBlockID: UUID? = nil,
                 parentDocument: CADDocument? = nil,
                 cameraState: CameraState = .default,
-                drawingViews: [DrawingView]? = nil) {
+                drawingViews: [DrawingView]? = nil,
+                isFloated: Bool = false) {
         self.drawingViews = drawingViews ?? [
             DrawingView(name: "Model", kind: .model, document: document, cameraState: cameraState)
         ]
@@ -110,6 +114,7 @@ public struct DocumentTab {
         }
         self.editingBlockID = editingBlockID
         self.parentDocument = parentDocument
+        self.isFloated = isFloated
     }
 
     /// True when any model or layout view in this tab has unsaved changes.
@@ -211,6 +216,10 @@ public final class TabManager {
 
     /// Callback invoked when a tab is closed.
     public var onTabClosed: ((Int) -> Void)? = nil
+
+    /// Callback invoked with the closed tab's ID (unlike `onTabClosed`, this
+    /// stays valid when the last tab is replaced by a fresh untitled tab).
+    public var onTabClosedID: ((UUID) -> Void)? = nil
 
     /// Callback invoked when a dirty tab needs user confirmation before closing.
     public var onTabCloseConfirmationRequested: ((UUID) -> Void)? = nil
@@ -468,6 +477,7 @@ public final class TabManager {
             activeIndex = 0
             onActiveTabChanged?()
             onTabClosed?(index)
+            onTabClosedID?(tabID)
             return true
         }
 
@@ -496,7 +506,37 @@ public final class TabManager {
         }
 
         onTabClosed?(index)
+        onTabClosedID?(tabID)
         return true
+    }
+
+    // MARK: - Float State
+
+    /// The tab with the given ID, or nil when unknown.
+    public func tab(for id: UUID) -> DocumentTab? {
+        guard let index = indexOfTab(id: id) else { return nil }
+        return tabs[index]
+    }
+
+    /// Whether the tab with the given ID is currently floated into its own window.
+    public func isFloated(id: UUID) -> Bool {
+        guard let index = indexOfTab(id: id) else { return false }
+        return tabs[index].isFloated
+    }
+
+    /// Mark a tab floated or docked. Order is preserved so dock-back restores
+    /// the tab to its original bar position.
+    /// - Returns: False when the ID is unknown.
+    @discardableResult
+    public func setFloated(id: UUID, _ floated: Bool) -> Bool {
+        guard let index = indexOfTab(id: id) else { return false }
+        tabs[index].isFloated = floated
+        return true
+    }
+
+    /// IDs of all currently floated tabs, in bar order.
+    public var floatedTabIDs: [UUID] {
+        tabs.filter(\.isFloated).map(\.id)
     }
 
     /// Close the active tab.
@@ -570,6 +610,57 @@ public final class TabManager {
             nextPosition = direction >= 0 ? 0 : candidates.count - 1
         }
         return switchToView(at: candidates[nextPosition])
+    }
+
+    // MARK: - Tab Reordering
+
+    /// Move the tab at `from` to position `to`.
+    /// The destination is clamped into range; the same tab stays active
+    /// (resolved by identity, since indices shift). Camera state is stored
+    /// per tab, so no save/restore is needed.
+    /// - Returns: False when `from` is out of range; true otherwise
+    ///   (including a no-op move to the tab's own position).
+    @discardableResult
+    public func moveTab(from: Int, to: Int) -> Bool {
+        guard from >= 0, from < tabs.count else { return false }
+        let clampedTo = max(0, min(to, tabs.count - 1))
+        guard clampedTo != from else { return true }
+        let activeID = tabs[activeIndex].id
+        let tab = tabs.remove(at: from)
+        tabs.insert(tab, at: clampedTo)
+        if let newActive = tabs.firstIndex(where: { $0.id == activeID }) {
+            activeIndex = newActive
+        }
+        return true
+    }
+
+    /// Move the active tab one position left.
+    /// - Returns: False when the active tab is already first.
+    @discardableResult
+    public func moveActiveTabLeft() -> Bool {
+        guard activeIndex > 0 else { return false }
+        return moveTab(from: activeIndex, to: activeIndex - 1)
+    }
+
+    /// Move the active tab one position right.
+    /// - Returns: False when the active tab is already last.
+    @discardableResult
+    public func moveActiveTabRight() -> Bool {
+        guard activeIndex < tabs.count - 1 else { return false }
+        return moveTab(from: activeIndex, to: activeIndex + 1)
+    }
+
+    // MARK: - Tab Cycling
+
+    /// Switch to the next (direction > 0) or previous tab, wrapping around.
+    /// - Returns: False when there are no tabs.
+    @discardableResult
+    public func cycleTab(direction: Int = 1) -> Bool {
+        guard !tabs.isEmpty else { return false }
+        let count = tabs.count
+        let next = (activeIndex + direction % count + count) % count
+        switchToTab(at: next)
+        return true
     }
 
     // MARK: - Block Editor Operations

@@ -214,6 +214,20 @@ public final class PhrostEngine {
     public private(set) var textureManager: EngineTextureManager!
     public private(set) var platform: EnginePlatformDelegate!
     public private(set) var loopController: EngineLoopController!
+    /// Registry of every OS window owned by the engine (main + auxiliaries).
+    public let windowManager = EngineWindowManager()
+    /// Tab ID shown in the main window's canvas. Follows the active tab while
+    /// it is docked; untouched while a float window is focused. Nil when every
+    /// tab floats.
+    public var mainShownTabID: UUID? = nil
+    /// Float window IDs keyed by hosted tab ID.
+    public private(set) var floatWindowIDs: [UUID: SDL_WindowID] = [:]
+    /// Split-pane arrangement of the main window's canvas.
+    public var mainPanes = PaneLayout()
+    /// Remembered per-pane camera views (AutoCAD-style: each pane keeps its
+    /// own zoom/pan). The focused pane's view is the live camera; entries
+    /// exist only for non-focused panes. See `PaneViewStore`.
+    public var paneViews = PaneViewStore()
 
     // MARK: Font Cache
     internal var fontCache: [String: OpaquePointer?] = [:]
@@ -294,7 +308,7 @@ public final class PhrostEngine {
 
     public func toggleSimplifyComplexBlocks() {
         simplifyComplexBlocks.toggle()
-        _regenerationGeneration &+= 1
+        renderer.primaryCtx.regenGeneration &+= 1
         cadSelection._selectionGeneration &+= 1
         print("[Engine] simplifyComplexBlocks: \(simplifyComplexBlocks)")
     }
@@ -375,28 +389,9 @@ public final class PhrostEngine {
     public var _cachedFpsText: String = ""
     public var _fpsCacheFrame: Int = 0
 
-    /// Background regeneration task (nil when idle). Prevents overlapping regenerations.
-    internal var _regenerationTask: Task<Void, Never>? = nil
-    /// Monotonic token identifying the geometry state the renderer should display.
-    /// Bumped on every tab switch and every in-tab edit. A background regeneration is
-    /// tagged with the generation it was launched for; only results whose generation
-    /// matches the current one are ever applied — stale results from a superseded tab or
-    /// edit are discarded, never displayed. This is what prevents the tab-switch race
-    /// where a slow large-file task could clobber the active tab's geometry (or leave a
-    /// tab permanently showing the wrong/empty drawing).
-    internal var _regenerationGeneration: Int = 0
-    /// Generation a background task is currently computing (nil = none in flight).
-    internal var _regenerationInFlight: Int? = nil
-    /// Generation whose results are currently applied/displayed. -1 = nothing applied yet.
-    internal var _appliedGeneration: Int = -1
-
     /// Render cache: avoid grid query + sort + map on static frames.
     internal var _cachedPrimitivesToRender: [RenderPrimitive] = []
-    internal var _cachedUsingGrid: Bool = false
     internal var _cachedRenderGen: Int = -1
-    internal var _cachedMutationGen: Int = -1
-    internal var _cachedDisplayPaletteGen: Int = -1
-    internal var _lastCameraZoom: Double = -1.0
     // MARK: Initialization
     public init?(
         title: String, width: Int32, height: Int32,
@@ -504,6 +499,8 @@ public final class PhrostEngine {
         self.platform = EnginePlatformDelegate(engine: self)
         
         self.loopController = EngineLoopController(engine: self)
+
+        windowManager.register(handle: window, id: SDL_GetWindowID(window), isMain: true)
 
         // Initialize GPU shaders & pipelines
         
@@ -642,6 +639,7 @@ public final class PhrostEngine {
 
         // Initialize tab manager and wire callbacks (after ctx/io are initialized)
         tabManager.newTab()  // Start with one blank tab
+        mainShownTabID = tabManager.activeTab?.id
         tabManager.getBackgroundColor = { [weak self] in
             guard let self = self else { return ColorRGBA.white }
             let r = UInt8(max(0.0, min(1.0, self.ui.backgroundColor.r)) * 255.0)
@@ -672,20 +670,33 @@ public final class PhrostEngine {
             } else {
                 self.ui.viewBackgroundOverride = nil
             }
-            self._regenerationTask?.cancel()
-            self._regenerationTask = nil
-            self._regenerationInFlight = nil
+            self.renderer.primaryCtx.regenTask?.cancel()
+            self.renderer.primaryCtx.regenTask = nil
+            self.renderer.primaryCtx.regenInFlight = nil
             self.cadBridge.cancelPending()
-            self.renderer._vbBuildTask?.cancel()
-            self.renderer._vbBuildTask = nil
-            self.renderer.vbBuilder.cancelPending()
+            self.renderer.primaryCtx.vbTask?.cancel()
+            self.renderer.primaryCtx.vbTask = nil
+            self.renderer.primaryCtx.vbBuilder.cancelPending()
             // Supersede any in-flight / last-applied generation so the render loop launches a
             // fresh regeneration for the newly active tab and applies ONLY its results.
-            self._regenerationGeneration &+= 1
-            self._appliedGeneration = -1
+            self.renderer.primaryCtx.regenGeneration &+= 1
+            self.renderer.primaryCtx.appliedGeneration = -1
             self.tabManager.activeDocument.needsRegeneration = true
             self.cadSelection.clearSelection()
             self.snap.snapTrackingEngine.clear()
+            self.syncWindowsToActiveTab()
+        }
+        tabManager.onTabClosedID = { [weak self] tabID in
+            guard let self else { return }
+            // A closed tab takes its float window and secondary context with it.
+            self.closeFloatWindow(hosting: tabID)
+            self.dropSecondaryCtx(for: tabID)
+            self.mainPanes.rebindAll(
+                from: tabID,
+                to: self.tabManager.tabs.first(where: { !$0.isFloated })?.id)
+            if let activeID = self.tabManager.activeTab?.id {
+                self.ensurePaneViews(for: activeID)
+            }
         }
 
         self.renderer = EngineRenderer(engine: self)
@@ -720,6 +731,14 @@ public final class PhrostEngine {
         self.ui.toolbarVisible = settings.toolbarVisible
         self.ui.hasCompletedSetup = settings.hasCompletedSetup
         self.ui.radialNavVisible = settings.radialNavVisible
+
+        // Debug milestone for multi-window support: open an empty second OS
+        // window. Set ZEPHYR_DEBUG_WINDOW=1 in the environment to enable.
+        if ProcessInfo.processInfo.environment["ZEPHYR_DEBUG_WINDOW"] == "1" {
+            if let aux = createAuxWindow(title: "Zephyr — Debug Window", width: 800, height: 600) {
+                print("[Engine] Debug aux window created (id \(aux.id)).")
+            }
+        }
 
         print("Zephyr Initialized Successfully")
     }
@@ -834,6 +853,424 @@ public final class PhrostEngine {
         camera.offset = (
             boundsCenterX - worldShiftX,
             boundsCenterY - worldShiftY)
+    }
+
+    // MARK: - Auxiliary Windows
+
+    /// Create an additional OS window on the shared GPU device and register
+    /// it for sequential rendering. Aux windows are plain titled windows
+    /// (no custom chrome or hit-testing).
+    /// - Returns: The registered window, or nil when creation/claim fails.
+    @discardableResult
+    public func createAuxWindow(title: String, width: Int32, height: Int32) -> EngineManagedWindow? {
+        let flags: SDLWindowFlags = [.resizable, .highPixelDensity]
+        guard let handle = SDL_CreateWindow(title, width, height, flags.rawValue) else {
+            print("SDL_CreateWindow (aux) Error: \(String(cString: SDL_GetError()))")
+            return nil
+        }
+        guard SDL_ClaimWindowForGPUDevice(gpuDevice, handle) else {
+            print("SDL_ClaimWindowForGPUDevice (aux) Error: \(String(cString: SDL_GetError()))")
+            SDL_DestroyWindow(handle)
+            return nil
+        }
+        SDL_StartTextInput(handle)
+        return windowManager.register(handle: handle, id: SDL_GetWindowID(handle), isMain: false)
+    }
+
+    /// Destroy an auxiliary window and remove it from the registry.
+    /// Unknown IDs and the main window are ignored.
+    public func closeAuxWindow(id: SDL_WindowID) {
+        guard let aux = windowManager.window(for: id), !aux.isMain else { return }
+        print("[Engine] Closing aux window (id \(id)).")
+        SDL_ReleaseWindowFromGPUDevice(gpuDevice, aux.handle)
+        SDL_DestroyWindow(aux.handle)
+        windowManager.unregister(id: id)
+    }
+
+    // MARK: - Float / Dock Tabs
+
+    /// Maximum simultaneous float windows (each costs a swapchain + regen pipeline).
+    public static let maxFloatWindows = 4
+
+    /// The tab shown in the main window's canvas: the focused pane's tab when
+    /// split, else the tracked tab when still docked, else the first docked
+    /// tab, else nil when every tab floats.
+    public func mainShownTab() -> DocumentTab? {
+        if mainPanes.isSplit {
+            guard let tabID = mainPanes.focusedTabID,
+                  let tab = tabManager.tab(for: tabID), !tab.isFloated else { return nil }
+            return tab
+        }
+        if let id = mainShownTabID,
+           let tab = tabManager.tab(for: id), !tab.isFloated {
+            return tab
+        }
+        if let first = tabManager.tabs.first(where: { !$0.isFloated }) {
+            mainShownTabID = first.id
+            return first
+        }
+        mainShownTabID = nil
+        return nil
+    }
+
+    /// Whether the main window's canvas currently shows the active tab.
+    public func mainWindowShowsActiveTab() -> Bool {
+        guard let active = tabManager.activeTab, !active.isFloated else { return false }
+        if mainPanes.isSplit {
+            return mainPanes.focusedTabID == active.id
+        }
+        return mainShownTabID == active.id
+    }
+
+    /// Whether a window's canvas shows the active tab (and may therefore
+    /// receive CAD input and render the primary pipeline).
+    public func windowShowsActiveTab(_ window: EngineManagedWindow) -> Bool {
+        guard let activeID = tabManager.activeTab?.id else { return false }
+        if window.isMain {
+            if mainPanes.isSplit {
+                return mainPanes.focusedTabID == activeID
+            }
+            return mainShownTabID == activeID
+        }
+        return window.hostedTabID == activeID
+    }
+
+    /// Reconcile windows with the active tab: the main canvas follows docked
+    /// tabs, and the hosting window is raised. Called after every tab switch,
+    /// keeping the "focused window shows the active tab" invariant (focus
+    /// changes complete it from the other side).
+    public func syncWindowsToActiveTab() {
+        guard let active = tabManager.activeTab else { return }
+        if active.isFloated {
+            if let windowID = floatWindowIDs[active.id],
+               let window = windowManager.window(for: windowID) {
+                SDL_RaiseWindow(window.handle)
+            }
+        } else {
+            mainShownTabID = active.id
+            if mainPanes.isSplit {
+                followActiveTabInPanes(activeID: active.id)
+            }
+            if let main = windowManager.mainWindow {
+                SDL_RaiseWindow(main.handle)
+            }
+        }
+    }
+
+    /// Keep the split panes coherent with the active tab: focus the pane
+    /// already showing it, else rebind the focused pane to it.
+    public func followActiveTabInPanes(activeID: UUID) {
+        guard mainPanes.isSplit else { return }
+        // Prefer the focused pane when it already shows the tab: avoids a
+        // gratuitous focus — and camera — jump (e.g. on view switches).
+        if mainPanes.focusedTabID == activeID { return }
+        if let leaf = mainPanes.findLeaf(showing: activeID) {
+            let fromID = mainPanes.focusedLeafID
+            let fromTab = mainPanes.tabID(of: fromID)
+            mainPanes.focus(id: leaf.id)
+            // The defocused pane showed `fromTab` until this switch; that
+            // tab's cameraState was just saved from the live camera, i.e.
+            // the pane's last displayed view. Skipped when it already showed
+            // the incoming tab (re-entrant focus): its entry is intact.
+            if let fromTab, fromTab != activeID,
+               let state = tabManager.tab(for: fromTab)?.cameraState {
+                paneViews.save(leafID: fromID, tabID: fromTab, state: state)
+            }
+            _ = restorePaneView(leafID: leaf.id, tabID: activeID)
+        } else {
+            mainPanes.rebindLeaf(mainPanes.focusedLeafID, to: activeID)
+        }
+        ensurePaneViews(for: activeID)
+    }
+
+    // MARK: - Pane Camera Views
+
+    /// Remember the live camera as `leafID`'s view of `tabID`. Call when the
+    /// pane is becoming non-focused; the focused pane needs no entry.
+    public func savePaneView(leafID: UUID, tabID: UUID?) {
+        guard let capture = tabManager.captureCameraState else { return }
+        paneViews.save(leafID: leafID, tabID: tabID, state: capture())
+    }
+
+    /// Apply `leafID`'s remembered view of `tabID` to the live camera,
+    /// consuming the entry. Call when the pane gains focus.
+    /// - Returns: False when no view was remembered (caller keeps the live
+    ///   camera — the pane was already showing it).
+    @discardableResult
+    public func restorePaneView(leafID: UUID, tabID: UUID?) -> Bool {
+        guard let state = paneViews.take(leafID: leafID, tabID: tabID) else { return false }
+        tabManager.applyCameraState?(state)
+        return true
+    }
+
+    /// Give every non-focused pane showing `tabID` a remembered view for the
+    /// tab switch that just completed, preserving what each pane displayed:
+    /// its own remembered view when present, else the tab's cameraState
+    /// (which the switch left untouched for the incoming tab).
+    public func ensurePaneViews(for tabID: UUID) {
+        guard mainPanes.isSplit else { return }
+        let fallback = tabManager.tab(for: tabID)?.cameraState
+            ?? tabManager.captureCameraState?()
+            ?? CameraState.default
+        for node in mainPanes.leaves() {
+            guard case .leaf(let id, let shown) = node,
+                  shown == tabID, id != mainPanes.focusedLeafID,
+                  paneViews.view(leafID: id, tabID: tabID) == nil
+            else { continue }
+            paneViews.save(leafID: id, tabID: tabID, state: fallback)
+        }
+    }
+
+    /// Drop a tab's secondary render context, releasing its GPU buffers.
+    public func dropSecondaryCtx(for tabID: UUID) {
+        if let ctx = renderer.secondaryCtxs.removeValue(forKey: tabID) {
+            ctx.destroy(device: gpuDevice)
+        }
+    }
+
+    /// Float a tab into its own OS window. An already-floated tab is simply
+    /// raised. The main canvas falls back to another docked tab.
+    /// - Returns: False when the tab is unknown or the window cap is reached.
+    @discardableResult
+    public func floatTab(id: UUID) -> Bool {
+        guard let tab = tabManager.tab(for: id) else { return false }
+        if tab.isFloated {
+            if let windowID = floatWindowIDs[id],
+               let window = windowManager.window(for: windowID) {
+                SDL_RaiseWindow(window.handle)
+            }
+            return true
+        }
+        guard floatWindowIDs.count < Self.maxFloatWindows else {
+            print("[CAD] Cannot float tab: \(Self.maxFloatWindows) floating windows already open. Dock one with TABDOCK first.")
+            return false
+        }
+        guard let aux = createAuxWindow(title: tab.displayName, width: 1280, height: 800) else {
+            return false
+        }
+        aux.hostedTabID = id
+        floatWindowIDs[id] = aux.id
+        tabManager.setFloated(id: id, true)
+        mainPanes.rebindAll(from: id, to: tabManager.tabs.first(where: { !$0.isFloated })?.id)
+        if let activeID = tabManager.activeTab?.id {
+            ensurePaneViews(for: activeID)
+        }
+        if mainShownTabID == id {
+            mainShownTabID = tabManager.tabs.first(where: { !$0.isFloated })?.id
+        }
+        SDL_RaiseWindow(aux.handle)
+        return true
+    }
+
+    /// Dock a floated tab back into the main tab bar, closing its window.
+    /// - Returns: False when the tab is not floated.
+    @discardableResult
+    public func dockTab(id: UUID) -> Bool {
+        guard tabManager.isFloated(id: id) else { return false }
+        tabManager.setFloated(id: id, false)
+        closeFloatWindow(hosting: id)
+        dropSecondaryCtx(for: id)
+        syncWindowsToActiveTab()
+        return true
+    }
+
+    /// Destroy the float window hosting a tab (tab itself untouched).
+    /// Used when the tab closes; docking uses `dockTab` instead.
+    public func closeFloatWindow(hosting tabID: UUID) {
+        if let windowID = floatWindowIDs.removeValue(forKey: tabID) {
+            closeAuxWindow(id: windowID)
+        }
+    }
+
+    /// SDL handle to parent modal file dialogs on: the float window
+    /// hosting the active tab when it floats, else the main window.
+    /// (macOS sheets parent off the key window instead; see
+    /// `NativeFileDialog.showMacOpenDialog`.)
+    public var dialogParentWindow: OpaquePointer {
+        if let active = tabManager.activeTab, active.isFloated,
+           let windowID = floatWindowIDs[active.id],
+           let window = windowManager.window(for: windowID) {
+            return window.handle
+        }
+        return window
+    }
+
+    // MARK: - Split Panes
+
+    /// Activate a docked tab from the main tab bar, retargeting the focused
+    /// pane to it when split.
+    public func activateDockedTab(at index: Int) {
+        guard index >= 0, index < tabManager.tabs.count else { return }
+        let id = tabManager.tabs[index].id
+        if mainPanes.isSplit {
+            mainPanes.rebindLeaf(mainPanes.focusedLeafID, to: id)
+        }
+        tabManager.switchToTab(at: index)
+        if let activeID = tabManager.activeTab?.id {
+            ensurePaneViews(for: activeID)
+        }
+    }
+
+    /// Focus the split pane under a main-window point, activating its tab.
+    /// Each pane keeps its own view: the defocused pane remembers the live
+    /// camera, and the focused pane restores its remembered view, so neither
+    /// pane's picture changes on click.
+    /// - Returns: True when focus moved (caller swallows the click).
+    public func focusSplitPane(at point: (x: Float, y: Float)) -> Bool {
+        guard mainPanes.isSplit,
+              let canvasF = ui.drawingViewportRect else { return false }
+        let canvas = PaneRect(x: canvasF.x, y: canvasF.y, w: canvasF.w, h: canvasF.h)
+        guard let leaf = mainPanes.hitTest(point: point, canvas: canvas),
+              leaf.id != mainPanes.focusedLeafID else { return false }
+        let fromID = mainPanes.focusedLeafID
+        let fromTab = mainPanes.tabID(of: fromID)
+        mainPanes.focus(id: leaf.id)
+        // The live camera is the active tab's view: only worth remembering
+        // when the defocused pane showed it.
+        if fromTab == tabManager.activeTab?.id {
+            savePaneView(leafID: fromID, tabID: fromTab)
+        }
+        if case .leaf(_, let tabID) = leaf, let tabID {
+            if tabID == tabManager.activeTab?.id {
+                _ = restorePaneView(leafID: leaf.id, tabID: tabID)
+            } else if let idx = tabManager.indexOfTab(id: tabID) {
+                tabManager.switchToTab(at: idx)
+                // The switch may have refocused another pane already showing
+                // the tab (follow); only adopt this pane's view when focus
+                // stayed here, else it needs a fresh entry as a same-tab pane.
+                if mainPanes.focusedLeafID == leaf.id {
+                    _ = restorePaneView(leafID: leaf.id, tabID: tabID)
+                } else {
+                    ensurePaneViews(for: tabID)
+                }
+            }
+        }
+        return true
+    }
+
+    /// Split the focused pane. The new pane shows the next docked tab, or the
+    /// same tab (dual view, AutoCAD-style) when it is the only one. Both
+    /// panes start on the current view; each keeps its own from then on.
+    public func splitMainPane(axis: PaneSplitAxis) {
+        let tabs = tabManager.tabs
+        let focusedID = mainPanes.focusedTabID ?? mainShownTab()?.id ?? tabManager.activeTab?.id
+        if !mainPanes.isSplit {
+            mainPanes.rebindLeaf(mainPanes.focusedLeafID, to: focusedID)
+        }
+        var newTabID = focusedID
+        if tabs.filter({ !$0.isFloated }).count > 1, let focusedID,
+           let idx = tabs.firstIndex(where: { $0.id == focusedID }) {
+            var j = (idx + 1) % tabs.count
+            while tabs[j].isFloated || tabs[j].id == focusedID {
+                j = (j + 1) % tabs.count
+                if j == idx { break }
+            }
+            if tabs[j].id != focusedID {
+                newTabID = tabs[j].id
+            }
+        }
+        // Heal stale focus so the split source is known, then remember its
+        // view: the split moves focus to the new pane, leaving the source
+        // non-focused (its live view becomes its remembered one).
+        mainPanes.focus(id: mainPanes.focusedLeafID)
+        let sourceID = mainPanes.focusedLeafID
+        let sourceTab = mainPanes.tabID(of: sourceID)
+        mainPanes.splitFocused(axis: axis, newTabID: newTabID)
+        if sourceTab == tabManager.activeTab?.id {
+            savePaneView(leafID: sourceID, tabID: sourceTab)
+        }
+        activatePaneTab()
+        if let activeID = tabManager.activeTab?.id {
+            ensurePaneViews(for: activeID)
+        }
+    }
+
+    /// Close the focused pane, promoting its sibling (AutoCAD `JOIN`).
+    @discardableResult
+    public func joinMainPane() -> Bool {
+        let removedID = mainPanes.focusedLeafID
+        guard mainPanes.closeFocused() else { return false }
+        paneViews.remove(leafID: removedID)
+        let gainedID = mainPanes.focusedLeafID
+        activatePaneTab()
+        // Docking may have switched tabs and refocused yet another pane
+        // already showing it; only adopt the promoted pane's view when focus
+        // stayed there, else it needs a fresh entry as a same-tab pane.
+        if mainPanes.focusedLeafID == gainedID,
+           let tabID = mainPanes.tabID(of: gainedID),
+           tabID == tabManager.activeTab?.id {
+            _ = restorePaneView(leafID: gainedID, tabID: tabID)
+        } else if let activeID = tabManager.activeTab?.id {
+            ensurePaneViews(for: activeID)
+        }
+        return true
+    }
+
+    /// Collapse to the focused pane, saving the tree for TOGGLE/VPMIN.
+    @discardableResult
+    public func unsplitMainPane() -> Bool {
+        guard mainPanes.collapseToFocused() else { return false }
+        activatePaneTab()
+        return true
+    }
+
+    /// Toggle between single and the last multi-pane arrangement.
+    @discardableResult
+    public func toggleMainPanes() -> Bool {
+        guard mainPanes.toggle() else { return false }
+        activatePaneTab()
+        return true
+    }
+
+    /// Restore the arrangement saved by VPMAX (single-pane only).
+    @discardableResult
+    public func vpMinRestore() -> Bool {
+        guard !mainPanes.isSplit, mainPanes.savedTree != nil else { return false }
+        return toggleMainPanes()
+    }
+
+    /// Activate the focused pane's tab after a structural pane change.
+    private func activatePaneTab() {
+        if let tabID = mainPanes.focusedTabID,
+           tabID != tabManager.activeTab?.id,
+           let idx = tabManager.indexOfTab(id: tabID) {
+            tabManager.switchToTab(at: idx)
+        }
+    }
+
+    // MARK: - Metrics Borrow (float-window frames)
+
+    /// Snapshot the engine-global metrics slots so a float-window frame can
+    /// borrow them and restore afterwards.
+    internal func snapshotMetrics() -> (w: Int32, h: Int32, pw: Int32, ph: Int32, sx: Float, sy: Float) {
+        (windowWidth, windowHeight, pixelWidth, pixelHeight, scaleX, scaleY)
+    }
+
+    internal func restoreMetrics(_ m: (w: Int32, h: Int32, pw: Int32, ph: Int32, sx: Float, sy: Float)) {
+        windowWidth = m.w
+        windowHeight = m.h
+        pixelWidth = m.pw
+        pixelHeight = m.ph
+        scaleX = m.sx
+        scaleY = m.sy
+    }
+
+    /// Point the engine-global metrics slots at a window's cached metrics.
+    /// Pair with `snapshotMetrics`/`restoreMetrics` around float-window work.
+    internal func borrowMetrics(from window: EngineManagedWindow) {
+        windowWidth = window.width
+        windowHeight = window.height
+        pixelWidth = window.pixelWidth
+        pixelHeight = window.pixelHeight
+        scaleX = window.scaleX
+        scaleY = window.scaleY
+    }
+
+    /// Point the window-size slots at a split pane's dimensions (same window,
+    /// so pixel size and scale are untouched). Pair with snapshot/restore.
+    internal func borrowPaneDims(width: Int32, height: Int32) {
+        windowWidth = width
+        windowHeight = height
     }
 
     // MARK: - ImGui Frame Callback

@@ -108,6 +108,25 @@ Zephyr's DXF pipeline runs entirely in Swift — a native port of [libdxfrw](htt
 | SAVEAS | | Save the current drawing as a new file |
 | PDFEXPORT | `EXPORTPDF` | Export the current drawing to a PDF file |
 
+### Tabs, Windows & Split Views
+| Command | Alias | Description |
+|---|---|---|
+| TABLEFT | `TABL` | Move the active tab one position left |
+| TABRIGHT | `TABR` | Move the active tab one position right |
+| TABWINDOW | `TABW`, `FLOAT` | Float the active tab into its own OS window |
+| TABDOCK | `TABD`, `DOCK` | Dock the active floating tab back into the main window |
+| FILETAB | | Show the file tab bar |
+| FILETABCLOSE | | Hide the file tab bar |
+| VPORTS | | Split the main view into tiled panes: `2V`, `2H`, `SINGLE`, `JOIN`, `TOGGLE`, `?` |
+| VSPLIT | | Split the focused pane side-by-side |
+| HSPLIT | | Split the focused pane stacked |
+| UNSPLIT | `CLOSESPLIT` | Remove all splits, keeping the focused pane |
+| CLOSEPANE | | Close the focused pane |
+| VPMAX | | Maximize the focused pane (arrangement is saved) |
+| VPMIN | | Restore the split arrangement saved by VPMAX |
+
+Tabs reorder by drag-and-drop; dragging a tab out of the main window floats it. `Ctrl+Tab` / `Ctrl+Shift+Tab` cycles tabs. Each float window is a true OS window (own taskbar entry, movable to another monitor) showing one drawing; its close box docks the tab back rather than closing it, so work is never lost. Exactly one tab is active at a time across all windows and panes — clicking a window or pane activates its tab. Panes can show different drawings (unlike AutoCAD's same-drawing `VPORTS`). Each pane keeps its own zoom/pan like an AutoCAD viewport: splitting starts both panes on the current view, and clicking a pane focuses it without changing any pane's picture. Dividers drag to resize. File dialogs parent to the window hosting the active tab, and close confirmations always appear in the main window. Limit: 4 float windows.
+
 ### Dimension Commands
 | Command | Alias | Description |
 |---|---|---|
@@ -199,6 +218,8 @@ SELECT, MOVE, ROTATE, SCALE, PAN, ZOOM
 | NEXTVIEW | | Switch to next model or sheet view |
 | PREVIOUSVIEW | | Switch to previous model or sheet view |
 | SELECTALL | `SELALL` | Select all entities in the active layer |
+| VPORTS | | Split the main view into tiled panes showing different tabs (`2V`, `2H`, `SINGLE`, `JOIN`, `TOGGLE`, `?`) |
+| VPMAX / VPMIN | | Maximize the focused pane / restore the saved arrangement |
 
 ### Snap Engine
 9 anchor types with two-tier filtering (AABB proximity → exact distance):

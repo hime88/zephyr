@@ -132,8 +132,22 @@ struct StatusBarUI {
                 ImGuiPopStyleColor(1)
             }
 
-            // Right side: Coordinates
-            let mousePos = EngineCameraManager.screenToWorld(screenX: io.pointee.MousePos.x, screenY: io.pointee.MousePos.y, cam: engine.camera.currentTransform(windowWidth: Int32(dw), windowHeight: Int32(dh)))
+            // Right side: Coordinates (focused pane's transform while split).
+            let coordCam: CameraTransform = {
+                guard engine.mainPanes.isSplit,
+                      let canvasF = engine.ui.drawingViewportRect else {
+                    return engine.camera.currentTransform(windowWidth: Int32(dw), windowHeight: Int32(dh))
+                }
+                let canvas = PaneRect(x: canvasF.x, y: canvasF.y, w: canvasF.w, h: canvasF.h)
+                let leaves = engine.mainPanes.leafRects(canvas: canvas)
+                guard let focused = leaves.first(where: { $0.id == engine.mainPanes.focusedLeafID }) else {
+                    return engine.camera.currentTransform(windowWidth: Int32(dw), windowHeight: Int32(dh))
+                }
+                return engine.camera.transformForSubRect(
+                    originX: Double(focused.rect.x), originY: Double(focused.rect.y),
+                    width: Int32(focused.rect.w), height: Int32(focused.rect.h))
+            }()
+            let mousePos = EngineCameraManager.screenToWorld(screenX: io.pointee.MousePos.x, screenY: io.pointee.MousePos.y, cam: coordCam)
             let coordText = String(format: "%.3f, %.3f", mousePos.0, mousePos.1)
             let textSize = ImGuiCalcTextSize(coordText, nil, false, -1)
             

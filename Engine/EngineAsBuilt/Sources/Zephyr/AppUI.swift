@@ -53,7 +53,8 @@ struct AppUI {
         let dh = io.pointee.DisplaySize.y
 
         // Create a dockspace covering the work area
-        let topOffset = AppLayout.topChromeHeight + AppLayout.tabBarHeight
+        let topOffset = AppLayout.topChromeHeight
+            + (engine.ui.fileTabsVisible ? AppLayout.tabBarHeight : 0)
         let showsDrawingViewTabs = (engine.tabManager.activeTab?.drawingViews.count ?? 0) > 1
             && engine.tabManager.activeTab?.editingBlockID == nil
         let bottomOffset = AppLayout.statusBarHeight
@@ -94,8 +95,10 @@ struct AppUI {
             TopChromeUI.render(engine: engine, dw: dw)
         }
 
-        // 1. Tab bar at the very top.
-        TabBarUI.render(engine: engine, dw: dw)
+        // 1. Tab bar at the very top (unless hidden via FILETABCLOSE).
+        if engine.ui.fileTabsVisible {
+            TabBarUI.render(engine: engine, dw: dw)
+        }
 
         // 2. Side panels — Layers on the left.
         if engine.ui.layersPanelVisible {

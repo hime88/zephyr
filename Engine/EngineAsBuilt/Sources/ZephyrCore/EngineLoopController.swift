@@ -64,12 +64,17 @@ public final class EngineLoopController {
                 framesToRender = max(framesToRender, 5)
                 lastSaveStateCount = saveStateCount
             }
+            let primaryCtx = engine.renderer.primaryCtx
+            let secondaryBuildActive = engine.renderer.secondaryCtxs.values.contains {
+                $0.regenInFlight != nil || $0.vbInFlightToken != nil
+            }
             let isActionActive =
                 interaction.dragActive || interaction.panActive || interaction.touchPanActive
                 || engine.commandProcessor.activeCommand != nil || engine.commandProcessor.activeFeatureCommand != nil
                 || engine.commandProcessor.commandLineActive || engine.document.needsRegeneration
-                || engine._regenerationInFlight != nil
-                || engine.renderer._vbInFlightToken != nil
+                || primaryCtx.regenInFlight != nil
+                || primaryCtx.vbInFlightToken != nil
+                || secondaryBuildActive
                 || saveStateCount > 0
             
             if framesToRender <= 0 && !isActionActive {

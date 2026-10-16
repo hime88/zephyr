@@ -40,6 +40,9 @@ public final class EngineUIManager {
 
     /// Whether the Layers panel is visible (toggled via "LA"/"LAYER" command). Default true.
     public var layersPanelVisible: Bool = false
+
+    /// Whether the file tab bar is visible (toggled via "FILETAB"/"FILETABCLOSE").
+    public var fileTabsVisible: Bool = true
     public var fpsCacheFrame: Int = 15
 
     /// When true, the block editor close-confirmation popup is shown.
@@ -99,10 +102,28 @@ public final class EngineUIManager {
         }
     }
 
+    /// Effective background for an arbitrary tab's drawing view: the view's own
+    /// background when set, else the shared model-space color. Mirrors
+    /// `backgroundColor` without touching the active tab's override.
+    public func backgroundColor(forViewBackground viewBackground: ColorRGBA?) -> SDL_FColor {
+        if let viewBackground {
+            return SDL_FColor(
+                r: Float(viewBackground.r) / 255.0,
+                g: Float(viewBackground.g) / 255.0,
+                b: Float(viewBackground.b) / 255.0,
+                a: Float(viewBackground.a) / 255.0)
+        }
+        return baseBackgroundColor
+    }
+
     /// Whether the effective drawing background needs the light-background CAD palette.
     /// This intentionally follows the viewport override rather than the surrounding UI theme.
     public var isViewportBackgroundLight: Bool {
-        let color = backgroundColor
+        Self.isLightBackground(backgroundColor)
+    }
+
+    /// Luminance test for an arbitrary viewport background (secondary views).
+    public static func isLightBackground(_ color: SDL_FColor) -> Bool {
         let luminance = 0.2126 * Double(color.r)
             + 0.7152 * Double(color.g)
             + 0.0722 * Double(color.b)
@@ -127,6 +148,18 @@ public final class EngineUIManager {
         drawingViewportBaseRect = rect
         dockedPanelRects.removeAll(keepingCapacity: true)
         drawingViewportRect = rect
+    }
+
+    /// Snapshot the drawing-viewport rects so a float-window frame can
+    /// restore them afterwards. The main window recomputes them every frame,
+    /// but poll-time readers (zoom-to-fit) must see main-window values.
+    internal func snapshotDrawingViewport() -> (base: SDL_FRect?, current: SDL_FRect?) {
+        (drawingViewportBaseRect, drawingViewportRect)
+    }
+
+    internal func restoreDrawingViewport(base: SDL_FRect?, current: SDL_FRect?) {
+        drawingViewportBaseRect = base
+        drawingViewportRect = current
     }
 
     public func excludeDockedPanelRect(
@@ -386,14 +419,23 @@ public final class EngineUIManager {
 
     // MARK: - ImGui Input Processing
 
-    internal func processImGuiInput(event: inout SDL_Event) -> Bool {
-        guard let io = ImGuiGetIO() else { return false }
-
+    /// Capture one SDL event into a window's ImGui input queue. The queue is
+    /// replayed into the shared context immediately before that window's
+    /// `NewFrame` (see `replayQueuedInput`), so every sequential frame
+    /// consumes only its own window's input.
+    ///
+    /// - Returns: Whether ImGui wants the event, read from the target
+    ///   window's *last rendered frame* — never live `io` state, which
+    ///   belongs to whichever window framed last.
+    internal func enqueueImGuiInput(event: inout SDL_Event, for target: EngineManagedWindow) -> Bool {
         switch event.type {
 
         case UInt32(SDL_EVENT_MOUSE_MOTION.rawValue):
-            ImGuiIO_AddMousePosEvent(io, event.motion.x, event.motion.y)
-            return io.pointee.WantCaptureMouse
+            target.mouseX = event.motion.x
+            target.mouseY = event.motion.y
+            target.hasMousePos = true
+            target.inputQueue.append(.mousePos(x: event.motion.x, y: event.motion.y))
+            return target.wantCaptureMouse
 
         case UInt32(SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue),
             UInt32(SDL_EVENT_MOUSE_BUTTON_UP.rawValue):
@@ -410,8 +452,8 @@ public final class EngineUIManager {
             case Int32(SDL_BUTTON_MIDDLE): imGuiButton = 2
             default: return false
             }
-            ImGuiIO_AddMouseButtonEvent(io, imGuiButton, isDown)
-            return io.pointee.WantCaptureMouse
+            target.inputQueue.append(.mouseButton(index: imGuiButton, down: isDown))
+            return target.wantCaptureMouse
 
         case UInt32(SDL_EVENT_MOUSE_WHEEL.rawValue):
             var wheelX = event.wheel.x
@@ -420,14 +462,14 @@ public final class EngineUIManager {
                 wheelX *= -1
                 wheelY *= -1
             }
-            ImGuiIO_AddMouseWheelEvent(io, wheelX, wheelY)
-            return io.pointee.WantCaptureMouse
+            target.inputQueue.append(.mouseWheel(x: wheelX, y: wheelY))
+            return target.wantCaptureMouse
 
         case UInt32(SDL_EVENT_TEXT_INPUT.rawValue):
             if let textPtr = event.text.text {
-                ImGuiIO_AddInputCharactersUTF8(io, textPtr)
+                target.inputQueue.append(.text(String(cString: textPtr)))
             }
-            return io.pointee.WantCaptureKeyboard
+            return target.wantCaptureKeyboard
 
         case UInt32(SDL_EVENT_KEY_DOWN.rawValue),
             UInt32(SDL_EVENT_KEY_UP.rawValue):
@@ -435,25 +477,73 @@ public final class EngineUIManager {
             let imKey = Self.mapSDLKeyToImGuiKey(event.key.key)
 
             if imKey != ImGuiKey_None {
-                ImGuiIO_AddKeyEvent(io, imKey, isDown)
+                target.inputQueue.append(.key(key: imKey, down: isDown))
             }
 
             if event.key.scancode == SDL_SCANCODE_LCTRL || event.key.scancode == SDL_SCANCODE_RCTRL {
-                ImGuiIO_AddKeyEvent(io, ImGuiMod_Ctrl, isDown)
+                target.inputQueue.append(.key(key: ImGuiMod_Ctrl, down: isDown))
             }
             if event.key.scancode == SDL_SCANCODE_LSHIFT || event.key.scancode == SDL_SCANCODE_RSHIFT {
-                ImGuiIO_AddKeyEvent(io, ImGuiMod_Shift, isDown)
+                target.inputQueue.append(.key(key: ImGuiMod_Shift, down: isDown))
             }
             if event.key.scancode == SDL_SCANCODE_LALT || event.key.scancode == SDL_SCANCODE_RALT {
-                ImGuiIO_AddKeyEvent(io, ImGuiMod_Alt, isDown)
+                target.inputQueue.append(.key(key: ImGuiMod_Alt, down: isDown))
             }
             if event.key.scancode == SDL_SCANCODE_LGUI || event.key.scancode == SDL_SCANCODE_RGUI {
-                ImGuiIO_AddKeyEvent(io, ImGuiMod_Super, isDown)
+                target.inputQueue.append(.key(key: ImGuiMod_Super, down: isDown))
             }
-            return io.pointee.WantCaptureKeyboard
+            return target.wantCaptureKeyboard
+
+        case UInt32(SDL_EVENT_WINDOW_FOCUS_GAINED.rawValue):
+            target.inputQueue.append(.focus(gained: true))
+            return false
+
+        case UInt32(SDL_EVENT_WINDOW_FOCUS_LOST.rawValue):
+            // Mirror the stock-backend behavior: a window that loses focus
+            // releases everything it held so no button stays stuck down.
+            target.inputQueue.append(.focus(gained: false))
+            for button in 0..<5 {
+                target.inputQueue.append(.mouseButton(index: Int32(button), down: false))
+            }
+            return false
+
+        case UInt32(SDL_EVENT_WINDOW_MOUSE_LEAVE.rawValue):
+            target.hasMousePos = false
+            return false
 
         default:
             return false
+        }
+    }
+
+    /// Drain a window's queued input into the shared ImGui context. Must run
+    /// immediately before that window's `NewFrame`, after its `DisplaySize`
+    /// is set. Always re-seeds the window's last known mouse position first:
+    /// `io.MousePos` still holds whichever window framed last.
+    internal func replayQueuedInput(for target: EngineManagedWindow) {
+        defer { target.inputQueue.removeAll(keepingCapacity: true) }
+        guard let io = ImGuiGetIO() else { return }
+
+        if target.hasMousePos {
+            ImGuiIO_AddMousePosEvent(io, target.mouseX, target.mouseY)
+        } else {
+            ImGuiIO_AddMousePosEvent(io, -256000.0, -256000.0)
+        }
+        for queued in target.inputQueue {
+            switch queued {
+            case .mousePos(let x, let y):
+                ImGuiIO_AddMousePosEvent(io, x, y)
+            case .mouseButton(let index, let down):
+                ImGuiIO_AddMouseButtonEvent(io, index, down)
+            case .mouseWheel(let x, let y):
+                ImGuiIO_AddMouseWheelEvent(io, x, y)
+            case .key(let key, let down):
+                ImGuiIO_AddKeyEvent(io, key, down)
+            case .text(let string):
+                string.withCString { ImGuiIO_AddInputCharactersUTF8(io, $0) }
+            case .focus(let gained):
+                ImGuiIO_AddFocusEvent(io, gained)
+            }
         }
     }
 
