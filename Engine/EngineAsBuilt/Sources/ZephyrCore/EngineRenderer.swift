@@ -563,15 +563,17 @@ public final class EngineRenderer {
             engine.dropSecondaryCtx(for: id)
         }
 
-        // Split-pane contexts exist only while their leaf is a non-focused
-        // pane showing a tab; anything else is pruned, releasing its GPU
-        // buffers.
+        // Split-pane contexts stay warm for every leaf showing a tab —
+        // including the focused one. Pruning the focused leaf's context
+        // forced a cold rebuild (blank, then pop-in) on every focus change,
+        // which read as the panes "swapping" with a blink. A warm context
+        // costs one buffer set per pane and catches up on defocus via the
+        // usual revision checks. Contexts are pruned only when their leaf
+        // disappears or the view unsplits.
         var livePaneLeaves = Set<UUID>()
         if engine.mainPanes.isSplit {
-            let focusedID = engine.mainPanes.focusedLeafID
             for node in engine.mainPanes.leaves() {
-                if case .leaf(let id, let shown) = node,
-                   shown != nil, id != focusedID {
+                if case .leaf(let id, let shown) = node, shown != nil {
                     livePaneLeaves.insert(id)
                 }
             }
@@ -842,18 +844,28 @@ public final class EngineRenderer {
 
         // Post-UI sprites: focused leaf first, then secondary leaves.
         if focusedShowsActive {
-            let saved = engine.snapshotMetrics()
-            engine.borrowPaneDims(width: Int32(focusedLeaf.rect.w), height: Int32(focusedLeaf.rect.h))
-            let ft = engine.camera.transformForSubRect(
-                originX: Double(focusedLeaf.rect.x), originY: Double(focusedLeaf.rect.y),
-                width: Int32(focusedLeaf.rect.w), height: Int32(focusedLeaf.rect.h))
-            pushLeafClip(focusedLeaf.rect)
-            renderPrimarySprites(
-                transform: ft, deltaSec: deltaSec,
-                viewportWidth: focusedLeaf.rect.w, viewportHeight: focusedLeaf.rect.h,
-                cullOrigin: (focusedLeaf.rect.x, focusedLeaf.rect.y))
-            ImGuiPopClipRect()
-            engine.restoreMetrics(saved)
+            if let interim = interimPaneCtx(
+                leaf: focusedLeaf, focusedID: focusedID, activeID: activeID) {
+                // Primary stores were just cleared by the switch; the
+                // pane's own sprites are the current ones.
+                renderLeafGridAndSprites(
+                    leaf: focusedLeaf, ctx: interim,
+                    bg: engine.ui.backgroundColor, deltaSec: deltaSec,
+                    includeGrid: false, cameraOverride: engine.camera)
+            } else {
+                let saved = engine.snapshotMetrics()
+                engine.borrowPaneDims(width: Int32(focusedLeaf.rect.w), height: Int32(focusedLeaf.rect.h))
+                let ft = engine.camera.transformForSubRect(
+                    originX: Double(focusedLeaf.rect.x), originY: Double(focusedLeaf.rect.y),
+                    width: Int32(focusedLeaf.rect.w), height: Int32(focusedLeaf.rect.h))
+                pushLeafClip(focusedLeaf.rect)
+                renderPrimarySprites(
+                    transform: ft, deltaSec: deltaSec,
+                    viewportWidth: focusedLeaf.rect.w, viewportHeight: focusedLeaf.rect.h,
+                    cullOrigin: (focusedLeaf.rect.x, focusedLeaf.rect.y))
+                ImGuiPopClipRect()
+                engine.restoreMetrics(saved)
+            }
         }
         for leaf in nonFocusedLeaves {
             guard let ctx = paneCtxs[leaf.id] else { continue }
@@ -1045,23 +1057,32 @@ public final class EngineRenderer {
     }
 
     /// Grid plus image/text sprites for one non-focused pane, clipped to it.
+    /// `includeGrid` is false for the focused pane's interim rendering,
+    /// whose overlay pass already drew the same grid (drawing it twice
+    /// brightens it until the handover, which reads as a blink).
     private func renderLeafGridAndSprites(
         leaf: (id: UUID, tabID: UUID?, rect: PaneRect),
         ctx: WindowRenderContext,
         bg: SDL_FColor,
-        deltaSec: Double
+        deltaSec: Double,
+        includeGrid: Bool = true,
+        cameraOverride: EngineCameraManager? = nil
     ) {
         let isLight = EngineUIManager.isLightBackground(bg)
-        let st = ctx.camera.transformForSubRect(
+        // Interim donor rendering positions the donor's sprites with the
+        // focused (live) camera, matching the geometry pass.
+        let st = (cameraOverride ?? ctx.camera).transformForSubRect(
             originX: Double(leaf.rect.x), originY: Double(leaf.rect.y),
             width: Int32(leaf.rect.w), height: Int32(leaf.rect.h))
         pushLeafClip(leaf.rect)
-        let vp = ctx.camera.worldViewportRect(
-            windowWidth: Int32(leaf.rect.w), windowHeight: Int32(leaf.rect.h))
-        renderGrid(
-            cam: st,
-            viewportWidth: leaf.rect.w, viewportHeight: leaf.rect.h,
-            cameraZoom: ctx.camera.zoom, viewport: vp, useLightPalette: isLight)
+        if includeGrid {
+            let vp = ctx.camera.worldViewportRect(
+                windowWidth: Int32(leaf.rect.w), windowHeight: Int32(leaf.rect.h))
+            renderGrid(
+                cam: st,
+                viewportWidth: leaf.rect.w, viewportHeight: leaf.rect.h,
+                cameraZoom: ctx.camera.zoom, viewport: vp, useLightPalette: isLight)
+        }
         var spriteEstimate = 0
         for sprite in ctx.sprites.getSpritesForRendering() {
             guard spriteEstimate < 60000 else { break }
@@ -1094,6 +1115,35 @@ public final class EngineRenderer {
         var isPrimaryLeaf: Bool
     }
 
+    /// A context already built for the focused pane's tab+view, shown while
+    /// the primary pipeline rebuilds after a tab/view switch cleared its
+    /// stores. Prefers the pane's own context (its buffers are culled
+    /// around this pane's camera); falls back to any other pane or
+    /// secondary context built for the same tab+view — e.g. swapping the
+    /// focused pane to the paper layout the other pane already shows.
+    /// Without this, the focused pane sits empty (paper-white) for the
+    /// whole regen: a full-pane flash on every swap. Nil once the primary
+    /// buffers exist again.
+    private func interimPaneCtx(
+        leaf: (id: UUID, tabID: UUID?, rect: PaneRect),
+        focusedID: UUID,
+        activeID: UUID?
+    ) -> WindowRenderContext? {
+        guard leaf.id == focusedID,
+              let tabID = leaf.tabID, tabID == activeID,
+              primaryCtx.vertexCount == 0
+        else { return nil }
+        let wantView = engine.tabManager.activeTab?.activeViewIndex ?? -1
+        func ready(_ ctx: WindowRenderContext) -> Bool {
+            ctx.vertexBuffer != nil && ctx.vertexCount > 0
+                && ctx.builtTabID == tabID && ctx.builtViewIndex == wantView
+        }
+        if let own = paneCtxs[leaf.id], ready(own) { return own }
+        for ctx in paneCtxs.values where ready(ctx) { return ctx }
+        if let secondary = secondaryCtxs[tabID], ready(secondary) { return secondary }
+        return nil
+    }
+
     private func planLeafCADPass(
         leaf: (id: UUID, tabID: UUID?, rect: PaneRect),
         focusedID: UUID,
@@ -1104,6 +1154,14 @@ public final class EngineRenderer {
         // Every other pane uses its leaf-keyed context (own tab, drawing
         // view, and camera); anything not ready yet paints its background.
         if leaf.id == focusedID, leaf.tabID != nil, leaf.tabID == activeID {
+            if let interim = interimPaneCtx(
+                leaf: leaf, focusedID: focusedID, activeID: activeID) {
+                return LeafPassPlan(
+                    bg: engine.ui.backgroundColor, ctx: interim,
+                    camera: engine.camera,
+                    renderOrigin: interim.geometry.renderOrigin,
+                    isPrimaryLeaf: true)
+            }
             return LeafPassPlan(
                 bg: engine.ui.backgroundColor, ctx: primaryCtx,
                 camera: engine.camera, renderOrigin: primaryCtx.geometry.renderOrigin,
@@ -1243,7 +1301,10 @@ public final class EngineRenderer {
         colorTarget.texture = swapchainTexture
         colorTarget.mip_level = 0
         colorTarget.layer_or_depth_plane = 0
-        colorTarget.clear_color = engine.ui.backgroundColor
+        // Clear to THIS pane's background, never the global one: the clear
+        // covers the whole target, so a white paper-space global would
+        // flash every pane white if a background quad ever failed to cover.
+        colorTarget.clear_color = plan.bg
         colorTarget.load_op = isFirst ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD
         colorTarget.store_op = SDL_GPU_STOREOP_STORE
         colorTarget.cycle = false

@@ -681,6 +681,22 @@ public final class PhrostEngine {
             // fresh regeneration for the newly active tab and applies ONLY its results.
             self.renderer.primaryCtx.regenGeneration &+= 1
             self.renderer.primaryCtx.appliedGeneration = -1
+            // Clear the primary stores NOW: until the async regen lands they
+            // still hold the previous tab/view's primitives, sprites, and
+            // vertices, which would otherwise draw through the new camera
+            // for ~a second (the previous view "imprinted" on the new one).
+            // A brief empty canvas beats the wrong drawing.
+            self.geometryManager.clearAll()
+            for (_, spriteIDs) in self.cadBridge.entitySpriteMap {
+                for id in spriteIDs {
+                    self.spriteManager.removeSprite(id: id)
+                }
+            }
+            self.cadBridge.entityPrimitiveMap.removeAll()
+            self.cadBridge.entitySpriteMap.removeAll()
+            self.renderer.primaryCtx.invalidateBuiltState(device: self.gpuDevice)
+            self.renderer.primaryCtx.builtTabID = nil
+            self.renderer.primaryCtx.builtViewIndex = -1
             self.tabManager.activeDocument.needsRegeneration = true
             self.cadSelection.clearSelection()
             self.snap.snapTrackingEngine.clear()
