@@ -814,10 +814,18 @@ public final class EngineRenderer {
                 originX: Double(focusedLeaf.rect.x), originY: Double(focusedLeaf.rect.y),
                 width: Int32(focusedLeaf.rect.w), height: Int32(focusedLeaf.rect.h))
             pushLeafClip(focusedLeaf.rect)
+            // Overlays (selection/hover highlight, grips, ghosts, crosshair)
+            // draw into the background/foreground lists, whose clip stacks
+            // are independent of the window list clipped above — without
+            // these, highlight geometry spills across the divider.
+            pushBackgroundClip(focusedLeaf.rect)
+            pushForegroundClip(focusedLeaf.rect)
             refreshGripCache(transform: ft)
             renderPrimaryVectorOverlays(
                 transform: ft, origin: (focusedLeaf.rect.x, focusedLeaf.rect.y))
             renderFeatureOverlay(transform: ft)
+            popForegroundClip()
+            popBackgroundClip()
             ImGuiPopClipRect()
             engine.restoreMetrics(saved)
         }
@@ -859,10 +867,12 @@ public final class EngineRenderer {
                     originX: Double(focusedLeaf.rect.x), originY: Double(focusedLeaf.rect.y),
                     width: Int32(focusedLeaf.rect.w), height: Int32(focusedLeaf.rect.h))
                 pushLeafClip(focusedLeaf.rect)
+                pushBackgroundClip(focusedLeaf.rect)
                 renderPrimarySprites(
                     transform: ft, deltaSec: deltaSec,
                     viewportWidth: focusedLeaf.rect.w, viewportHeight: focusedLeaf.rect.h,
                     cullOrigin: (focusedLeaf.rect.x, focusedLeaf.rect.y))
+                popBackgroundClip()
                 ImGuiPopClipRect()
                 engine.restoreMetrics(saved)
             }
@@ -1075,6 +1085,7 @@ public final class EngineRenderer {
             originX: Double(leaf.rect.x), originY: Double(leaf.rect.y),
             width: Int32(leaf.rect.w), height: Int32(leaf.rect.h))
         pushLeafClip(leaf.rect)
+        pushBackgroundClip(leaf.rect)
         if includeGrid {
             let vp = ctx.camera.worldViewportRect(
                 windowWidth: Int32(leaf.rect.w), windowHeight: Int32(leaf.rect.h))
@@ -1092,6 +1103,7 @@ public final class EngineRenderer {
                 useLightPalette: isLight, cullOrigin: (leaf.rect.x, leaf.rect.y))
             spriteEstimate += 4
         }
+        popBackgroundClip()
         ImGuiPopClipRect()
     }
 
@@ -1101,6 +1113,46 @@ public final class EngineRenderer {
             ImVec2(x: rect.x, y: rect.y),
             ImVec2(x: rect.x + rect.w, y: rect.y + rect.h),
             true)
+    }
+
+    /// Push the leaf clip onto the BACKGROUND draw list. Sprites (TTF text,
+    /// images) draw there, and draw lists keep independent clip stacks:
+    /// `ImGuiPushClipRect` only affects the current window's list, so
+    /// without this, text quads spill across pane dividers (GPU geometry
+    /// doesn't — it's scissored in its own pass). Pair with
+    /// `popBackgroundClip()`.
+    private func pushBackgroundClip(_ rect: PaneRect) {
+        if let bgDL = igGetBackgroundDrawList(nil) {
+            ImDrawListPushClipRect(
+                bgDL,
+                ImVec2(x: rect.x, y: rect.y),
+                ImVec2(x: rect.x + rect.w, y: rect.y + rect.h),
+                true)
+        }
+    }
+
+    private func popBackgroundClip() {
+        if let bgDL = igGetBackgroundDrawList(nil) {
+            ImDrawListPopClipRect(bgDL)
+        }
+    }
+
+    /// Foreground-list counterpart of `pushBackgroundClip` (crosshair and
+    /// other foreground overlays). Pair with `popForegroundClip()`.
+    private func pushForegroundClip(_ rect: PaneRect) {
+        if let fgDL = igGetForegroundDrawList_ViewportPtr(nil) {
+            ImDrawListPushClipRect(
+                fgDL,
+                ImVec2(x: rect.x, y: rect.y),
+                ImVec2(x: rect.x + rect.w, y: rect.y + rect.h),
+                true)
+        }
+    }
+
+    private func popForegroundClip() {
+        if let fgDL = igGetForegroundDrawList_ViewportPtr(nil) {
+            ImDrawListPopClipRect(fgDL)
+        }
     }
 
     /// One leaf's CAD pass: clear to the leaf background, then draw its

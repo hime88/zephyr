@@ -29,15 +29,36 @@ struct RadialNavUI {
     static var popupRotationDeg: Float = 0.0
     static var dragOffset: ImVec2? = nil
     static var dragStartMousePos: ImVec2? = nil
+    static var wasVisible: Bool = false
+
+    /// Where the nav appears: bottom-right of the focused split pane when
+    /// split (the remembered full-window spot may sit in another pane or
+    /// outside what's visible), else bottom-right of the window.
+    static func defaultPosition(engine: PhrostEngine, dw: Float, dh: Float, size: Float, padding: Float) -> ImVec2 {
+        if engine.mainPanes.isSplit, let canvasF = engine.ui.drawingViewportRect {
+            let canvas = PaneRect(x: canvasF.x, y: canvasF.y, w: canvasF.w, h: canvasF.h)
+            if let leaf = engine.mainPanes.leafRects(canvas: canvas)
+                .first(where: { $0.id == engine.mainPanes.focusedLeafID }) {
+                return ImVec2(
+                    x: max(leaf.rect.x, leaf.rect.x + leaf.rect.w - size - padding),
+                    y: max(leaf.rect.y, leaf.rect.y + leaf.rect.h - size - padding))
+            }
+        }
+        return ImVec2(x: dw - size - padding, y: dh - size - padding - AppLayout.statusBarHeight)
+    }
 
     static func render(engine: PhrostEngine, dw: Float, dh: Float) {
-        guard engine.ui.radialNavVisible else { return }
+        guard engine.ui.radialNavVisible else { wasVisible = false; return }
+        let justShown = !wasVisible
+        wasVisible = true
 
         let size: Float = 320
         let padding: Float = 20
 
         // Use FirstUseEver so ImGui's ini file remembers position & size across runs.
         // When the user is actively dragging the nav, we override with Always.
+        // On each fresh show (NAV), force the pane-aware default so it always
+        // appears somewhere viewable instead of a stale remembered spot.
         if let offset = dragOffset {
             let io = ImGuiGetIO()!
             ImGuiSetNextWindowPos(
@@ -45,9 +66,12 @@ struct RadialNavUI {
                 Int32(ImGuiCond_Always.rawValue),
                 ImVec2(x: 0, y: 0))
         } else {
+            let cond: Int32 = justShown
+                ? Int32(ImGuiCond_Always.rawValue)
+                : Int32(ImGuiCond_FirstUseEver.rawValue)
             ImGuiSetNextWindowPos(
-                ImVec2(x: dw - size - padding, y: dh - size - padding - AppLayout.statusBarHeight),
-                Int32(ImGuiCond_FirstUseEver.rawValue),
+                defaultPosition(engine: engine, dw: dw, dh: dh, size: size, padding: padding),
+                cond,
                 ImVec2(x: 0, y: 0))
         }
         ImGuiSetNextWindowSize(ImVec2(x: size, y: size), Int32(ImGuiCond_FirstUseEver.rawValue))
