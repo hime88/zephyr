@@ -615,8 +615,14 @@ public final class EngineRenderer {
 
     /// Vector overlays for the primary (active-tab) view. Split panes call
     /// this for the focused leaf with a leaf-adjusted transform and clip rect.
-    private func renderPrimaryVectorOverlays(transform: CameraTransform, origin: (x: Float, y: Float) = (0, 0)) {
-        renderCrosshairCursor(cam: transform, origin: origin)
+    private func renderPrimaryVectorOverlays(
+        transform: CameraTransform,
+        origin: (x: Float, y: Float) = (0, 0),
+        includeCrosshair: Bool = true
+    ) {
+        if includeCrosshair {
+            renderCrosshairCursor(cam: transform, origin: origin)
+        }
         renderGrid(cam: transform)
         renderSnapIndicator(cam: transform)
 
@@ -801,7 +807,7 @@ public final class EngineRenderer {
         engine.io.pointee.DisplayFramebufferScale = ImVec2(x: engine.scaleX, y: engine.scaleY)
         engine.io.pointee.DeltaTime = Float(deltaSec)
         engine.applyPendingUiScaleRebuild()
-        engine.ui.replayQueuedInput(for: target)
+        engine.ui.replayQueuedInput(for: target, appFocused: engine.windowManager.focusedWindow != nil)
         ImGuiNewFrame()
         updateOSCursorVisibility()
 
@@ -822,13 +828,18 @@ public final class EngineRenderer {
             pushForegroundClip(focusedLeaf.rect)
             refreshGripCache(transform: ft)
             renderPrimaryVectorOverlays(
-                transform: ft, origin: (focusedLeaf.rect.x, focusedLeaf.rect.y))
+                transform: ft, origin: (focusedLeaf.rect.x, focusedLeaf.rect.y),
+                includeCrosshair: false)
             renderFeatureOverlay(transform: ft)
             popForegroundClip()
             popBackgroundClip()
             ImGuiPopClipRect()
             engine.restoreMetrics(saved)
         }
+        // The cursor is global: it follows the mouse in whichever pane is
+        // hovered (the OS cursor is hidden over the whole canvas) and
+        // mirrors into other panes sharing the same tab + drawing view.
+        renderSplitCrosshairs(leaves: leaves, focusedID: focusedID, activeID: activeID)
 
         // 2. ImGui user panels/callbacks + divider widgets.
         uiBuilder()
@@ -1431,7 +1442,9 @@ public final class EngineRenderer {
             let hovered = ImGuiIsItemHovered(0)
             let active = ImGuiIsItemActive()
             if hovered || active {
-                let dl = igGetForegroundDrawList_ViewportPtr(nil)
+                // Background list, not foreground: chrome lines must stay
+                // under popup windows (e.g. command autocomplete).
+                let dl = igGetBackgroundDrawList(nil)
                 let col = active
                     ? igGetColorU32_Vec4(engine.ui.theme.brandGold)
                     : igGetColorU32_Vec4(ImVec4(x: 1, y: 1, z: 1, w: 0.35))
@@ -1457,10 +1470,11 @@ public final class EngineRenderer {
             }
         }
 
-        // Gold outline around the focused pane.
+        // Gold outline around the focused pane (background list, like the
+        // divider lines, so it never paints over popup windows).
         let leaves = engine.mainPanes.leafRects(canvas: canvas)
         if let focused = leaves.first(where: { $0.id == focusedID }) {
-            let dl = igGetForegroundDrawList_ViewportPtr(nil)
+            let dl = igGetBackgroundDrawList(nil)
             ImDrawListAddRect(
                 dl,
                 ImVec2(x: focused.rect.x + 1, y: focused.rect.y + 1),
@@ -1572,7 +1586,7 @@ public final class EngineRenderer {
         engine.applyPendingUiScaleRebuild()
 
         // Replay this window's captured input before its frame starts.
-        engine.ui.replayQueuedInput(for: target)
+        engine.ui.replayQueuedInput(for: target, appFocused: engine.windowManager.focusedWindow != nil)
 
         ImGuiNewFrame()
 
@@ -1885,7 +1899,7 @@ public final class EngineRenderer {
         engine.io.pointee.DisplayFramebufferScale = ImVec2(x: dims.sx, y: dims.sy)
         engine.io.pointee.DeltaTime = Float(deltaSec)
 
-        engine.ui.replayQueuedInput(for: target)
+        engine.ui.replayQueuedInput(for: target, appFocused: engine.windowManager.focusedWindow != nil)
 
         ImGuiNewFrame()
 
@@ -2092,7 +2106,7 @@ public final class EngineRenderer {
         engine.io.pointee.DisplayFramebufferScale = ImVec2(x: aux.scaleX, y: aux.scaleY)
         engine.io.pointee.DeltaTime = Float(deltaSec)
 
-        engine.ui.replayQueuedInput(for: aux)
+        engine.ui.replayQueuedInput(for: aux, appFocused: engine.windowManager.focusedWindow != nil)
 
         ImGuiNewFrame()
 
@@ -2620,14 +2634,24 @@ public final class EngineRenderer {
         // the user needs to see the cursor to pick points.
 
         let drawList = igGetForegroundDrawList_ViewportPtr(nil)
+        drawCrosshairArms(
+            center: ImVec2(
+                x: engine.interaction.lastMouseX + origin.x,
+                y: engine.interaction.lastMouseY + origin.y),
+            drawList: drawList)
+    }
+
+    /// The crosshair glyph at a screen point (shared by the primary cursor
+    /// and the mirrored split-pane cursors).
+    private func drawCrosshairArms(center: ImVec2, drawList: UnsafeMutablePointer<ImDrawList>?) {
         let crosshair = engine.ui.isViewportBackgroundLight ? (20, 38, 52, 120) : (255, 255, 255, 120)
         let col = makeImCol32(
             r: UInt8(crosshair.0),
             g: UInt8(crosshair.1),
             b: UInt8(crosshair.2),
             a: UInt8(crosshair.3))
-        let cx = engine.interaction.lastMouseX + origin.x
-        let cy = engine.interaction.lastMouseY + origin.y
+        let cx = center.x
+        let cy = center.y
         let armLen: Float = 56  // pixels from center in each direction
         let gap: Float = 0      // small gap around center so the intersection is visible
 
@@ -2660,6 +2684,83 @@ public final class EngineRenderer {
         ImDrawListAddLine(drawList, ImVec2(x: lx1, y: ly1), ImVec2(x: lx2, y: ly2), col, 2.0)
         ImDrawListAddLine(drawList, ImVec2(x: rx1, y: ry1), ImVec2(x: rx2, y: ry2), col, 2.0)
         _foregroundVertexEstimate += 24  // 4 thick lines ≈ 6 verts each
+    }
+
+    /// Global cursor for split panes: the crosshair follows the physical
+    /// mouse in whichever pane it hovers (focused or not — the OS cursor is
+    /// hidden over the whole canvas), and mirrors at the same world point
+    /// into every other pane sharing that tab + drawing view (same
+    /// coordinate space). Display only; CAD input stays focused-pane-local.
+    private func renderSplitCrosshairs(
+        leaves: [(id: UUID, tabID: UUID?, rect: PaneRect)],
+        focusedID: UUID,
+        activeID: UUID?
+    ) {
+        let io = ImGuiGetIO()
+        if let wantCapture = io?.pointee.WantCaptureMouse, wantCapture {
+            return
+        }
+        guard !engine.interaction.dragActive && !engine.interaction.gripActive && !engine.interaction.panActive,
+              let io else { return }
+        let mouse = io.pointee.MousePos
+        func containsMouse(_ rect: PaneRect) -> Bool {
+            mouse.x >= rect.x && mouse.x < rect.x + rect.w
+                && mouse.y >= rect.y && mouse.y < rect.y + rect.h
+        }
+        guard let hover = leaves.first(where: { containsMouse($0.rect) }),
+              let drawList = igGetForegroundDrawList_ViewportPtr(nil) else { return }
+
+        /// The (tab, drawing view) coordinate space a leaf shows.
+        func space(of leaf: (id: UUID, tabID: UUID?, rect: PaneRect)) -> (UUID, Int)? {
+            guard let tabID = leaf.tabID,
+                  let tab = engine.tabManager.tab(for: tabID) else { return nil }
+            if leaf.id == focusedID && tabID == activeID {
+                return (tabID, tab.activeViewIndex)
+            }
+            let entry = engine.paneViews.entry(leafID: leaf.id, tabID: tabID)
+            let idx = min(
+                max(entry?.viewIndex ?? tab.activeViewIndex, 0),
+                max(tab.drawingViews.count - 1, 0))
+            return (tabID, idx)
+        }
+        func transform(of leaf: (id: UUID, tabID: UUID?, rect: PaneRect)) -> CameraTransform? {
+            let camera: EngineCameraManager?
+            if leaf.id == focusedID && leaf.tabID == activeID {
+                camera = engine.camera
+            } else {
+                camera = paneCtxs[leaf.id]?.camera
+            }
+            return camera?.transformForSubRect(
+                originX: Double(leaf.rect.x), originY: Double(leaf.rect.y),
+                width: Int32(leaf.rect.w), height: Int32(leaf.rect.h))
+        }
+
+        let hoverSpace = space(of: hover)
+        let world: (Double, Double)? = transform(of: hover).map {
+            EngineCameraManager.screenToWorld(screenX: mouse.x, screenY: mouse.y, cam: $0)
+        }
+
+        for leaf in leaves {
+            let center: ImVec2?
+            if leaf.id == hover.id {
+                center = mouse
+            } else if let world, let hoverSpace,
+                      let leafSpace = space(of: leaf),
+                      leafSpace.0 == hoverSpace.0 && leafSpace.1 == hoverSpace.1,
+                      let t = transform(of: leaf) {
+                let p = EngineCameraManager.worldToScreen(
+                    worldX: world.0, worldY: world.1, cam: t)
+                let inside = p.x >= leaf.rect.x && p.x < leaf.rect.x + leaf.rect.w
+                    && p.y >= leaf.rect.y && p.y < leaf.rect.y + leaf.rect.h
+                center = inside ? ImVec2(x: p.x, y: p.y) : nil
+            } else {
+                center = nil
+            }
+            guard let center else { continue }
+            pushForegroundClip(leaf.rect)
+            drawCrosshairArms(center: center, drawList: drawList)
+            popForegroundClip()
+        }
     }
 
     // MARK: - Grid

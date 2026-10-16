@@ -520,7 +520,7 @@ public final class EngineUIManager {
     /// immediately before that window's `NewFrame`, after its `DisplaySize`
     /// is set. Always re-seeds the window's last known mouse position first:
     /// `io.MousePos` still holds whichever window framed last.
-    internal func replayQueuedInput(for target: EngineManagedWindow) {
+    internal func replayQueuedInput(for target: EngineManagedWindow, appFocused: Bool) {
         defer { target.inputQueue.removeAll(keepingCapacity: true) }
         guard let io = ImGuiGetIO() else { return }
 
@@ -542,7 +542,11 @@ public final class EngineUIManager {
             case .text(let string):
                 string.withCString { ImGuiIO_AddInputCharactersUTF8(io, $0) }
             case .focus(let gained):
-                ImGuiIO_AddFocusEvent(io, gained)
+                // ImGui app focus is global, but the queued events are
+                // per-window: one window losing focus to a sibling is not
+                // an app-focus loss (which would clear keys/active state
+                // mid-typing). Only report loss when nothing is focused.
+                ImGuiIO_AddFocusEvent(io, gained || appFocused)
             }
         }
     }

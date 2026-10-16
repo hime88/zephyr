@@ -944,14 +944,20 @@ public final class PhrostEngine {
     }
 
     /// Reconcile windows with the active tab: the main canvas follows docked
-    /// tabs, and the hosting window is raised. Called after every tab switch,
-    /// keeping the "focused window shows the active tab" invariant (focus
-    /// changes complete it from the other side).
+    /// tabs, and the hosting window is raised WHEN IT ISN'T ALREADY FOCUSED.
+    /// Raising unconditionally made the main window jump over float windows
+    /// on every tab/view switch (all of which land here), even when the user
+    /// was working in — or had just raised — the other window. A window the
+    /// user clicked is already raised by the window manager; this raise only
+    /// completes cross-window activations (e.g. Ctrl+Tab to a floated tab).
+    /// Called after every tab switch, keeping the "focused window shows the
+    /// active tab" invariant (focus changes complete it from the other side).
     public func syncWindowsToActiveTab() {
         guard let active = tabManager.activeTab else { return }
         if active.isFloated {
             if let windowID = floatWindowIDs[active.id],
-               let window = windowManager.window(for: windowID) {
+               let window = windowManager.window(for: windowID),
+               !window.isFocused {
                 SDL_RaiseWindow(window.handle)
             }
         } else {
@@ -959,7 +965,7 @@ public final class PhrostEngine {
             if mainPanes.isSplit {
                 followActiveTabInPanes(activeID: active.id)
             }
-            if let main = windowManager.mainWindow {
+            if let main = windowManager.mainWindow, !main.isFocused {
                 SDL_RaiseWindow(main.handle)
             }
         }
