@@ -943,13 +943,34 @@ public final class PhrostEngine {
         return window.hostedTabID == activeID
     }
 
+    /// Activate the tab a window shows, in response to direct user
+    /// interaction (click, wheel, pen, key) in that window. Focus events
+    /// normally do this first, but interaction must not depend on them:
+    /// when a float window's focus event is lost, misrouted, or bounced,
+    /// `windowShowsActiveTab` would stay false forever and every canvas
+    /// event in that window would be dropped while its drawing renders
+    /// on as an inert secondary view. A click is unambiguous intent.
+    public func activateTabForInteraction(in window: EngineManagedWindow) {
+        let targetID: UUID?
+        if window.isMain {
+            targetID = mainPanes.isSplit ? mainPanes.focusedTabID : mainShownTab()?.id
+        } else {
+            targetID = window.hostedTabID
+        }
+        if let targetID, targetID != tabManager.activeTab?.id,
+           let idx = tabManager.indexOfTab(id: targetID) {
+            tabManager.switchToTab(at: idx)
+        }
+    }
+
     /// Reconcile windows with the active tab: the main canvas follows docked
     /// tabs, and the hosting window is raised WHEN IT ISN'T ALREADY FOCUSED.
     /// Raising unconditionally made the main window jump over float windows
     /// on every tab/view switch (all of which land here), even when the user
-    /// was working in — or had just raised — the other window. A window the
-    /// user clicked is already raised by the window manager; this raise only
-    /// completes cross-window activations (e.g. Ctrl+Tab to a floated tab).
+    /// was working in — or had just raised — the other window. Clicked
+    /// windows are raised by the input handler's click-to-raise (some WMs
+    /// focus without raising); this raise only completes cross-window
+    /// activations (e.g. Ctrl+Tab to a floated tab).
     /// Called after every tab switch, keeping the "focused window shows the
     /// active tab" invariant (focus changes complete it from the other side).
     public func syncWindowsToActiveTab() {

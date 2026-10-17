@@ -1435,12 +1435,42 @@ public final class EngineRenderer {
     }
 
     /// Divider drag handles plus the focused-pane outline.
+    ///
+    /// Each divider's invisible button lives in its own strip-sized window:
+    /// widget calls need a current window (the split frame has none open at
+    /// this point — the buttons used to be orphaned and could never hover
+    /// or activate), and a canvas-sized host window would make
+    /// `WantCaptureMouse` true over the whole canvas, swallowing CAD input.
+    /// A window exactly covering the hit strip captures only there.
     private func renderPaneDividers(canvas: PaneRect, focusedID: UUID) {
         for divider in engine.mainPanes.dividers(canvas: canvas) {
-            ImGuiSetCursorScreenPos(ImVec2(x: divider.rect.x, y: divider.rect.y))
-            _ = ImGuiInvisibleButton("##panedivider_\(divider.id.uuidString)", ImVec2(x: divider.rect.w, y: divider.rect.h), 0)
-            let hovered = ImGuiIsItemHovered(0)
-            let active = ImGuiIsItemActive()
+            ImGuiSetNextWindowPos(
+                ImVec2(x: divider.rect.x, y: divider.rect.y),
+                Int32(ImGuiCond_Always.rawValue), ImVec2(x: 0, y: 0))
+            ImGuiSetNextWindowSize(
+                ImVec2(x: divider.rect.w, y: divider.rect.h),
+                Int32(ImGuiCond_Always.rawValue))
+            ImGuiPushStyleVar(Int32(ImGuiStyleVar_WindowPadding.rawValue), ImVec2(x: 0, y: 0))
+            var open = true
+            let stripFlags: Int32 =
+                Int32(ImGuiWindowFlags_NoTitleBar.rawValue)
+                | Int32(ImGuiWindowFlags_NoResize.rawValue)
+                | Int32(ImGuiWindowFlags_NoMove.rawValue)
+                | Int32(ImGuiWindowFlags_NoScrollbar.rawValue)
+                | Int32(ImGuiWindowFlags_NoSavedSettings.rawValue)
+                | Int32(ImGuiWindowFlags_NoBackground.rawValue)
+                | Int32(ImGuiWindowFlags_NoFocusOnAppearing.rawValue)
+                | Int32(ImGuiWindowFlags_NoBringToFrontOnFocus.rawValue)
+                | Int32(ImGuiWindowFlags_NoNavFocus.rawValue)
+            var hovered = false
+            var active = false
+            if igBegin("##panedividerwin_\(divider.id.uuidString)", &open, stripFlags) {
+                _ = ImGuiInvisibleButton("##panedivider", ImVec2(x: divider.rect.w, y: divider.rect.h), 0)
+                hovered = ImGuiIsItemHovered(0)
+                active = ImGuiIsItemActive()
+            }
+            igEnd()
+            ImGuiPopStyleVar(1)
             if hovered || active {
                 // Background list, not foreground: chrome lines must stay
                 // under popup windows (e.g. command autocomplete).
