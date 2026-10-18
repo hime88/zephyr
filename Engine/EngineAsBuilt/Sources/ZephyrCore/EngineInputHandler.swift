@@ -43,8 +43,10 @@ internal final class EngineInputHandler {
     /// Absolute window coords → focused-leaf-local coords. Identity unless
     /// the main window is split (then CAD input is leaf-local while ImGui
     /// keeps absolute coords from the unmodified event).
-    private func paneLocal(x: Float, y: Float) -> (x: Float, y: Float) {
-        guard let leaf = focusedPaneLeaf() else { return (x, y) }
+    private func paneLocal(x: Float, y: Float, isMain: Bool) -> (x: Float, y: Float) {
+        // Pane offsets exist only in the main window; float-window coords
+        // must pass through untouched even while main is split.
+        guard isMain, let leaf = focusedPaneLeaf() else { return (x, y) }
         return (x - leaf.rect.x, y - leaf.rect.y)
     }
 
@@ -85,9 +87,11 @@ internal final class EngineInputHandler {
         default: return
         }
         // Focus events are interesting for every window; the rest only for
-        // float windows, to keep the log readable.
+        // float windows — plus main-window events while floats exist, so a
+        // float click that was misrouted to main shows up positively
+        // instead of as a suspicious absence of lines.
         let isFocus = name.hasPrefix("FOCUS")
-        guard isFocus || !target.isMain else { return }
+        guard isFocus || !target.isMain || !engine.windowManager.auxWindows.isEmpty else { return }
         let activeID = engine.tabManager.activeTab?.id
         let focusedID = engine.windowManager.focusedWindow?.id
         print("[InputGate] \(name) win=\(target.id) main=\(target.isMain) "
@@ -149,7 +153,17 @@ internal final class EngineInputHandler {
         }
         if let id, id != 0 {
             // A nonzero ID that no longer resolves is a destroyed window.
-            return engine.windowManager.window(for: id)
+            let resolved = engine.windowManager.window(for: id)
+            if resolved == nil && Self.debugInputGates {
+                print("[InputGate] DROPPED type=\(e.type) windowID=\(id) (no registered window)")
+            }
+            return resolved
+        }
+        if Self.debugInputGates, e.type == UInt32(SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue)
+            || e.type == UInt32(SDL_EVENT_MOUSE_WHEEL.rawValue)
+            || e.type == UInt32(SDL_EVENT_WINDOW_FOCUS_GAINED.rawValue)
+            || e.type == UInt32(SDL_EVENT_KEY_DOWN.rawValue) {
+            print("[InputGate] NO-WINDOWID type=\(e.type) -> routed to main")
         }
         return main
     }
@@ -167,6 +181,9 @@ internal final class EngineInputHandler {
         while SDL_PollEvent(&e) {
             guard let target = targetWindow(for: e) else { continue }
             eventCount += 1
+            // Poll-side io reads (focus handlers, modifier sync, key state)
+            // must hit the target window's own ImGui context.
+            engine.activateImGuiContext(for: target)
             let isMain = target.isMain
             var showsActive = engine.windowShowsActiveTab(target)
             let handledByImGui = engine.ui.enqueueImGuiInput(event: &e, for: target)
@@ -315,7 +332,7 @@ internal final class EngineInputHandler {
 
             case UInt32(SDL_EVENT_MOUSE_MOTION.rawValue):
                 guard showsActive else { break }
-                let motionLocal = paneLocal(x: e.motion.x, y: e.motion.y)
+                let motionLocal = paneLocal(x: e.motion.x, y: e.motion.y, isMain: isMain)
                 engine.interaction.lastMouseX = motionLocal.x
                 engine.interaction.lastMouseY = motionLocal.y
                 if !handledByImGui {
@@ -336,7 +353,7 @@ internal final class EngineInputHandler {
                         swallowNextMouseUp = true
                         break
                     }
-                    let downLocal = paneLocal(x: e.button.x, y: e.button.y)
+                    let downLocal = paneLocal(x: e.button.x, y: e.button.y, isMain: isMain)
                     handleMouseDown(x: downLocal.x, y: downLocal.y)
                 } else if Int(e.button.button) == SDL_BUTTON_MIDDLE && !handledByImGui {
                     engine.interaction.panActive = true
@@ -356,7 +373,7 @@ internal final class EngineInputHandler {
                         engine.interaction.forceHideOSCursor = false
                         _ = SDL_SetWindowRelativeMouseMode(target.handle, false)
                     }
-                    let upLocal = paneLocal(x: e.button.x, y: e.button.y)
+                    let upLocal = paneLocal(x: e.button.x, y: e.button.y, isMain: isMain)
                     handleMouseUp(x: upLocal.x, y: upLocal.y)
                 } else if Int(e.button.button) == SDL_BUTTON_MIDDLE {
                     engine.interaction.panActive = false
@@ -387,7 +404,7 @@ internal final class EngineInputHandler {
             case UInt32(SDL_EVENT_PEN_DOWN.rawValue):
                 SDL_RaiseWindow(target.handle) // click-to-raise, as above
                 guard showsActive else { break }
-                let penLocal = paneLocal(x: e.ptouch.x, y: e.ptouch.y)
+                let penLocal = paneLocal(x: e.ptouch.x, y: e.ptouch.y, isMain: isMain)
                 engine.interaction.penState.penActive = true
                 engine.interaction.penState.penDrawing = true
                 engine.interaction.penState.isEraser = e.ptouch.eraser
@@ -405,7 +422,7 @@ internal final class EngineInputHandler {
 
             case UInt32(SDL_EVENT_PEN_UP.rawValue):
                 guard showsActive else { break }
-                let penLocal = paneLocal(x: e.ptouch.x, y: e.ptouch.y)
+                let penLocal = paneLocal(x: e.ptouch.x, y: e.ptouch.y, isMain: isMain)
                 let (wx, wy) = EngineCameraManager.screenToWorld(
                     screenX: penLocal.x, screenY: penLocal.y,
                     cam: engine.camera.currentTransform(windowWidth: engine.windowWidth, windowHeight: engine.windowHeight))
@@ -437,7 +454,7 @@ internal final class EngineInputHandler {
                     break
                 }
                 // Update world-space pen position from the axis event's screen coords.
-                let penLocal = paneLocal(x: e.paxis.x, y: e.paxis.y)
+                let penLocal = paneLocal(x: e.paxis.x, y: e.paxis.y, isMain: isMain)
                 let (wx, wy) = EngineCameraManager.screenToWorld(
                     screenX: penLocal.x, screenY: penLocal.y,
                     cam: engine.camera.currentTransform(windowWidth: engine.windowWidth, windowHeight: engine.windowHeight))
@@ -453,7 +470,7 @@ internal final class EngineInputHandler {
                 guard showsActive else { break }
                 engine.interaction.penState.penActive = true
                 // Pen moved while touching the surface.
-                let penLocal = paneLocal(x: e.pmotion.x, y: e.pmotion.y)
+                let penLocal = paneLocal(x: e.pmotion.x, y: e.pmotion.y, isMain: isMain)
                 let (wx, wy) = EngineCameraManager.screenToWorld(
                     screenX: penLocal.x, screenY: penLocal.y,
                     cam: engine.camera.currentTransform(windowWidth: engine.windowWidth, windowHeight: engine.windowHeight))

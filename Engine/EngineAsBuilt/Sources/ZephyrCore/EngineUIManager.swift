@@ -520,9 +520,27 @@ public final class EngineUIManager {
     /// immediately before that window's `NewFrame`, after its `DisplaySize`
     /// is set. Always re-seeds the window's last known mouse position first:
     /// `io.MousePos` still holds whichever window framed last.
+    private static let debugInputGates =
+        ProcessInfo.processInfo.environment["ZEPHYR_DEBUG_INPUT"] != nil
+
     internal func replayQueuedInput(for target: EngineManagedWindow, appFocused: Bool) {
         defer { target.inputQueue.removeAll(keepingCapacity: true) }
         guard let io = ImGuiGetIO() else { return }
+        if Self.debugInputGates && !target.isMain && !target.inputQueue.isEmpty {
+            let kinds = target.inputQueue.map { queued -> String in
+                switch queued {
+                case .mousePos: return "pos"
+                case .mouseButton(let index, let down): return "btn\(index)\(down ? "+" : "-")"
+                case .mouseWheel: return "wheel"
+                case .key(_, let down): return down ? "key+" : "key-"
+                case .text: return "text"
+                case .focus(let gained): return gained ? "foc+" : "foc-"
+                }
+            }.joined(separator: ",")
+            print("[InputGate] REPLAY win=\(target.id) queued=[\(kinds)] "
+                + "hasMousePos=\(target.hasMousePos) mouse=(\(target.mouseX),\(target.mouseY)) "
+                + "appFocused=\(appFocused)")
+        }
 
         if target.hasMousePos {
             ImGuiIO_AddMousePosEvent(io, target.mouseX, target.mouseY)

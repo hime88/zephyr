@@ -7,7 +7,7 @@ import ImGui
 // =========================================================================
 
 /// One ImGui input event captured during SDL polling, replayed into the
-/// single shared ImGui context immediately before its window's `NewFrame`.
+/// window-owned ImGui context immediately before its `NewFrame`.
 ///
 /// Queued per window because the render loop draws each OS window
 /// sequentially: every frame must consume only the input that targeted its
@@ -56,6 +56,17 @@ public final class EngineManagedWindow {
     /// Set when in-window UI asks to close this window. Drained at the start
     /// of the next frame so teardown never interrupts a frame in flight.
     public var closeRequestedByUI: Bool = false
+
+    // MARK: ImGui context (one per OS window)
+
+    /// This window's own ImGui context and IO. A single shared context
+    /// cannot serve alternating per-window frames: `NewFrame` rolls
+    /// `WasActive = Active` and hover search skips inactive windows, so
+    /// with main/aux frames interleaved every window's widgets are
+    /// permanently one frame too stale to hover (buttons never fire).
+    /// Contexts share the engine's font atlas, which is rebuilt in place.
+    public var imguiContext: UnsafeMutablePointer<ImGuiContext>?
+    public var imguiIO: UnsafeMutablePointer<ImGuiIO>?
 
     // MARK: Input state
 

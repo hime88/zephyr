@@ -378,6 +378,12 @@ public final class EngineRenderer {
     }
 
     internal func render(deltaSec: Double) {
+        // Each OS window frames on its own ImGui context; start from main's
+        // so prologue io reads are deterministic. (The minimized early-out
+        // below skips aux frames too — pre-existing behavior, unchanged.)
+        if let main = engine.windowManager.mainWindow {
+            engine.activateImGuiContext(for: main)
+        }
         let windowFlags = SDL_GetWindowFlags(engine.window)
         let isMinimized = (windowFlags & 0x0000_0000_0000_0040) != 0
         if isMinimized {
@@ -706,6 +712,7 @@ public final class EngineRenderer {
         deltaSec: Double,
         uiBuilder: () -> Void
     ) {
+        engine.activateImGuiContext(for: target)
         // Layout from last frame's canvas (1-frame lag on resize — invisible).
         let canvasF = engine.ui.drawingViewportRect
             ?? SDL_FRect(x: 0, y: 0, w: Float(engine.windowWidth), h: Float(engine.windowHeight))
@@ -1583,6 +1590,7 @@ public final class EngineRenderer {
         t0: UInt64,
         uiBuilder: () -> Void
     ) {
+        engine.activateImGuiContext(for: target)
         // Float windows borrow the engine-global metrics slots so the whole
         // primary pipeline (transforms, overlays, passes) just works.
         let savedMetrics = target.isMain ? nil : engine.snapshotMetrics()
@@ -1865,6 +1873,7 @@ public final class EngineRenderer {
         deltaSec: Double,
         uiBuilder: () -> Void
     ) {
+        engine.activateImGuiContext(for: target)
         let dims: (w: Int32, h: Int32, sx: Float, sy: Float) = target.isMain
             ? (engine.windowWidth, engine.windowHeight, engine.scaleX, engine.scaleY)
             : (target.width, target.height, target.scaleX, target.scaleY)
@@ -2128,6 +2137,7 @@ public final class EngineRenderer {
     /// empty ImGui frame, and present. Float windows always host a tab, so
     /// this is only a safe fallback for a stray aux window.
     private func renderAuxWindow(_ aux: EngineManagedWindow, deltaSec: Double) {
+        engine.activateImGuiContext(for: aux)
         guard refreshAuxMetrics(aux) else { return }
         let windowWidth = aux.width
         let windowHeight = aux.height

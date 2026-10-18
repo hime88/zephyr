@@ -650,6 +650,15 @@ extension EngineRenderer {
         if let buf = imguiVertexBuffer { SDL_ReleaseGPUBuffer(engine.gpuDevice, buf) }
         if let buf = imguiIndexBuffer { SDL_ReleaseGPUBuffer(engine.gpuDevice, buf) }
 
+        // Aux contexts share the main context's font atlas — destroy them
+        // first so the atlas outlives every context using it.
+        for aux in engine.windowManager.auxWindows {
+            if let auxCtx = aux.imguiContext {
+                ImGuiDestroyContext(auxCtx)
+                aux.imguiContext = nil
+                aux.imguiIO = nil
+            }
+        }
         ImGuiDestroyContext(engine.ctx)
         for aux in engine.windowManager.auxWindows {
             SDL_ReleaseWindowFromGPUDevice(engine.gpuDevice, aux.handle)

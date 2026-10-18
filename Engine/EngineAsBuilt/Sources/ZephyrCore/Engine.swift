@@ -581,6 +581,12 @@ public final class PhrostEngine {
         self.ctx = ImGuiCreateContext(nil)
         self.io = ImGuiGetIO()!
         self.io.pointee.ConfigFlags |= Int32(ImGuiConfigFlags_DockingEnable.rawValue)
+        // The main window owns the primary context; float windows get their
+        // own (sharing this atlas) in createAuxWindow.
+        if let mainWindow = windowManager.mainWindow {
+            mainWindow.imguiContext = self.ctx
+            mainWindow.imguiIO = self.io
+        }
 
         // Point ImGui's ini file to the app support directory so docking layout
         // persists between launches.
@@ -882,7 +888,29 @@ public final class PhrostEngine {
             return nil
         }
         SDL_StartTextInput(handle)
-        return windowManager.register(handle: handle, id: SDL_GetWindowID(handle), isMain: false)
+        let registered = windowManager.register(handle: handle, id: SDL_GetWindowID(handle), isMain: false)
+        // Own ImGui context per OS window (shared font atlas). A single
+        // context across alternating per-window frames leaves every
+        // window's widgets WasActive-stale at hover time, so buttons
+        // could never hover or fire in float windows.
+        let styleToCopy = ImGuiGetStyle()?.pointee
+        let auxCtx = ImGuiCreateContext(io.pointee.Fonts)!
+        registered.imguiContext = auxCtx
+        // CreateContext restores the previously-current context, so switch
+        // explicitly before capturing the new context's IO.
+        igSetCurrentContext(auxCtx)
+        registered.imguiIO = ImGuiGetIO()!
+        registered.imguiIO?.pointee.ConfigFlags |= Int32(ImGuiConfigFlags_DockingEnable.rawValue)
+        registered.imguiIO?.pointee.IniFilename = nil
+        if let styleToCopy, let style = ImGuiGetStyle() {
+            style.pointee = styleToCopy
+        }
+        // CreateContext left the aux context current; restore main.
+        if let main = windowManager.mainWindow {
+            activateImGuiContext(for: main)
+        }
+        print("[Engine] Created aux window (id \(registered.id), title \"\(title)\").")
+        return registered
     }
 
     /// Destroy an auxiliary window and remove it from the registry.
@@ -890,9 +918,29 @@ public final class PhrostEngine {
     public func closeAuxWindow(id: SDL_WindowID) {
         guard let aux = windowManager.window(for: id), !aux.isMain else { return }
         print("[Engine] Closing aux window (id \(id)).")
+        if let auxCtx = aux.imguiContext {
+            if igGetCurrentContext() == auxCtx, let main = windowManager.mainWindow {
+                activateImGuiContext(for: main)
+            }
+            ImGuiDestroyContext(auxCtx)
+            aux.imguiContext = nil
+            aux.imguiIO = nil
+        }
         SDL_ReleaseWindowFromGPUDevice(gpuDevice, aux.handle)
         SDL_DestroyWindow(aux.handle)
         windowManager.unregister(id: id)
+    }
+
+    /// Make a window's ImGui context current and repoint `engine.io` at
+    /// its IO, so all frame/poll code transparently works on that window.
+    internal func activateImGuiContext(for window: EngineManagedWindow) {
+        guard let ctx = window.imguiContext, let windowIO = window.imguiIO else { return }
+        if igGetCurrentContext() != ctx {
+            igSetCurrentContext(ctx)
+        }
+        if io != windowIO {
+            io = windowIO
+        }
     }
 
     // MARK: - Float / Dock Tabs
