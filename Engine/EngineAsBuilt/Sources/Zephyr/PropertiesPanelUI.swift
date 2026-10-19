@@ -1,6 +1,7 @@
 import ZephyrCore
 import Foundation
 import ImGui
+import SwiftSDL
 
 // MARK: - PropertiesPanelUI
 //
@@ -20,6 +21,11 @@ import ImGui
 // The panel stays open when nothing is selected (deselected, entity
 // deleted, ...) and shows an empty state; it closes only via PROPS or
 // the window's close button — see PropertiesPanelUIPolicy.
+//
+// With two or more entities selected, a picker at the top chooses the
+// inspected target: All (summed view, edits apply to every selected
+// entity) or one single entity (its properties are shown and edits
+// apply to it only).
 
 @MainActor
 struct PropertiesPanelUI {
@@ -27,14 +33,40 @@ struct PropertiesPanelUI {
     static var _isDocked: Bool = false
     /// Tracks previous frame's showPropertiesPanel flag to detect re-open.
     static var _wasVisible: Bool = false
+    /// Single entity chosen in the multi-select picker; nil means All.
+    static var _inspectedHandle: UUID? = nil
+    /// When the last copy-to-clipboard happened, for brief feedback text.
+    static var _lastCopyTime: Date? = nil
     /// Renders the properties panel if the engine's showPropertiesPanel flag is set.
     /// With no selection the panel stays open and shows an empty state.
     /// - Parameter engine: The engine instance.
     static func render(engine: PhrostEngine) {
         let doc = engine.document
-        // Resolve the selection if there is one. A missing or deleted
-        // entity is not an error: the panel just shows its empty state.
-        let handle = engine.cadSelection.lastSelectedHandle
+        // Stable, labeled view of the selection for the multi-select
+        // picker (selectedHandles is an unordered set). A selected
+        // handle whose entity no longer resolves is simply left out.
+        let pickerItems: [(handle: UUID, label: String)] =
+            engine.cadSelection.selectedHandles
+                .compactMap { h in
+                    doc.entity(for: h).map { (handle: h, label: Self.pickerLabel(for: $0, document: doc)) }
+                }
+                .sorted { ($0.label, $0.handle.uuidString) < ($1.label, $1.handle.uuidString) }
+        let orderedHandles = pickerItems.map(\.handle)
+
+        // Resolve the inspected target. A pick whose entity left the
+        // selection falls back to All (see PropertiesPanelUIPolicy).
+        let inspectedHandle = PropertiesPanelUIPolicy.resolvedInspectedHandle(
+            _inspectedHandle, orderedSelectedHandles: orderedHandles)
+        _inspectedHandle = inspectedHandle
+        let editHandles = PropertiesPanelUIPolicy.editHandles(
+            orderedSelectedHandles: orderedHandles, inspectedHandle: inspectedHandle)
+
+        // Resolve the displayed entity if there is one. Nothing to show
+        // is not an error: the panel just shows its empty state.
+        let handle = PropertiesPanelUIPolicy.displayedHandle(
+            orderedSelectedHandles: orderedHandles,
+            inspectedHandle: inspectedHandle,
+            lastSelectedHandle: engine.cadSelection.lastSelectedHandle)
         let entity = handle.flatMap { doc.entity(for: $0) }
 
         let content = PropertiesPanelUIPolicy.content(
@@ -109,25 +141,72 @@ struct PropertiesPanelUI {
             return
         }
 
-        let selectedHandles = engine.cadSelection.selectedHandles
-        let isMultiSelect = selectedHandles.count > 1
+        let isMultiSelect = orderedHandles.count > 1
 
         let layer = doc.layer(for: entity.layerID)
         let block = entity.blockID.flatMap { doc.block(for: $0) }
         // Resolve entity to renderable primitives (decomposes complex entities).
         let geometry = doc.resolvedGeometry(for: entity) ?? []
 
-        // Selection count indicator (multi-select only)
+        // Multi-select: picker for the inspected target (All or one entity).
+        // Display and edits both follow the pick from the next frame on.
         if isMultiSelect {
-            ImGuiTextV("\(selectedHandles.count) entities selected — changes apply to all")
+            let allLabel = "All (\(orderedHandles.count) entities)"
+            let preview = inspectedHandle.flatMap { picked in
+                pickerItems.first { $0.handle == picked }?.label
+            } ?? allLabel
+            ImGuiTextV("Inspect:")
+            ImGuiPushItemWidth(-1)
+            if ImGuiBeginCombo("##InspectEntity", preview, 0) {
+                let isAll = inspectedHandle == nil
+                if ImGuiSelectable(allLabel, isAll, 0, ImVec2(x: 0, y: 0)) {
+                    _inspectedHandle = nil
+                }
+                if isAll {
+                    ImGuiSetItemDefaultFocus()
+                }
+                for item in pickerItems {
+                    let picked = item.handle == inspectedHandle
+                    if ImGuiSelectable(item.label, picked, 0, ImVec2(x: 0, y: 0)) {
+                        _inspectedHandle = item.handle
+                    }
+                    if picked {
+                        ImGuiSetItemDefaultFocus()
+                    }
+                }
+                ImGuiEndCombo()
+            }
+            ImGuiPopItemWidth()
+
+            if inspectedHandle == nil {
+                ImGuiTextWrappedV("\(orderedHandles.count) entities selected — changes apply to all")
+            } else {
+                ImGuiTextWrappedV("\(orderedHandles.count) entities selected — changes apply to the inspected entity only")
+            }
             igSeparator()
+        }
+
+        // Copy the shown properties as plain text (all edit targets).
+        if igSmallButton("Copy Properties") {
+            let targets = orderedHandles
+                .filter { editHandles.contains($0) }
+                .compactMap { doc.entity(for: $0) }
+            Self.copyToClipboard(Self.propertiesSummaryText(entities: targets, document: doc))
+        }
+        if let lastCopy = _lastCopyTime, Date().timeIntervalSince(lastCopy) < 2 {
+            ImGuiSameLine(0, 8)
+            ImGuiTextV("Copied.")
         }
 
         // Section 1: General — handle, layer, block
         if ImGuiCollapsingHeader("General", Int32(ImGuiTreeNodeFlags_DefaultOpen.rawValue)) {
             let uuidStr = entity.handle.uuidString
-            let shortUUID = String(uuidStr.prefix(12)) + "..."
-            ImGuiTextV("Handle: \(shortUUID)")
+            ImGuiTextV("Handle:")
+            ImGuiSameLine(0, 8)
+            if igSmallButton("Copy##Handle") {
+                Self.copyToClipboard(uuidStr)
+            }
+            ImGuiTextWrappedV(uuidStr)
 
             let layerName = layer?.name ?? "?"
             if let ly = layer {
@@ -182,15 +261,15 @@ struct PropertiesPanelUI {
 
             // --- Layer reassignment ---
             let currentLayerName = layer?.name ?? "?"
-            if isMultiSelect {
-                ImGuiTextV("Layer: \(currentLayerName) (\(selectedHandles.count) entities)")
+            if editHandles.count > 1 {
+                ImGuiTextV("Layer: \(currentLayerName) (\(editHandles.count) entities)")
             }
             if ImGuiBeginCombo("##EntityLayer", currentLayerName, 0) {
                 let allLayers = engine.document.allLayers.sorted { $0.name < $1.name }
                 for ly in allLayers {
                     let selected = ly.handle == entity.layerID
                     if ImGuiSelectable(ly.name, selected, 0, ImVec2(x: 0, y: 0)) {
-                        engine.document.reassignEntities(handles: selectedHandles, to: ly.handle)
+                        engine.document.reassignEntities(handles: editHandles, to: ly.handle)
                     }
                     if selected {
                         ImGuiSetItemDefaultFocus()
@@ -205,11 +284,11 @@ struct PropertiesPanelUI {
             var useColorOverride = hasColorOverride
             if ImGuiCheckbox("Use color override", &useColorOverride) {
                 if useColorOverride {
-                    // Enable: write current layer color as default to ALL selected entities
+                    // Enable: write current layer color as default to the edit targets
                     let hex = String(format: "#%02X%02X%02X", layerColor.r, layerColor.g, layerColor.b)
-                    engine.document.setXDataForAll(handles: selectedHandles, key: "dxf.color", value: .string(hex))
+                    engine.document.setXDataForAll(handles: editHandles, key: "dxf.color", value: .string(hex))
                 } else {
-                    engine.document.removeXDataForAll(handles: selectedHandles, key: "dxf.color")
+                    engine.document.removeXDataForAll(handles: editHandles, key: "dxf.color")
                 }
             }
             if useColorOverride {
@@ -222,7 +301,7 @@ struct PropertiesPanelUI {
                         Int(max(0, min(255, col[0] * 255))),
                         Int(max(0, min(255, col[1] * 255))),
                         Int(max(0, min(255, col[2] * 255))))
-                    engine.document.setXDataForAll(handles: selectedHandles, key: "dxf.color", value: .string(hex))
+                    engine.document.setXDataForAll(handles: editHandles, key: "dxf.color", value: .string(hex))
                 }
             }
 
@@ -231,9 +310,9 @@ struct PropertiesPanelUI {
             var useLWOverride = hasLWOverride
             if ImGuiCheckbox("Use line weight override", &useLWOverride) {
                 if useLWOverride {
-                    engine.document.setXDataForAll(handles: selectedHandles, key: "dxf.lineWeight", value: .double(layerLW))
+                    engine.document.setXDataForAll(handles: editHandles, key: "dxf.lineWeight", value: .double(layerLW))
                 } else {
-                    engine.document.removeXDataForAll(handles: selectedHandles, key: "dxf.lineWeight")
+                    engine.document.removeXDataForAll(handles: editHandles, key: "dxf.lineWeight")
                 }
             }
             if useLWOverride {
@@ -244,7 +323,7 @@ struct PropertiesPanelUI {
                 var lw = Float(currentLW)
                 ImGuiPushItemWidth(ImGuiGetFontSize() * 6)
                 if ImGuiInputFloat("##EntityLW", &lw, 0.05, 0.25, "%.3f mm", 0) {
-                    engine.document.setXDataForAll(handles: selectedHandles, key: "dxf.lineWeight", value: .double(Double(max(0, lw))))
+                    engine.document.setXDataForAll(handles: editHandles, key: "dxf.lineWeight", value: .double(Double(max(0, lw))))
                 }
                 ImGuiPopItemWidth()
             }
@@ -254,9 +333,9 @@ struct PropertiesPanelUI {
             var useLTOverride = hasLTOverride
             if ImGuiCheckbox("Use line type override", &useLTOverride) {
                 if useLTOverride {
-                    engine.document.setXDataForAll(handles: selectedHandles, key: "dxf.lineType", value: .string(layerLT))
+                    engine.document.setXDataForAll(handles: editHandles, key: "dxf.lineType", value: .string(layerLT))
                 } else {
-                    engine.document.removeXDataForAll(handles: selectedHandles, key: "dxf.lineType")
+                    engine.document.removeXDataForAll(handles: editHandles, key: "dxf.lineType")
                 }
             }
             if useLTOverride {
@@ -269,7 +348,7 @@ struct PropertiesPanelUI {
                     for lt in lineTypes {
                         let selected = (lt == currentLT)
                         if ImGuiSelectable(lt, selected, 0, ImVec2(x: 0, y: 0)) {
-                            engine.document.setXDataForAll(handles: selectedHandles, key: "dxf.lineType", value: .string(lt))
+                            engine.document.setXDataForAll(handles: editHandles, key: "dxf.lineType", value: .string(lt))
                         }
                         if selected {
                             ImGuiSetItemDefaultFocus()
@@ -283,16 +362,16 @@ struct PropertiesPanelUI {
             var isDefaultOrder = entity.drawOrder == Int.max
             if ImGuiCheckbox("Default draw order", &isDefaultOrder) {
                 if isDefaultOrder {
-                    engine.document.setDrawOrderForAll(handles: selectedHandles, to: Int.max)
+                    engine.document.setDrawOrderForAll(handles: editHandles, to: Int.max)
                 } else {
-                    engine.document.setDrawOrderForAll(handles: selectedHandles, to: 0)
+                    engine.document.setDrawOrderForAll(handles: editHandles, to: 0)
                 }
             }
             if !isDefaultOrder {
                 var drawOrder = Int32(clamping: entity.drawOrder)
                 ImGuiPushItemWidth(ImGuiGetFontSize() * 4)
                 if ImGuiInputInt("Draw order", &drawOrder, 1, 10, 0) {
-                    engine.document.setDrawOrderForAll(handles: selectedHandles, to: Int(drawOrder))
+                    engine.document.setDrawOrderForAll(handles: editHandles, to: Int(drawOrder))
                 }
                 ImGuiPopItemWidth()
             }
@@ -471,8 +550,8 @@ struct PropertiesPanelUI {
         }
 
         // Section 6: Geometry — editable Length for single-line entities
-        // (only for top-level, non-block, single-select entities)
-        if selectedHandles.count == 1,
+        // (only for top-level, non-block entities with a single edit target)
+        if editHandles.count == 1,
            entity.blockID == nil,
            let localGeom = entity.localGeometry,
            localGeom.count == 1,
@@ -1184,6 +1263,90 @@ struct PropertiesPanelUI {
         var updatedEntity = entity
         updatedEntity.localGeometry = updatedGeometry
         engine.document.updateEntity(updatedEntity)
+    }
+
+    // MARK: - Picker labels / clipboard
+
+    /// Picker label for one selected entity, e.g. "Line #E8C637CE" or a
+    /// block name for block instances. Uses only cheap entity-local data
+    /// (no resolved geometry) since it runs per selected entity per frame.
+    private static func pickerLabel(for entity: CADEntity, document: CADDocument) -> String {
+        let short = entity.handle.uuidString.prefix(8)
+        if entity.dimensionMetadata != nil {
+            return "Dimension #\(short)"
+        }
+        if entity.leaderData != nil {
+            return "Leader #\(short)"
+        }
+        if let blockID = entity.blockID, let block = document.block(for: blockID) {
+            let prefix = entity.arrayData == nil ? "" : "Array: "
+            return "\(prefix)\(block.name) #\(short)"
+        }
+        if let local = entity.localGeometry, let first = local.first {
+            let kind = GeometryPanelUI.typeName(for: first)
+            return local.count > 1 ? "\(kind) ×\(local.count) #\(short)" : "\(kind) #\(short)"
+        }
+        return "Entity #\(short)"
+    }
+
+    /// Copy text to the OS clipboard (SDL, so it reaches other apps,
+    /// not just ImGui's internal clipboard).
+    private static func copyToClipboard(_ text: String) {
+        _ = SDL_SetClipboardText(text)
+        _lastCopyTime = Date()
+    }
+
+    /// Plain-text dump of the properties shown for the given entities,
+    /// for the Copy Properties button. One block per entity.
+    private static func propertiesSummaryText(
+        entities: [CADEntity], document: CADDocument
+    ) -> String {
+        func f2(_ v: Double) -> String { String(format: "%.2f", v) }
+        var blocks: [String] = []
+        for entity in entities {
+            var lines: [String] = []
+            lines.append("Handle: \(entity.handle.uuidString)")
+            if let ly = document.layer(for: entity.layerID) {
+                let hex = String(format: "#%02X%02X%02X", ly.color.r, ly.color.g, ly.color.b)
+                lines.append("Layer: \(ly.name) [\(hex)]")
+                lines.append("Layer Opacity: \(String(format: "%.0f", ly.opacity * 100))%")
+                lines.append("Layer LineWeight: \(String(format: "%.3f", ly.lineWeight)) mm")
+                lines.append("Layer LineType: \(ly.lineType)")
+                lines.append("Layer Visible: \(ly.isVisible ? "Yes" : "No")")
+            } else {
+                lines.append("Layer: ?")
+            }
+            let blockName = entity.blockID.flatMap { document.block(for: $0) }?.name ?? "—"
+            lines.append("Block: \(blockName)")
+            let pos = entity.transform.position
+            lines.append("Position: (\(f2(pos.x)), \(f2(pos.y)), \(f2(pos.z)))")
+            let rot = entity.transform.rotation * 180.0 / .pi
+            lines.append("Rotation: \(String(format: "%.1f", rot))°")
+            let scl = entity.transform.scale
+            lines.append("Scale: (\(f2(scl.x)), \(f2(scl.y)), \(f2(scl.z)))")
+            if let bb = entity.worldBoundingBox {
+                lines.append("Bounds Min: (\(f2(bb.min.x)), \(f2(bb.min.y)), \(f2(bb.min.z)))")
+                lines.append("Bounds Max: (\(f2(bb.max.x)), \(f2(bb.max.y)), \(f2(bb.max.z)))")
+                let sz = bb.size
+                lines.append("Bounds Size: (\(f2(sz.x)), \(f2(sz.y)), \(f2(sz.z)))")
+            }
+            if entity.drawOrder != Int.max {
+                lines.append("Draw Order: \(entity.drawOrder)")
+            }
+            for (key, val) in entity.xdata.sorted(by: { $0.key < $1.key }) {
+                let valStr: String
+                switch val {
+                case .string(let s): valStr = s
+                case .double(let d): valStr = String(format: "%.4f", d)
+                case .int(let i): valStr = "\(i)"
+                case .bool(let b): valStr = b ? "true" : "false"
+                case .date(let d): valStr = "\(d)"
+                }
+                lines.append("\(key): \(valStr)")
+            }
+            blocks.append(lines.joined(separator: "\n"))
+        }
+        return blocks.joined(separator: "\n\n")
     }
 
     /// Parse a hex color string like "#FF8000" or "FF8000" into [Float] (0–1 range).

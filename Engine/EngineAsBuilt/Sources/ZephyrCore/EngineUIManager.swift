@@ -77,6 +77,58 @@ public enum PropertiesPanelUIPolicy {
         guard isVisible else { return .hidden }
         return hasSelectedEntity ? .entity : .empty
     }
+
+    // MARK: - Inspected target within a multi-selection
+
+    /// With two or more entities selected the panel offers a picker: All
+    /// (the summed view, edits apply to every selected entity) or one
+    /// single entity (its properties are shown and edits apply to it
+    /// only). The pick is a handle, with nil meaning All. A pick survives
+    /// only while its entity is still selected; a stale pick resolves
+    /// back to All rather than narrowing edits to a deselected entity.
+    /// `orderedSelectedHandles` is the panel's stable (sorted) view of
+    /// the selection.
+    public static func resolvedInspectedHandle(
+        _ inspectedHandle: UUID?,
+        orderedSelectedHandles: [UUID]
+    ) -> UUID? {
+        guard let inspectedHandle,
+              orderedSelectedHandles.contains(inspectedHandle)
+        else { return nil }
+        return inspectedHandle
+    }
+
+    /// The handles edits made in the panel apply to: the inspected entity
+    /// alone, or every selected entity in All mode.
+    public static func editHandles(
+        orderedSelectedHandles: [UUID],
+        inspectedHandle: UUID?
+    ) -> Set<UUID> {
+        if let single = resolvedInspectedHandle(
+            inspectedHandle, orderedSelectedHandles: orderedSelectedHandles) {
+            return [single]
+        }
+        return Set(orderedSelectedHandles)
+    }
+
+    /// Which entity's properties the panel shows: the inspected pick,
+    /// else the last-clicked entity, else the first selected one so All
+    /// mode still shows something when there is no last-clicked entity.
+    public static func displayedHandle(
+        orderedSelectedHandles: [UUID],
+        inspectedHandle: UUID?,
+        lastSelectedHandle: UUID?
+    ) -> UUID? {
+        if let single = resolvedInspectedHandle(
+            inspectedHandle, orderedSelectedHandles: orderedSelectedHandles) {
+            return single
+        }
+        if let lastSelectedHandle,
+           orderedSelectedHandles.contains(lastSelectedHandle) {
+            return lastSelectedHandle
+        }
+        return orderedSelectedHandles.first
+    }
 }
 
 /// Drawing-view tabs belong to the tab shown in each OS window/pane, not

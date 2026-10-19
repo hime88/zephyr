@@ -56,7 +56,8 @@ struct GeometryPanelUI {
     }
 
     /// Returns a human-readable type name for a CADPrimitive case.
-    private static func typeName(for prim: CADPrimitive) -> String {
+    /// Shared with PropertiesPanelUI's multi-select picker labels.
+    static func typeName(for prim: CADPrimitive) -> String {
         switch prim {
         case .point: return "Point"
         case .line: return "Line"

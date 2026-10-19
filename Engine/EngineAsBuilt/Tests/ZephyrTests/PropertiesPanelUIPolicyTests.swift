@@ -25,4 +25,52 @@ final class PropertiesPanelUIPolicyTests: XCTestCase {
             PropertiesPanelUIPolicy.content(isVisible: true, hasSelectedEntity: true),
             .entity)
     }
+
+    // MARK: - Inspected target (multi-select All / single picker)
+
+    private let a = UUID(uuidString: "00000000-0000-0000-0000-00000000000A")!
+    private let b = UUID(uuidString: "00000000-0000-0000-0000-00000000000B")!
+    private let c = UUID(uuidString: "00000000-0000-0000-0000-00000000000C")!
+
+    func testInspectedHandleResolvesOnlyWhileSelected() {
+        let ordered = [a, b]
+        XCTAssertNil(PropertiesPanelUIPolicy.resolvedInspectedHandle(
+            nil, orderedSelectedHandles: ordered))
+        XCTAssertEqual(PropertiesPanelUIPolicy.resolvedInspectedHandle(
+            b, orderedSelectedHandles: ordered), b)
+        // Stale pick from a previous selection falls back to All.
+        XCTAssertNil(PropertiesPanelUIPolicy.resolvedInspectedHandle(
+            c, orderedSelectedHandles: ordered))
+        XCTAssertNil(PropertiesPanelUIPolicy.resolvedInspectedHandle(
+            a, orderedSelectedHandles: []))
+    }
+
+    func testEditHandlesFollowInspectedTarget() {
+        let ordered = [a, b]
+        // All: edits apply to every selected entity (previous behavior).
+        XCTAssertEqual(PropertiesPanelUIPolicy.editHandles(
+            orderedSelectedHandles: ordered, inspectedHandle: nil), [a, b])
+        // Single: edits apply only to the inspected entity.
+        XCTAssertEqual(PropertiesPanelUIPolicy.editHandles(
+            orderedSelectedHandles: ordered, inspectedHandle: b), [b])
+        // Stale single pick must not silently narrow edits to a deselected entity.
+        XCTAssertEqual(PropertiesPanelUIPolicy.editHandles(
+            orderedSelectedHandles: ordered, inspectedHandle: c), [a, b])
+    }
+
+    func testDisplayedHandlePrefersInspectedThenLastSelectedThenFirst() {
+        let ordered = [a, b]
+        XCTAssertEqual(PropertiesPanelUIPolicy.displayedHandle(
+            orderedSelectedHandles: ordered, inspectedHandle: b, lastSelectedHandle: a), b)
+        XCTAssertEqual(PropertiesPanelUIPolicy.displayedHandle(
+            orderedSelectedHandles: ordered, inspectedHandle: nil, lastSelectedHandle: b), b)
+        // No last-clicked entity (e.g. toggled off): fall back to the first
+        // selected entity so All mode still shows something.
+        XCTAssertEqual(PropertiesPanelUIPolicy.displayedHandle(
+            orderedSelectedHandles: ordered, inspectedHandle: nil, lastSelectedHandle: nil), a)
+        XCTAssertEqual(PropertiesPanelUIPolicy.displayedHandle(
+            orderedSelectedHandles: ordered, inspectedHandle: nil, lastSelectedHandle: c), a)
+        XCTAssertNil(PropertiesPanelUIPolicy.displayedHandle(
+            orderedSelectedHandles: [], inspectedHandle: nil, lastSelectedHandle: a))
+    }
 }
