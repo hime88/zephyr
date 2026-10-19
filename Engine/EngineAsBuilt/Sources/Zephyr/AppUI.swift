@@ -79,11 +79,22 @@ struct AppUI {
             ? (floatBlockBarShown ? AppLayout.topChromeHeight : 0)
             : AppLayout.topChromeHeight
                 + (engine.ui.fileTabsVisible ? AppLayout.tabBarHeight : 0)
-        let showsDrawingViewTabs = (engine.tabManager.activeTab?.drawingViews.count ?? 0) > 1
-            && engine.tabManager.activeTab?.editingBlockID == nil
-        // The view tab bar renders the ACTIVE tab's views; in a float not
-        // showing it, hide the bar instead of showing another doc's views.
-        let showViewTabsHere = showsDrawingViewTabs && (!isFloat || showsActiveTab)
+        // Drawing-view tabs list the views of the tab this window/pane
+        // actually shows. In a split main window that is the focused
+        // pane's tab/view; in a float it is the hosted tab.
+        let shownViewIndex: Int = {
+            guard let shownTab else { return 0 }
+            if !isFloat && engine.mainPanes.isSplit {
+                let entry = engine.paneViews.entry(
+                    leafID: engine.mainPanes.focusedLeafID, tabID: shownTab.id)
+                return entry?.viewIndex ?? shownTab.activeViewIndex
+            }
+            return shownTab.activeViewIndex
+        }()
+        let showsDrawingViewTabs = DrawingViewTabBarPolicy.shouldRender(
+            shownTabViewCount: shownTab?.drawingViews.count ?? 0,
+            isEditingBlock: shownTab?.editingBlockID != nil)
+        let showViewTabsHere = showsDrawingViewTabs
         let bottomOffset = AppLayout.statusBarHeight
             + (showViewTabsHere ? AppLayout.drawingViewTabBarHeight : 0)
         let workH = dh - topOffset - bottomOffset
@@ -227,9 +238,14 @@ struct AppUI {
             }
         }
 
-        // 10. Drawing view tabs and status bar at the bottom.
-        if showViewTabsHere {
-            DrawingViewTabBarUI.render(engine: engine, dw: dw, dh: dh)
+        // 10. Drawing view tabs and status bar at the bottom. The view tabs
+        // belong to the tab shown in this window/pane.
+        if showViewTabsHere, let shownTab {
+            DrawingViewTabBarUI.render(
+                engine: engine, dw: dw, dh: dh,
+                tab: shownTab,
+                selectedViewIndex: shownViewIndex,
+                canSwitch: showsActiveTab)
         }
         StatusBarUI.render(engine: engine, io: io, dw: dw, dh: dh)
 

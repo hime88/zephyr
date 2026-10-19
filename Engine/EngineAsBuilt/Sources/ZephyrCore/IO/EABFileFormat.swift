@@ -78,7 +78,10 @@ public let EABArchiveMagic: UInt32 = 0x41424145  // "EABA" in little-endian
 /// Version 15 persists native leader metadata and named multileader styles.
 /// Version 16 persists analytic hatch spline data and associative source handles.
 /// Version 17 adds penStroke primitive with per-vertex pressure/tilt/rotation.
-public let EABVersion: UInt32 = 17
+/// Version 18 adds a long-string sentinel for payloads over the UInt16 limit.
+public let EABVersion: UInt32 = 18
+/// First version whose strings may use the 0xFFFF + UInt32 long-length form.
+public let EABVersionLongStrings: UInt32 = 18
 
 /// Section type identifiers in the section table.
 public enum EABSectionType: UInt32, Sendable {
@@ -118,9 +121,10 @@ public struct EABHeader: Sendable {
     public let sectionTableOffset: UInt64
     public let fileCRC: UInt32
 
-    public init(unit: CADUnit, sectionTableOffset: UInt64, fileCRC: UInt32 = 0) {
+    public init(unit: CADUnit, sectionTableOffset: UInt64, fileCRC: UInt32 = 0,
+                version: UInt32 = EABVersion) {
         self.magic = EABMagic
-        self.version = EABVersion
+        self.version = version
         self.flags = 0
         self.unit = unit
         self.sectionTableOffset = sectionTableOffset
@@ -323,9 +327,16 @@ public final class BinaryWriter {
     }
 
     public func writeString(_ s: String) {
-        let utf8 = s.utf8
-        writeUInt16(UInt16(utf8.count))
-        data.append(contentsOf: utf8)
+        let bytes = Data(s.utf8)
+        let byteCount = min(bytes.count, Int(UInt32.max))
+        if byteCount < 0xFFFF {
+            writeUInt16(UInt16(byteCount))
+        } else {
+            // EAB v18 long form: 0xFFFF sentinel + UInt32 byte count.
+            writeUInt16(0xFFFF)
+            writeUInt32(UInt32(byteCount))
+        }
+        data.append(bytes.prefix(byteCount))
         checkProgress()
     }
 
@@ -395,10 +406,14 @@ public final class BinaryWriter {
 public final class BinaryReader {
     private let data: Data
     private var cursor: Int
+    /// EAB v18+: a 0xFFFF string length is a sentinel for a UInt32 length.
+    public let usesLongStringSentinel: Bool
 
-    public init(data: Data, startOffset: Int = 0) {
+    public init(data: Data, startOffset: Int = 0,
+                usesLongStringSentinel: Bool = false) {
         self.data = data
         self.cursor = startOffset
+        self.usesLongStringSentinel = usesLongStringSentinel
     }
 
     public var position: Int { cursor }
@@ -477,7 +492,13 @@ public final class BinaryReader {
     }
 
     public func readString() -> String {
-        let len = Int(readUInt16())
+        let shortLength = readUInt16()
+        let len: Int
+        if usesLongStringSentinel && shortLength == 0xFFFF {
+            len = Int(readUInt32())
+        } else {
+            len = Int(shortLength)
+        }
         guard len > 0, canRead(len) else { return "" }
         let str = String(data: data.subdata(in: cursor..<cursor+len), encoding: .utf8) ?? ""
         cursor += len

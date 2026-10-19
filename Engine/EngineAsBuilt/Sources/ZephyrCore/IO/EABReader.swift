@@ -149,7 +149,9 @@ public enum EABReader {
         guard let directoryOffset = safeInt(rawDirOffset),
               directoryOffset >= 16, directoryOffset < data.count else { return nil }
 
-        let dirReader = BinaryReader(data: data, startOffset: directoryOffset)
+        let dirReader = BinaryReader(
+            data: data, startOffset: directoryOffset,
+            usesLongStringSentinel: version >= EABVersionLongStrings)
 
         // Phase 1: collect and validate every entry
         var entries: [ParsedViewEntry] = []
@@ -289,7 +291,9 @@ public enum EABReader {
         var loadedImageStore: [String: CADImageAsset] = [:]
 
         for entry in entries {
-            let reader = BinaryReader(data: data, startOffset: safeInt(entry.offset) ?? 0)
+            let reader = BinaryReader(
+                data: data, startOffset: safeInt(entry.offset) ?? 0,
+                usesLongStringSentinel: header.version >= EABVersionLongStrings)
             switch entry.type {
             case .layers:
                 layers = try parseLayers(reader, version: header.version)
@@ -419,7 +423,9 @@ public enum EABReader {
         var loadedImageStore: [String: CADImageAsset] = [:]
 
         for entry in entries {
-            let reader = BinaryReader(data: data, startOffset: safeInt(entry.offset) ?? 0)
+            let reader = BinaryReader(
+                data: data, startOffset: safeInt(entry.offset) ?? 0,
+                usesLongStringSentinel: header.version >= EABVersionLongStrings)
             switch entry.type {
             case .layers:
                 layers = try parseLayers(reader, version: header.version)
@@ -480,7 +486,8 @@ public enum EABReader {
         guard let unit = CADUnit(rawValue: unitRaw) else {
             throw EABError.readError("Unknown unit code: \(unitRaw)")
         }
-        return EABHeader(unit: unit, sectionTableOffset: tableOffset, fileCRC: fileCRC)
+        return EABHeader(unit: unit, sectionTableOffset: tableOffset, fileCRC: fileCRC,
+                         version: version)
     }
 
     // MARK: - Section Table

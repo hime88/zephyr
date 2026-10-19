@@ -55,6 +55,32 @@ public enum SelectionContextUIPolicy {
     }
 }
 
+/// Drawing-view tabs belong to the tab shown in each OS window/pane, not
+/// to the one global active tab. A window may display another tab's view
+/// list, but switching still runs through the active-tab path after input
+/// activation has made that window's tab active.
+public enum DrawingViewTabBarPolicy {
+    public static func shouldRender(
+        shownTabViewCount: Int,
+        isEditingBlock: Bool
+    ) -> Bool {
+        shownTabViewCount > 1 && !isEditingBlock
+    }
+
+    public static func clampedViewIndex(_ index: Int, viewCount: Int) -> Int {
+        guard viewCount > 0 else { return 0 }
+        return min(max(index, 0), viewCount - 1)
+    }
+
+    public static func shouldSwitch(
+        showsActiveTab: Bool,
+        selectedViewIndex: Int,
+        clickedViewIndex: Int
+    ) -> Bool {
+        showsActiveTab && selectedViewIndex != clickedViewIndex
+    }
+}
+
 @MainActor
 public final class EngineUIManager {
     

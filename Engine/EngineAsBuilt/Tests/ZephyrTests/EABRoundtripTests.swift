@@ -153,6 +153,112 @@ final class EABRoundtripTests: XCTestCase {
         XCTAssertEqual(readEntity.layerID, layer.handle)
     }
 
+    func testEABRoundtripWithOversizedTablePrimitiveInBlock() throws {
+        let doc = CADDocument()
+        let layer = Layer(name: "0", color: .white)
+        doc.importLayersBlocksEntities(layers: [layer], blocks: [], entities: [])
+
+        let column = DataTableColumn(name: "Payload")
+        let longValue = String(repeating: "A", count: 70_000)
+        let data = DataTableData(
+            columns: [column],
+            rows: [DataTableRow(cells: [
+                DataTableCell(columnID: column.id, value: .string(longValue))
+            ])],
+            title: "Oversized table")
+        let block = CADBlock(
+            name: "TableBlock",
+            geometry: [.table(data: data, origin: .zero, color: nil)])
+        doc.importLayersBlocksEntities(layers: [], blocks: [block], entities: [])
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("roundtrip_long_table_\(UUID().uuidString).eab")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        try EABWriter.write(document: doc, to: tempURL)
+        let views = try EABReader.readViews(from: tempURL)
+        let readDoc = try XCTUnwrap(views.first).document
+        let readBlock = try XCTUnwrap(readDoc.allBlocks.first { $0.name == "TableBlock" })
+        let readPrimitive = try XCTUnwrap(readBlock.geometry.first)
+        guard case .table(let readData, _, _) = readPrimitive else {
+            return XCTFail("Expected table primitive, got \(readPrimitive)")
+        }
+        XCTAssertEqual(readData.title, "Oversized table")
+        XCTAssertEqual(readData.rows.first?.cells.first?.value, .string(longValue))
+    }
+
+    @MainActor
+    func testEABAutosaveRoundtripFromImportedDXFWithOversizedTablePayload() throws {
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Tools/bench/golden/multiline_text.dxf")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixtureURL.path))
+
+        let imported = try DXFImporter.importDXF(filePath: fixtureURL.path)
+        XCTAssertFalse(imported.entities.isEmpty)
+
+        let doc = CADDocument()
+        doc.importLayersBlocksEntities(
+            layers: imported.layers,
+            blocks: imported.blocks,
+            entities: imported.entities)
+
+        let column = DataTableColumn(name: "Payload")
+        let longValue = String(repeating: "Z", count: 70_000)
+        let data = DataTableData(
+            columns: [column],
+            rows: [DataTableRow(cells: [
+                DataTableCell(columnID: column.id, value: .string(longValue))
+            ])])
+        doc.importLayersBlocksEntities(
+            layers: [],
+            blocks: [CADBlock(
+                name: "ImportedLongTable",
+                geometry: [.table(data: data, origin: .zero, color: nil)])],
+            entities: [])
+
+        let eabURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("autosave_long_table_\(UUID().uuidString).eab")
+        defer { try? FileManager.default.removeItem(at: eabURL) }
+
+        let snapshots = [doc.buildSaveSnapshot(
+            viewName: "Model",
+            viewKind: .model,
+            cameraState: .default)]
+        try EABWriter.write(snapshots: snapshots, to: eabURL)
+
+        let views = try EABReader.readViews(from: eabURL)
+        let readDoc = try XCTUnwrap(views.first).document
+        XCTAssertEqual(readDoc.allEntities.count, imported.entities.count)
+        let readBlock = try XCTUnwrap(
+            readDoc.allBlocks.first { $0.name == "ImportedLongTable" })
+        let readPrimitive = try XCTUnwrap(readBlock.geometry.first)
+        guard case .table(let readData, _, _) = readPrimitive else {
+            return XCTFail("Expected table primitive, got \(readPrimitive)")
+        }
+        XCTAssertEqual(readData.rows.first?.cells.first?.value, .string(longValue))
+    }
+
+    func testBinaryStringLongLengthSentinelAndLegacyBoundary() {
+        let legacyBoundary = String(repeating: "B", count: 65_535)
+        let legacyWriter = BinaryWriter()
+        legacyWriter.writeUInt16(65_535)
+        legacyWriter.writeBytes(Data(legacyBoundary.utf8))
+        let legacyReader = BinaryReader(data: legacyWriter.bytes)
+        XCTAssertEqual(legacyReader.readString(), legacyBoundary)
+
+        let boundary = String(repeating: "C", count: 65_535)
+        let long = String(repeating: "D", count: 70_000)
+        let writer = BinaryWriter()
+        writer.writeString(boundary)
+        writer.writeString(long)
+        let reader = BinaryReader(data: writer.bytes, usesLongStringSentinel: true)
+        XCTAssertEqual(reader.readString(), boundary)
+        XCTAssertEqual(reader.readString(), long)
+    }
+
     @MainActor
     func testCreateTextAndSelection() throws {
         let doc = CADDocument()

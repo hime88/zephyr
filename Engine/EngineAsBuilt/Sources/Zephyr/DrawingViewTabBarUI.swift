@@ -4,13 +4,22 @@ import ImGui
 
 @MainActor
 struct DrawingViewTabBarUI {
-    private static var lastDocumentID: UUID?
-    private static var lastActiveViewIndex: Int = -1
+    private static var lastViewIndexByTabID: [UUID: Int] = [:]
 
-    static func render(engine: PhrostEngine, dw: Float, dh: Float) {
-        guard let tab = engine.tabManager.activeTab,
-              tab.editingBlockID == nil,
+    static func render(
+        engine: PhrostEngine,
+        dw: Float,
+        dh: Float,
+        tab: DocumentTab,
+        selectedViewIndex: Int,
+        canSwitch: Bool
+    ) {
+        guard tab.editingBlockID == nil,
               tab.drawingViews.count > 1 else { return }
+
+        let selectedIndex = DrawingViewTabBarPolicy.clampedViewIndex(
+            selectedViewIndex, viewCount: tab.drawingViews.count)
+        var effectiveSelectedIndex = selectedIndex
 
         let barH = AppLayout.drawingViewTabBarHeight
         let barY = dh - AppLayout.statusBarHeight - barH
@@ -34,31 +43,26 @@ struct DrawingViewTabBarUI {
         ImGuiPushStyleVarX(Int32(ImGuiStyleVar_ItemSpacing.rawValue), 2)
         ImGuiPushStyleColor(Int32(ImGuiCol_WindowBg.rawValue), engine.ui.theme.tabBarBg)
 
-        if lastDocumentID != tab.id {
-            lastDocumentID = tab.id
-            lastActiveViewIndex = -1
-        }
-
         var opened = true
         if igBegin("##DrawingViewTabBar", &opened, flags) {
-            let activeIndex = tab.activeViewIndex
-            let forceSelection = activeIndex != lastActiveViewIndex
-            if forceSelection {
-                lastActiveViewIndex = activeIndex
-            }
+            // Each OS window has its own ImGui tab-bar state, while this
+            // Swift static is shared. Key forced selection by document tab
+            // so alternating main/float frames do not reset one another.
+            let forceSelection = !canSwitch
+                || lastViewIndexByTabID[tab.id] != selectedIndex
 
             let tabBarFlags = Int32(ImGuiTabBarFlags_NoTooltip.rawValue)
 
             if ImGuiBeginTabBar("DrawingViews", tabBarFlags) {
                 for index in tab.drawingViews.indices {
                     let view = tab.drawingViews[index]
-                    let isActive = index == activeIndex
+                    let isSelected = index == selectedIndex
                     var itemFlags: Int32 = 0
-                    if isActive && forceSelection {
+                    if isSelected && forceSelection {
                         itemFlags |= Int32(ImGuiTabItemFlags_SetSelected.rawValue)
                     }
 
-                    if isActive, let boldFont = engine.ui.boldFont {
+                    if isSelected, let boldFont = engine.ui.boldFont {
                         ImGuiPushFont(boldFont, ImGuiGetFontSize())
                     }
 
@@ -67,12 +71,15 @@ struct DrawingViewTabBarUI {
                         nil,
                         itemFlags)
 
-                    if isActive, engine.ui.boldFont != nil {
+                    if isSelected, engine.ui.boldFont != nil {
                         ImGuiPopFont()
                     }
 
                     if visible {
-                        if !isActive {
+                        if DrawingViewTabBarPolicy.shouldSwitch(
+                            showsActiveTab: canSwitch,
+                            selectedViewIndex: selectedIndex,
+                            clickedViewIndex: index) {
                             let incomingCamera = view.cameraState
                             let needsInitialFit =
                                 abs(incomingCamera.offsetX) < 1e-12 &&
@@ -81,14 +88,14 @@ struct DrawingViewTabBarUI {
                                 abs(incomingCamera.rotation) < 1e-12
 
                             if engine.tabManager.switchToView(at: index) {
-                                lastActiveViewIndex = index
+                                effectiveSelectedIndex = index
                                 if needsInitialFit {
                                     engine.zoomExtents()
                                 }
                             }
                         }
 
-                        if index == engine.tabManager.activeTab?.activeViewIndex {
+                        if index == effectiveSelectedIndex {
                             let min = ImGuiGetItemRectMin()
                             let max = ImGuiGetItemRectMax()
                             ImDrawListAddRectFilled(
@@ -105,6 +112,8 @@ struct DrawingViewTabBarUI {
                 }
                 ImGuiEndTabBar()
             }
+
+            lastViewIndexByTabID[tab.id] = effectiveSelectedIndex
         }
         igEnd()
 

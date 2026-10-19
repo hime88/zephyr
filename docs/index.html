@@ -92,6 +92,7 @@
     </a>
     <div style="display:flex; gap:28px; font-size:14px; color:var(--text-2);">
       <a href="#features" style-hover="color:var(--text);">Features</a>
+      <a href="#multi-window" style-hover="color:var(--text);">Windows</a>
       <a href="#compatibility" style-hover="color:var(--text);">Compatibility</a>
       <a href="#proof" style-hover="color:var(--text);">Proof</a>
       <a href="#autolisp" style-hover="color:var(--text);">AutoLISP</a>
@@ -441,6 +442,10 @@
       <span style="width:6px; height:6px; border-radius:50%; background:var(--accent); flex-shrink:0;"></span>
       <span><span style="color:var(--text); font-weight:500;">SHX vector text included.</span> Full shape‑font byte‑code interpreter — AutoCAD .shx files render as pure vectors at any zoom. Bitmap text degradation is a problem from 2009.</span>
     </div>
+    <div style="margin-top:16px; padding:20px 24px; background:var(--bg-elev); border:1px solid var(--border-soft); border-radius:10px; display:flex; align-items:center; gap:16px; font-size:14px; color:var(--text-2); line-height:1.55;">
+      <span style="width:6px; height:6px; border-radius:50%; background:var(--accent); flex-shrink:0;"></span>
+      <span><span style="color:var(--text); font-weight:500;">AutoCAD workspace names where they fit.</span> <span style="font-family:'Geist Mono'; font-size:12px;">FILETAB</span>, <span style="font-family:'Geist Mono'; font-size:12px;">FILETABCLOSE</span>, <span style="font-family:'Geist Mono'; font-size:12px;">VPORTS</span>, <span style="font-family:'Geist Mono'; font-size:12px;">VPMAX</span>, and <span style="font-family:'Geist Mono'; font-size:12px;">VPMIN</span> follow the familiar names; Zephyr then extends panes beyond same-drawing viewports. <a href="#multi-window" style="color:var(--accent); text-decoration:underline;">See the exact commands and differences →</a></span>
+    </div>
   </div>
 </section>
 
@@ -581,6 +586,103 @@
           <div style="display:flex; gap:6px; font-family:'Geist Mono'; font-size:11px; color:var(--accent);">{{ cell.cmd }}</div>
         </div>
       </sc-for>
+    </div>
+
+    <div id="multi-window" style="margin-top:80px; scroll-margin-top:96px;">
+      <div style="max-width:760px; margin-bottom:44px;">
+        <div style="font-family:'Geist Mono'; font-size:11px; color:var(--accent); letter-spacing:0.16em; margin-bottom:14px;">TABS · WINDOWS · SPLIT VIEWS</div>
+        <h3 style="font-size:40px; line-height:1.05; letter-spacing:-0.03em; margin:0 0 18px; font-weight:600;">Arrange drawings around the job, not the other way around.</h3>
+        <p style="font-size:16px; line-height:1.6; color:var(--text-2); margin:0;">
+          Put a reference drawing on a second monitor, compare two jobs side by side, or keep Model and a paper layout visible in two panes of the same main window. Zephyr stays one editing session with exactly one active drawing—and, in a split, one focused pane.
+        </p>
+      </div>
+
+      <div style="display:grid; grid-template-columns: 0.92fr 1.08fr; gap:56px; align-items:start;">
+        <div>
+          <h4 style="font-size:20px; margin:0 0 16px; font-weight:600;">Three everyday arrangements</h4>
+          <div style="display:flex; flex-direction:column; gap:22px; font-size:14px; line-height:1.6; color:var(--text-2);">
+            <div>
+              <div style="font-family:'Geist Mono'; font-size:11px; color:var(--accent); margin-bottom:5px;">FLOAT</div>
+              <strong style="color:var(--text); font-weight:600;">Drag a tab out, or type <span style="font-family:'Geist Mono';">TABW</span>.</strong>
+              The drawing gets a true OS window you can move, resize, pan, zoom, select, and edit in. Click, wheel, pen, or keyboard input activates that drawing; hover does not steal work from the main window.
+            </div>
+            <div>
+              <div style="font-family:'Geist Mono'; font-size:11px; color:var(--accent); margin-bottom:5px;">COMPARE</div>
+              <strong style="color:var(--text); font-weight:600;">Type <span style="font-family:'Geist Mono';">VSPLIT</span> or <span style="font-family:'Geist Mono';">HSPLIT</span>.</strong>
+              The new pane opens the next docked drawing when one is available. Click a pane to edit there, click a file tab to retarget the focused pane, and drag the divider to resize.
+            </div>
+            <div>
+              <div style="font-family:'Geist Mono'; font-size:11px; color:var(--accent); margin-bottom:5px;">MODEL + LAYOUT</div>
+              <strong style="color:var(--text); font-weight:600;">Split a single drawing across panes.</strong>
+              Each pane remembers its own drawing view and camera, so one can stay in Model while the other follows Layout1. The Model/Layout tabs at the bottom belong to the current window or focused pane.
+            </div>
+          </div>
+
+          <div style="margin-top:32px; padding:20px 22px; background:var(--bg); border:1px solid var(--border-soft); border-radius:10px; font-size:14px; line-height:1.6; color:var(--text-2);">
+            <span style="color:var(--text); font-weight:600;">Closing a float window docks its drawing.</span>
+            It does not close the file. Use <span style="font-family:'Geist Mono'; color:var(--accent);">CLOSE</span> when you actually want the drawing closed. Up to four float windows can be open at once.
+          </div>
+        </div>
+
+        <div style="border:1px solid var(--border-soft); border-radius:12px; overflow:hidden; background:var(--bg);">
+          <div style="padding:18px 22px; background:var(--bg-panel); border-bottom:1px solid var(--border-soft);">
+            <div style="font-size:16px; font-weight:600;">Window and pane commands</div>
+            <div style="font-size:12px; color:var(--text-3); margin-top:4px;">Canonical name first; aliases in parentheses.</div>
+          </div>
+          <div style="padding:8px 22px 14px;">
+            <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">TABLEFT (TABL)<br>TABRIGHT (TABR)</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">Move the active file tab one position left or right.</span></div>
+            <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">FILETAB<br>FILETABCLOSE</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">Show or hide the main window's file-tab bar.</span></div>
+            <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">TABWINDOW (TABW, FLOAT)</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">Move the active drawing to its own OS window, or raise it if already floated.</span></div>
+            <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">TABDOCK (TABD, DOCK)</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">Return the active floating drawing to the main tab bar.</span></div>
+            <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">VSPLIT · HSPLIT</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">Split the focused main pane side-by-side or stacked. Repeat to nest splits.</span></div>
+            <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">CLOSEPANE</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">Close the focused pane and promote its sibling (the equivalent of VPORTS JOIN here).</span></div>
+            <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">UNSPLIT (CLOSESPLIT)</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">Collapse to the focused pane while remembering the split arrangement.</span></div>
+            <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">VPMAX · VPMIN</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">Maximize the focused pane, then restore the remembered split tree.</span></div>
+            <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">VPORTS 2V / 2H / SINGLE / JOIN / TOGGLE / ?</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">One-command pane management. <span style="font-family:'Geist Mono';">?</span> lists panes and marks focus with <span style="font-family:'Geist Mono';">*</span>.</span></div>
+            <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0;"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">CTRL+TAB<br>CTRL+SHIFT+TAB</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">Cycle forward or backward through open drawings, including floated ones. Drag file tabs to reorder or drag one out to float it.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:56px;">
+        <div style="display:flex; align-items:baseline; justify-content:space-between; gap:24px; margin-bottom:18px;">
+          <h4 style="font-size:22px; margin:0; font-weight:600;">How this maps to AutoCAD</h4>
+          <span style="font-family:'Geist Mono'; font-size:11px; color:var(--text-3);">SAME NAMES, DOCUMENTED DIFFERENCES</span>
+        </div>
+        <div style="border:1px solid var(--border-soft); border-radius:12px; overflow:hidden; background:var(--bg);">
+          <div style="display:grid; grid-template-columns: 0.72fr 1fr 1.28fr; background:var(--bg-panel); border-bottom:1px solid var(--border-soft); font-family:'Geist Mono'; font-size:11px; color:var(--text-3);">
+            <div style="padding:14px 18px;">AREA</div><div style="padding:14px 18px;">AUTOCAD</div><div style="padding:14px 18px;">ZEPHYR</div>
+          </div>
+          <div style="display:grid; grid-template-columns: 0.72fr 1fr 1.28fr; border-bottom:1px solid var(--border-soft); font-size:13px; line-height:1.5;">
+            <div style="padding:16px 18px; font-weight:600;">File tabs</div>
+            <div style="padding:16px 18px; color:var(--text-2);"><span style="font-family:'Geist Mono';">FILETAB</span> / <span style="font-family:'Geist Mono';">FILETABCLOSE</span></div>
+            <div style="padding:16px 18px; color:var(--text-2);">Same names and purpose. Ctrl+Tab / Ctrl+Shift+Tab also cycles drawings.</div>
+          </div>
+          <div style="display:grid; grid-template-columns: 0.72fr 1fr 1.28fr; border-bottom:1px solid var(--border-soft); font-size:13px; line-height:1.5;">
+            <div style="padding:16px 18px; font-weight:600;">Tiled panes</div>
+            <div style="padding:16px 18px; color:var(--text-2);"><span style="font-family:'Geist Mono';">VPORTS</span> shows several model-space views of one drawing.</div>
+            <div style="padding:16px 18px; color:var(--text-2);">Also does that, then goes further: panes may show different drawings. Named viewport configurations and preset 3/4 layouts are not implemented yet.</div>
+          </div>
+          <div style="display:grid; grid-template-columns: 0.72fr 1fr 1.28fr; border-bottom:1px solid var(--border-soft); font-size:13px; line-height:1.5;">
+            <div style="padding:16px 18px; font-weight:600;">Maximize</div>
+            <div style="padding:16px 18px; color:var(--text-2);"><span style="font-family:'Geist Mono';">VPMAX</span> / <span style="font-family:'Geist Mono';">VPMIN</span> work on a layout viewport.</div>
+            <div style="padding:16px 18px; color:var(--text-2);">The names maximize and restore a Zephyr split pane instead; this is not paper-space <span style="font-family:'Geist Mono';">MSPACE</span> editing.</div>
+          </div>
+          <div style="display:grid; grid-template-columns: 0.72fr 1fr 1.28fr; border-bottom:1px solid var(--border-soft); font-size:13px; line-height:1.5;">
+            <div style="padding:16px 18px; font-weight:600;">Model / layouts</div>
+            <div style="padding:16px 18px; color:var(--text-2);">Model/layout tabs plus full layout management.</div>
+            <div style="padding:16px 18px; color:var(--text-2);"><span style="font-family:'Geist Mono';">MODEL</span>, <span style="font-family:'Geist Mono';">SHEET</span>/<span style="font-family:'Geist Mono';">LAYOUT</span>, <span style="font-family:'Geist Mono';">VIEW</span>, <span style="font-family:'Geist Mono';">NEXTVIEW</span>, and <span style="font-family:'Geist Mono';">PREVIOUSVIEW</span> select imported views; layout creation/copy/rename is separate future work.</div>
+          </div>
+          <div style="display:grid; grid-template-columns: 0.72fr 1fr 1.28fr; font-size:13px; line-height:1.5;">
+            <div style="padding:16px 18px; font-weight:600;">Order / float</div>
+            <div style="padding:16px 18px; color:var(--text-2);">Document-window behavior varies by version and workspace settings.</div>
+            <div style="padding:16px 18px; color:var(--text-2);"><span style="font-family:'Geist Mono';">TABL</span>, <span style="font-family:'Geist Mono';">TABR</span>, <span style="font-family:'Geist Mono';">TABW</span>, and <span style="font-family:'Geist Mono';">TABD</span> are Zephyr aliases, with drag-to-reorder and drag-out-to-float beside them.</div>
+          </div>
+        </div>
+        <p style="font-size:13px; line-height:1.6; color:var(--text-3); margin:16px 2px 0;">
+          Split layouts belong to the main window. Floated drawings are not split further, and split/float arrangements are session state rather than named configurations.
+        </p>
+      </div>
     </div>
   </div>
 </section>
@@ -1100,8 +1202,8 @@ class Component extends DCLogic {
       workflowCells: [
         { tag: 'MEASURE',  title: 'Quick Measure',  cmd: 'MEA · MEASUREGEOM',
           body: 'Hover anywhere. Orthogonal raycasts ±X, ±Y find the nearest geometry in real time; side lengths and interior angles overlay live.' },
-        { tag: 'TABS',     title: 'Multi‑drawing tabs',  cmd: '⌘N new · ⌘W close',
-          body: 'Open every file at once. Dirty‑state tracking, unsaved‑changes confirmation, instant tab switching with no regeneration stall.' },
+        { tag: 'WINDOWS',  title: 'Tabs, floats & splits',  cmd: 'TABW · VSPLIT · VPORTS',
+          body: 'Reorder file tabs, float a drawing into a true OS window, or split the main canvas into resizable panes. Panes can compare different drawings—or Model and a paper layout from the same one.' },
         { tag: 'PALETTE',  title: 'Command line',  cmd: 'TYPE ANY LETTER',
           body: 'Type any letter to open. 127 registered commands across 7 categories, fuzzy‑matched autocomplete with Tab cycling. Space repeats the last command. AutoCAD muscle memory works.' },
         { tag: 'SNAP',     title: 'Snap engine',  cmd: '9 anchor types',
@@ -1132,6 +1234,8 @@ class Component extends DCLogic {
         { label: 'AutoLISP automation',             zephyr: '✓ 305 builtins', autocad: 'Win only (LT)', qcad: '—' },
         { label: 'Quick Measure (hover)',          zephyr: '✓',            autocad: '—',            qcad: '—' },
         { label: 'Clean Speckles (by example)',    zephyr: '✓',            autocad: '—',            qcad: '—' },
+        { label: 'Split panes, different drawings', zephyr: '✓',           autocad: 'VPORTS: one drawing', qcad: 'Varies' },
+        { label: 'Model + layout in split panes',   zephyr: '✓',           autocad: 'Layout workflow', qcad: 'Varies' },
         { label: 'Open source option friendly',    zephyr: '✓',            autocad: '—',            qcad: '✓' },
         { label: 'No subscription, no telemetry',  zephyr: '✓',            autocad: '—',            qcad: '✓' },
       ],
