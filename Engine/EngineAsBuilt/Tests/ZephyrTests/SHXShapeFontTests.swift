@@ -82,15 +82,50 @@ final class SHXShapeFontTests: XCTestCase {
         XCTAssertEqual(go.maxX, 58.0, accuracy: 0.02)
     }
 
-    /// "§" (167) contains isocp's clockwise fractional arc (opcode 11,
-    /// spec byte 0xE6). Correct decode: 78 segments, minX ≈ 5.674.
-    func testClockwiseFractionalArcGlyph() throws {
+    /// Fractional arcs (opcode 11) carry an octant *span* like opcode 10,
+    /// not an absolute end octant: the arc ends in octant
+    /// `start ± span ∓ 1` at endOffset/256 of an octant past that boundary,
+    /// with offsets applied in the direction of travel and an end offset
+    /// of 0 meaning a full offset (256). isocp "9" (spec 0x62) is the
+    /// canonical case: as an absolute end octant its bowl lands at
+    /// x -11.9...22.1, y 2...56 with advance 10.1; correctly decoded it
+    /// sits in the same box as every other digit, advance 28.14.
+    func testFractionalArcNine() throws {
+        let font = try loadIsocp()
+
+        let nine = lineBounds(font, "9")
+        XCTAssertEqual(nine.count, 38)
+        XCTAssertEqual(nine.minX, 6.144, accuracy: 0.05)
+        XCTAssertEqual(nine.maxX, 22.144, accuracy: 0.05)
+        XCTAssertEqual(nine.minY, -38.021, accuracy: 0.05)
+        XCTAssertEqual(nine.maxY, -2.0, accuracy: 0.05)
+
+        // Advance 28.144: second "9" starts there, so "99" ends at 50.289.
+        let nn = lineBounds(font, "99")
+        XCTAssertEqual(nn.count, 76)
+        XCTAssertEqual(nn.maxX, 50.289, accuracy: 0.05)
+    }
+
+    /// "§" (167) uses fractional arcs in both directions, including isocp's
+    /// only clockwise one (spec byte 0xE6). "&" (38) uses a CCW fractional
+    /// arc. Both must stay inside the cap-height box and return to the
+    /// baseline metrics these bounds pin down.
+    func testFractionalArcSectionAndAmpersand() throws {
         let font = try loadIsocp()
 
         let s = lineBounds(font, "§")
-        XCTAssertEqual(s.count, 78)
-        XCTAssertEqual(s.minX, 5.674, accuracy: 0.02)
-        XCTAssertEqual(s.maxX, 17.674, accuracy: 0.02)
+        XCTAssertEqual(s.count, 88)
+        XCTAssertEqual(s.minX, 5.674, accuracy: 0.05)
+        XCTAssertEqual(s.maxX, 17.674, accuracy: 0.05)
+        XCTAssertEqual(s.minY, -37.942, accuracy: 0.05)
+        XCTAssertEqual(s.maxY, -1.963, accuracy: 0.05)
+
+        let a = lineBounds(font, "&")
+        XCTAssertEqual(a.count, 44)
+        XCTAssertEqual(a.minX, 5.998, accuracy: 0.05)
+        XCTAssertEqual(a.maxX, 30.0, accuracy: 0.05)
+        XCTAssertEqual(a.minY, -38.051, accuracy: 0.05)
+        XCTAssertEqual(a.maxY, -1.815, accuracy: 0.05)
     }
 
     /// "B" uses only counter-clockwise octant arcs (spec byte 0x64) and
