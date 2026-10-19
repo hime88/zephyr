@@ -65,12 +65,14 @@ struct AppUI {
         }()
         let hostedTab = hostedTabID.flatMap { engine.tabManager.tab(for: $0) }
         let floatBlockBarShown = isFloat && hostedTab?.editingBlockID != nil
+        let mainShownTab = isFloat ? nil : engine.mainShownTab()
+        let shownTab = isFloat ? hostedTab : mainShownTab
         // Session-modal UIs (text editor, layer move, style managers,
         // block-close) render only in the window showing the active tab,
         // so they don't duplicate across every open window.
         let showsActiveTab: Bool = isFloat
             ? (hostedTabID != nil && hostedTabID == engine.tabManager.activeTab?.id)
-            : (engine.mainShownTab()?.id == engine.tabManager.activeTab?.id)
+            : (mainShownTab?.id == engine.tabManager.activeTab?.id)
 
         // Create a dockspace covering the work area
         let topOffset: Float = isFloat
@@ -129,9 +131,13 @@ struct AppUI {
             TabBarUI.render(engine: engine, dw: dw)
         }
 
-        // 2. Side panels — Layers on the left.
-        if engine.ui.layersPanelVisible {
-            LayerPanelUI.render(engine: engine)
+        // 2. Side panels — Layers on the left. Layers are document-local,
+        // so each window shows the layers for the tab it actually displays.
+        if DocumentPanelUIPolicy.shouldRenderLayers(
+            isVisible: engine.ui.layersPanelVisible,
+            hasShownTab: shownTab != nil),
+           let shownTab {
+            LayerPanelUI.render(engine: engine, document: shownTab.document)
         }
 
         // 3. Draw palette — optional side panel for drawing tools.
@@ -147,31 +153,45 @@ struct AppUI {
             engine.saveFileBrowser.render(ui: engine.ui)
         }
 
-        // 6. Properties panel — shows selected entity details.
-        PropertiesPanelUI.render(engine: engine)
+        // 6. Properties panel — shows selected entity details. Like the
+        // contextual ribbons below, it reads the shared active selection,
+        // so it belongs only in the window showing the active tab.
+        if SelectionContextUIPolicy.shouldRender(showsActiveTab: showsActiveTab) {
+            PropertiesPanelUI.render(engine: engine)
+        }
 
         // 6b. Hatch editing ribbon — appears when a hatch entity is selected
         //     and no hatch creation command is active.
-        if engine.commandProcessor.activeFeatureCommand == nil,
-           engine.cadSelection.selectedCount == 1,
-           let handle = engine.cadSelection.lastSelectedHandle,
+        let hatchHandle = engine.cadSelection.lastSelectedHandle
+        if SelectionContextUIPolicy.shouldRenderHatchEditor(
+            showsActiveTab: showsActiveTab,
+            hasActiveFeatureCommand: engine.commandProcessor.activeFeatureCommand != nil,
+            selectedCount: engine.cadSelection.selectedCount,
+            hasLastSelectedHandle: hatchHandle != nil),
+           let handle = hatchHandle,
            let entity = engine.document.entity(for: handle) {
             renderHatchEditingRibbonIfNeeded(entity: entity, engine: engine)
         }
 
-        // 6c. Associative array contextual ribbon.
-        ArrayRibbonUI.renderIfNeeded(engine: engine, displayWidth: dw)
+        // 6c/6d. Associative-array and data-table contextual ribbons.
+        if SelectionContextUIPolicy.shouldRender(showsActiveTab: showsActiveTab) {
+            ArrayRibbonUI.renderIfNeeded(engine: engine, displayWidth: dw)
+            DataTableRibbonUI.renderIfNeeded(engine: engine, displayWidth: dw)
+        }
 
-        // 6d. Data table contextual ribbon and in-canvas cell editor.
-        DataTableRibbonUI.renderIfNeeded(engine: engine, displayWidth: dw)
-
-        // 7. Block management panel — list/create/edit blocks.
-        if engine.ui.blockPanelVisible {
+        // 7. Block management panel — list/create/edit blocks. It still
+        // drives the shared active selection and block editor, so keep it
+        // in the active tab's window only.
+        if DocumentPanelUIPolicy.shouldRenderActiveDocumentPanel(
+            isVisible: engine.ui.blockPanelVisible,
+            showsActiveTab: showsActiveTab) {
             BlockPanelUI.render(engine: engine)
         }
 
         // 7b. Data Table panel — list/create/edit ACAD_TABLE entities.
-        if engine.ui.dataTablePanelVisible {
+        if DocumentPanelUIPolicy.shouldRenderActiveDocumentPanel(
+            isVisible: engine.ui.dataTablePanelVisible,
+            showsActiveTab: showsActiveTab) {
             DataTablePanelUI.render(engine: engine)
         }
 

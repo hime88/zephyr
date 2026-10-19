@@ -10,12 +10,13 @@ import ImGui
 
 @MainActor
 struct LayerPanelUI {
-    static var _editingLayerIndex: Int? = nil
+    static var _editingLayerHandle: UUID? = nil
+    static var _editingDocumentID: ObjectIdentifier? = nil
     static var _editingLayerNameBuf: [CChar] = []
     static var _isDocked: Bool = false
 
-    static func render(engine: PhrostEngine) {
-        let doc = engine.document
+    static func render(engine: PhrostEngine, document: CADDocument) {
+        let doc = document
         let layers = doc.allLayers
         let fontSize = ImGuiGetFontSize()
         let panelW: Float = fontSize * 18
@@ -144,7 +145,8 @@ struct LayerPanelUI {
         ImGuiPushID(Int32(index))
         defer { ImGuiPopID() }
 
-        if _editingLayerIndex == index {
+        if _editingLayerHandle == layer.handle
+            && _editingDocumentID == ObjectIdentifier(document) {
             renderRenameField(document: document, layer: layer, rowHeight: rowHeight)
         } else {
             renderSelectableRow(
@@ -215,7 +217,8 @@ struct LayerPanelUI {
             && ImGuiIsMouseDoubleClicked(
                 ImGuiMouseButton(ImGuiMouseButton_Left.rawValue))
         {
-            _editingLayerIndex = index
+            _editingLayerHandle = layer.handle
+            _editingDocumentID = ObjectIdentifier(document)
             _editingLayerNameBuf = []
         }
 
@@ -334,13 +337,15 @@ struct LayerPanelUI {
             if !newName.isEmpty && newName != layer.name {
                 document.renameLayer(handle: layer.handle, name: newName)
             }
-            _editingLayerIndex = nil
+            _editingLayerHandle = nil
+            _editingDocumentID = nil
             _editingLayerNameBuf = []
         } else if ImGuiIsKeyPressed(
             ImGuiKey(ImGuiKey_Escape.rawValue),
             false)
         {
-            _editingLayerIndex = nil
+            _editingLayerHandle = nil
+            _editingDocumentID = nil
             _editingLayerNameBuf = []
         }
 

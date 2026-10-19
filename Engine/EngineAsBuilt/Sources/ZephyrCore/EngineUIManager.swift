@@ -13,6 +13,48 @@ import ImGui
 //   - UI state visibility (toolbars, layers, block panels)
 //   - Applying themes to both the UI and Viewport background
 // =========================================================================
+/// Document panels need a window target. Layers are document-local, so a
+/// window may render them for the tab it actually shows. Blocks and Data
+/// Tables still drive the shared active selection/command state, so they
+/// render only where the active tab is shown.
+public enum DocumentPanelUIPolicy {
+    public static func shouldRenderLayers(
+        isVisible: Bool,
+        hasShownTab: Bool
+    ) -> Bool {
+        isVisible && hasShownTab
+    }
+
+    public static func shouldRenderActiveDocumentPanel(
+        isVisible: Bool,
+        showsActiveTab: Bool
+    ) -> Bool {
+        isVisible && showsActiveTab
+    }
+}
+
+/// Selection-context editors (hatch/array/table ribbons and the properties
+/// inspector) all read the one shared active selection/document. Render
+/// them only in the window showing the active tab; otherwise every open
+/// OS window shows — and can mutate through — the same editor.
+public enum SelectionContextUIPolicy {
+    public static func shouldRender(showsActiveTab: Bool) -> Bool {
+        showsActiveTab
+    }
+
+    public static func shouldRenderHatchEditor(
+        showsActiveTab: Bool,
+        hasActiveFeatureCommand: Bool,
+        selectedCount: Int,
+        hasLastSelectedHandle: Bool
+    ) -> Bool {
+        shouldRender(showsActiveTab: showsActiveTab)
+            && !hasActiveFeatureCommand
+            && selectedCount == 1
+            && hasLastSelectedHandle
+    }
+}
+
 @MainActor
 public final class EngineUIManager {
     
