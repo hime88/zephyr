@@ -42,6 +42,10 @@ public final class WindowRenderContext {
     /// a view change must invalidate explicitly rather than rely on them.
     public var builtTabID: UUID? = nil
     public var builtViewIndex: Int = -1
+    /// Identity of the document object built into this context. Tab/view
+    /// identity is not enough: block editing swaps a temporary document in
+    /// and the parent document back out under the same tab and view.
+    public var builtDocumentID: ObjectIdentifier? = nil
 
     // MARK: CAD GPU buffer (primary: migrated from the renderer)
 
@@ -89,6 +93,35 @@ public final class WindowRenderContext {
         self.geometry = geometry
         self.sprites = sprites
         self.bridge = bridge
+    }
+
+    /// Supersede built geometry when this context is retargeted to a
+    /// different document object. Returns true when the caller should also
+    /// invalidate GPU vertex state.
+    @discardableResult
+    public func supersedeIfDocumentChanged(to document: CADDocument) -> Bool {
+        let documentID = ObjectIdentifier(document)
+        guard builtDocumentID != documentID else { return false }
+        builtDocumentID = documentID
+        regenTask?.cancel()
+        regenTask = nil
+        regenInFlight = nil
+        bridge.cancelPending()
+        // Do not let the outgoing document's primitives/sprites draw while
+        // the incoming document regenerates.
+        geometry.clearAll()
+        for spriteIDs in bridge.entitySpriteMap.values {
+            for id in spriteIDs {
+                sprites.removeSprite(id: id)
+            }
+        }
+        bridge.entityPrimitiveMap.removeAll()
+        bridge.entitySpriteMap.removeAll()
+        regenGeneration &+= 1
+        appliedGeneration = -1
+        builtRevision = nil
+        pendingRevision = nil
+        return true
     }
 
     /// Cancel all background work and release the GPU vertex buffer.

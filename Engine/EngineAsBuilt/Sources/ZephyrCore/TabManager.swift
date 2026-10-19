@@ -23,8 +23,51 @@ public struct CameraState: Sendable {
 }
 
 // =========================================================================
+// MARK: - TabBarActivationPolicy
+// =========================================================================
+
+/// Decides whether a tab-bar item should activate its document tab.
+///
+/// ImGui's `BeginTabItem` returns true every frame for the item it keeps
+/// selected internally. That is not, by itself, a user action when the
+/// model-active tab is floated and therefore omitted from the main tab bar:
+/// the last docked item can remain "visible" indefinitely. In that state only
+/// an actual item click may activate a docked tab.
+public enum TabBarActivationPolicy {
+    public static func shouldActivateTab(
+        isActive: Bool,
+        tabItemClicked: Bool,
+        tabItemVisible: Bool,
+        activeTabIsFloated: Bool
+    ) -> Bool {
+        !isActive && (tabItemClicked || (tabItemVisible && !activeTabIsFloated))
+    }
+}
+
+// =========================================================================
 // MARK: - DocumentTab
 // =========================================================================
+
+/// Per-view selection snapshot, saved/restored across tab and view
+/// switches (mirrors `CameraState`) so each document keeps its own
+/// selection — including while shown passively in a float/split view.
+public struct SelectionState: Equatable, Sendable {
+    public var selectedHandles: Set<UUID> = []
+    public var lastSelectedHandle: UUID? = nil
+    public var selectedLeaderContentHandle: UUID? = nil
+
+    public init(
+        selectedHandles: Set<UUID> = [],
+        lastSelectedHandle: UUID? = nil,
+        selectedLeaderContentHandle: UUID? = nil
+    ) {
+        self.selectedHandles = selectedHandles
+        self.lastSelectedHandle = lastSelectedHandle
+        self.selectedLeaderContentHandle = selectedLeaderContentHandle
+    }
+
+    public static let empty = SelectionState()
+}
 
 /// A single drawing tab — owns a `CADDocument` and associated file metadata.
 public struct DrawingView {
@@ -32,6 +75,7 @@ public struct DrawingView {
     public var kind: DXFDrawingViewKind
     public var document: CADDocument
     public var cameraState: CameraState
+    public var selectionState: SelectionState = .empty
     public var backgroundColor: ColorRGBA?
 
     public init(
@@ -77,6 +121,12 @@ public struct DocumentTab {
     public var cameraState: CameraState {
         get { drawingViews[activeViewIndex].cameraState }
         set { drawingViews[activeViewIndex].cameraState = newValue }
+    }
+
+    /// Per-view selection, preserved across tab/view switches.
+    public var selectionState: SelectionState {
+        get { drawingViews[activeViewIndex].selectionState }
+        set { drawingViews[activeViewIndex].selectionState = newValue }
     }
 
     /// If this tab is currently in block editing mode, the ID of the block being edited.
@@ -233,6 +283,11 @@ public final class TabManager {
     /// Callback that applies a camera state to the engine.
     /// Used by `switchToTab` to restore camera state from the incoming tab.
     public var applyCameraState: ((CameraState) -> Void)?
+
+    /// Selection counterparts of the camera callbacks: capture on the
+    /// departing tab/view, apply on the incoming one.
+    public var captureSelectionState: (() -> SelectionState)?
+    public var applySelectionState: ((SelectionState) -> Void)?
 
     // MARK: - Save State (per-tab, background-save)
 
@@ -475,6 +530,7 @@ public final class TabManager {
             doc.savedRevision = doc.editRevision
             tabs[0] = DocumentTab(document: doc, fileURL: nil, displayName: "Untitled")
             activeIndex = 0
+            applySelectionState?(.empty)
             onActiveTabChanged?()
             onTabClosed?(index)
             onTabClosedID?(tabID)
@@ -499,6 +555,9 @@ public final class TabManager {
             // to the departed tab on the last `switchToTab` away from it).
             if let apply = applyCameraState {
                 apply(tabs[activeIndex].cameraState)
+            }
+            if let apply = applySelectionState {
+                apply(tabs[activeIndex].selectionState)
             }
             onActiveTabChanged?()
         } else if index < activeIndex {
@@ -550,14 +609,20 @@ public final class TabManager {
     /// the incoming tab's camera state before firing `onActiveTabChanged`.
     public func switchToTab(at index: Int) {
         guard index >= 0, index < tabs.count, index != activeIndex else { return }
-        // Save camera state to departing tab
+        // Save camera + selection state to departing tab
         if let capture = captureCameraState, activeIndex < tabs.count {
             tabs[activeIndex].cameraState = capture()
         }
+        if let capture = captureSelectionState, activeIndex < tabs.count {
+            tabs[activeIndex].selectionState = capture()
+        }
         activeIndex = index
-        // Restore camera state from incoming tab
+        // Restore camera + selection state from incoming tab
         if let apply = applyCameraState {
             apply(tabs[activeIndex].cameraState)
+        }
+        if let apply = applySelectionState {
+            apply(tabs[activeIndex].selectionState)
         }
         onActiveTabChanged?()
     }
@@ -572,8 +637,12 @@ public final class TabManager {
         if let capture = captureCameraState {
             tabs[activeIndex].cameraState = capture()
         }
+        if let capture = captureSelectionState {
+            tabs[activeIndex].selectionState = capture()
+        }
         tabs[activeIndex].activeViewIndex = index
         applyCameraState?(tabs[activeIndex].cameraState)
+        applySelectionState?(tabs[activeIndex].selectionState)
         onActiveTabChanged?()
         return true
     }
@@ -1066,6 +1135,10 @@ public final class TabManager {
             parentDoc.invalidateEntityGrid()
         }
 
+        // The visible document object changes on both Save and Discard.
+        // Discard does not edit the parent, but render contexts are still
+        // holding the temporary block-editor document and must rebuild.
+        parentDoc.markNeedsRegeneration()
         tab.document = parentDoc
         tab.parentDocument = nil
         tab.editingBlockID = nil

@@ -196,8 +196,10 @@ public final class PhrostEngine {
     // MARK: Core SDL Pointers
     public let window: OpaquePointer
     internal let gpuDevice: OpaquePointer
-    public let spriteManager: SpriteManager
-    public let geometryManager: GeometryManager
+    /// Live stores of the ACTIVE tab's render context. Repointed on
+    /// every tab switch (contexts are pooled per tab and never wiped).
+    public var spriteManager: SpriteManager
+    public var geometryManager: GeometryManager
     public private(set) var renderer: EngineRenderer!
 
     /// Set once `init` runs to completion. A failable init that returns nil
@@ -308,7 +310,7 @@ public final class PhrostEngine {
 
     public func toggleSimplifyComplexBlocks() {
         simplifyComplexBlocks.toggle()
-        renderer.primaryCtx.regenGeneration &+= 1
+        renderer.bumpAllContextGenerations()
         cadSelection._selectionGeneration &+= 1
         print("[Engine] simplifyComplexBlocks: \(simplifyComplexBlocks)")
     }
@@ -352,7 +354,7 @@ public final class PhrostEngine {
     /// The active tab's file URL, or nil for untitled documents.
     public var activeFileURL: URL? { tabManager.activeFileURL }
     /// Rendering bridge that converts CAD entities into SDL primitives.
-    public let cadBridge = CADRendererBridge()
+    public var cadBridge = CADRendererBridge()
     // MARK: File Browser (Open)
     public var fileBrowser = ImGuiFileBrowser()
     public var saveFileBrowser = ImGuiFileBrowser()
@@ -665,8 +667,25 @@ public final class PhrostEngine {
             self.camera.zoom = state.zoom
             self.camera.rotation = state.rotation
         }
+        tabManager.captureSelectionState = { [weak self] in
+            guard let self = self else { return .empty }
+            return SelectionState(
+                selectedHandles: self.cadSelection.selectedHandles,
+                lastSelectedHandle: self.cadSelection.lastSelectedHandle,
+                selectedLeaderContentHandle: self.cadSelection.selectedLeaderContentHandle)
+        }
+        tabManager.applySelectionState = { [weak self] state in
+            guard let self = self else { return }
+            self.cadSelection.selectedHandles = state.selectedHandles
+            self.cadSelection.lastSelectedHandle = state.lastSelectedHandle
+            self.cadSelection.selectedLeaderContentHandle = state.selectedLeaderContentHandle
+            self.cadSelection._selectionGeneration &+= 1
+        }
         tabManager.onActiveTabChanged = { [weak self] in
             guard let self else { return }
+            if ProcessInfo.processInfo.environment["ZEPHYR_DEBUG_INPUT"] != nil {
+                print("[Diag] activeTab -> \(self.tabManager.activeTab?.displayName ?? "nil") (floated: \(self.tabManager.activeTab?.isFloated ?? false))")
+            }
             if let color = self.tabManager.activeViewBackgroundColor {
                 self.ui.viewBackgroundOverride = SDL_FColor(
                     r: Float(color.r) / 255.0,
@@ -676,35 +695,22 @@ public final class PhrostEngine {
             } else {
                 self.ui.viewBackgroundOverride = nil
             }
-            self.renderer.primaryCtx.regenTask?.cancel()
-            self.renderer.primaryCtx.regenTask = nil
-            self.renderer.primaryCtx.regenInFlight = nil
-            self.cadBridge.cancelPending()
-            self.renderer.primaryCtx.vbTask?.cancel()
-            self.renderer.primaryCtx.vbTask = nil
-            self.renderer.primaryCtx.vbBuilder.cancelPending()
-            // Supersede any in-flight / last-applied generation so the render loop launches a
-            // fresh regeneration for the newly active tab and applies ONLY its results.
-            self.renderer.primaryCtx.regenGeneration &+= 1
-            self.renderer.primaryCtx.appliedGeneration = -1
-            // Clear the primary stores NOW: until the async regen lands they
-            // still hold the previous tab/view's primitives, sprites, and
-            // vertices, which would otherwise draw through the new camera
-            // for ~a second (the previous view "imprinted" on the new one).
-            // A brief empty canvas beats the wrong drawing.
-            self.geometryManager.clearAll()
-            for (_, spriteIDs) in self.cadBridge.entitySpriteMap {
-                for id in spriteIDs {
-                    self.spriteManager.removeSprite(id: id)
-                }
+            // Render contexts are pooled PER TAB: switching tabs wipes
+            // nothing and rebuilds nothing. The engine-global store
+            // pointers simply repoint at the incoming tab's warm context
+            // (its geometry/sprites/bridge were built while it was last
+            // visible and revise lazily via builtRevision checks). This
+            // replaces the old supersede-and-clear, which blanked and
+            // regenerated the drawing on EVERY window-focus change.
+            if let activeID = self.tabManager.activeTab?.id {
+                let actx = self.renderer.tabCtx(for: activeID)
+                self.geometryManager = actx.geometry
+                self.spriteManager = actx.sprites
+                self.cadBridge = actx.bridge
             }
-            self.cadBridge.entityPrimitiveMap.removeAll()
-            self.cadBridge.entitySpriteMap.removeAll()
-            self.renderer.primaryCtx.invalidateBuiltState(device: self.gpuDevice)
-            self.renderer.primaryCtx.builtTabID = nil
-            self.renderer.primaryCtx.builtViewIndex = -1
-            self.tabManager.activeDocument.needsRegeneration = true
-            self.cadSelection.clearSelection()
+            // Selection is NOT cleared here anymore: TabManager captured the
+            // departing view's selection and applied the incoming view's
+            // before this callback (fresh tabs apply .empty).
             self.snap.snapTrackingEngine.clear()
             self.syncWindowsToActiveTab()
         }
@@ -1122,7 +1128,16 @@ public final class PhrostEngine {
 
     /// Drop a tab's secondary render context, releasing its GPU buffers.
     public func dropSecondaryCtx(for tabID: UUID) {
-        if let ctx = renderer.secondaryCtxs.removeValue(forKey: tabID) {
+        guard let ctx = renderer.secondaryCtxs.removeValue(forKey: tabID) else { return }
+        if ctx === renderer.primaryCtx {
+            // The adopted primary context object is recycled as the spare
+            // for the next first-rendered tab, not destroyed.
+            renderer.primaryCtxAdoptedTabID = nil
+            ctx.builtTabID = nil
+            ctx.builtViewIndex = -1
+            ctx.builtDocumentID = nil
+            ctx.invalidateBuiltState(device: gpuDevice)
+        } else {
             ctx.destroy(device: gpuDevice)
         }
     }
@@ -1608,6 +1623,9 @@ public final class PhrostEngine {
         if force || newUiScale != oldUiScale || dpiScale != oldDpiScale {
             // Defer the atlas rebuild and style rescaling to before the next NewFrame.
             // If the atlas is currently locked (during a frame), touching it will assert.
+            if ProcessInfo.processInfo.environment["ZEPHYR_DEBUG_INPUT"] != nil {
+                print("[Diag] uiScale pending: dpi \(oldDpiScale)->\(dpiScale) ui \(oldUiScale)->\(newUiScale) fb=\(fbScale) force=\(force)")
+            }
             _pendingUiScaleRebuild = (dpiScale, fbScale, force)
         }
     }
@@ -1617,6 +1635,9 @@ public final class PhrostEngine {
     internal func applyPendingUiScaleRebuild() {
         guard let (dpiScale, fbScale, _) = _pendingUiScaleRebuild else { return }
         _pendingUiScaleRebuild = nil
+        if ProcessInfo.processInfo.environment["ZEPHYR_DEBUG_INPUT"] != nil {
+            print("[Diag] FONT ATLAS REBUILD dpi=\(dpiScale) fb=\(fbScale)")
+        }
 
         let autoScale = (fbScale > 0.001) ? dpiScale / fbScale : 1.0
         let newUiScale = uiScaleOverride ?? autoScale

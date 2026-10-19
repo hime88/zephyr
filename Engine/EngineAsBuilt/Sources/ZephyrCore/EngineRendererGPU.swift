@@ -641,9 +641,11 @@ extension EngineRenderer {
         // Release engine.fontTexture
         if let tex = engine.fontTexture { SDL_ReleaseGPUTexture(engine.gpuDevice, tex) }
 
-        // Cancel async builds and release per-context CAD vertex buffers
+        // Cancel async builds and release per-context CAD vertex buffers.
+        // The adopted primary context also lives in secondaryCtxs — destroy
+        // each object exactly once.
         primaryCtx.destroy(device: engine.gpuDevice)
-        for ctx in secondaryCtxs.values {
+        for ctx in secondaryCtxs.values where ctx !== primaryCtx {
             ctx.destroy(device: engine.gpuDevice)
         }
         secondaryCtxs.removeAll()

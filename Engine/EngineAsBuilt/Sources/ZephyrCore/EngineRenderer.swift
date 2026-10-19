@@ -31,11 +31,66 @@ struct CameraUniformData {
 public final class EngineRenderer {
     public unowned let engine: PhrostEngine
 
-    /// Render state for the active tab (bound to the engine's live stores).
+    /// The original render context, bound to the engine's initial stores.
+    /// Adopted into `secondaryCtxs` by the first tab that renders through
+    /// `tabCtx(for:)`; afterwards it is simply that tab's pooled context.
     public let primaryCtx: WindowRenderContext
-    /// Render state for visible-but-inactive tabs, keyed by tab ID.
-    /// Entries exist only while their tab is shown in an unfocused window.
+    /// Tab that adopted `primaryCtx` into the per-tab pool, if any.
+    internal var primaryCtxAdoptedTabID: UUID? = nil
+    /// Per-tab render contexts, keyed by tab ID. Contexts are bound to
+    /// TABS, never to activity: switching the active tab never wipes or
+    /// rebuilds another tab's geometry — the incoming tab's warm context
+    /// is simply the one that gets primary (overlay/pick) treatment.
+    /// Entries exist only while their tab is shown in some window.
     public var secondaryCtxs: [UUID: WindowRenderContext] = [:]
+
+    /// The pooled render context for a tab, creating it on first use.
+    public func tabCtx(for tabID: UUID) -> WindowRenderContext {
+        if let existing = secondaryCtxs[tabID] { return existing }
+        if primaryCtxAdoptedTabID == nil {
+            primaryCtxAdoptedTabID = tabID
+            primaryCtx.builtTabID = tabID
+            secondaryCtxs[tabID] = primaryCtx
+            return primaryCtx
+        }
+        let ctx = WindowRenderContext(
+            geometry: GeometryManager(),
+            sprites: SpriteManager(),
+            bridge: CADRendererBridge())
+        ctx.builtTabID = tabID
+        secondaryCtxs[tabID] = ctx
+        return ctx
+    }
+
+    /// A drawing-view switch must supersede a tab context's built state
+    /// explicitly (edit revisions can coincide across view documents).
+    internal func supersedeCtxIfViewChanged(_ ctx: WindowRenderContext, tab: DocumentTab) {
+        if ctx.builtTabID != tab.id || ctx.builtViewIndex != tab.activeViewIndex {
+            ctx.builtTabID = tab.id
+            ctx.builtViewIndex = tab.activeViewIndex
+            ctx.regenTask?.cancel()
+            ctx.regenTask = nil
+            ctx.regenInFlight = nil
+            ctx.bridge.cancelPending()
+            ctx.regenGeneration &+= 1
+            ctx.appliedGeneration = -1
+            ctx.builtRevision = nil
+            ctx.pendingRevision = nil
+            ctx.invalidateBuiltState(device: engine.gpuDevice)
+        }
+    }
+
+    /// Bump every pooled context's generation (global render-parameter
+    /// changes such as tessellation/simplify toggles).
+    public func bumpAllContextGenerations() {
+        primaryCtx.regenGeneration &+= 1
+        for ctx in secondaryCtxs.values where ctx !== primaryCtx {
+            ctx.regenGeneration &+= 1
+        }
+        for ctx in paneCtxs.values {
+            ctx.regenGeneration &+= 1
+        }
+    }
     /// Render state for non-focused split panes, keyed by leaf ID. Each
     /// pane keeps its own tab, drawing view, and camera, so sharing the
     /// primary context's view-culled buffers is impossible.
@@ -267,6 +322,13 @@ public final class EngineRenderer {
         background: SDL_FColor,
         isPrimary: Bool
     ) -> Bool {
+        // A document-object swap under the same tab/view (entering or
+        // exiting the block editor) must supersede this context even when
+        // the incoming document's revision coincides with the outgoing one
+        // or another context already consumed its regeneration flag.
+        if ctx.supersedeIfDocumentChanged(to: doc) {
+            ctx.invalidateBuiltState(device: engine.gpuDevice)
+        }
         // Fold in-tab edits into the generation so they supersede any in-flight
         // task exactly the way a tab switch does.
         if doc.needsRegeneration {
@@ -474,8 +536,11 @@ public final class EngineRenderer {
             let activeDoc = engine.tabManager.activeDocument
             let inBlockEditor = engine.tabManager.activeTab?.editingBlockID != nil
 
+            let activeTab = engine.tabManager.activeTab
+            let actx = activeTab.map { tabCtx(for: $0.id) } ?? primaryCtx
+            if let activeTab { supersedeCtxIfViewChanged(actx, tab: activeTab) }
             let pendingApplied = ensureContextRegenerated(
-                ctxID: nil, ctx: primaryCtx, doc: activeDoc,
+                ctxID: activeTab?.id, ctx: actx, doc: activeDoc,
                 simplifyComplexBlocks: inBlockEditor ? false : engine.simplifyComplexBlocks,
                 splineTessellationDivisor: engine.splineTessellationDivisor,
                 background: engine.ui.backgroundColor,
@@ -487,7 +552,7 @@ public final class EngineRenderer {
             // region, when zoom changes enough to break screen-constant primitive sizing, or when
             // geometry actually mutates.
             routeContextVertexBuild(
-                ctx: primaryCtx, camera: engine.camera,
+                ctx: actx, camera: engine.camera,
                 viewportWidth: engine.windowWidth, viewportHeight: engine.windowHeight,
                 pixelScale: lineWidthPixelScale,
                 background: engine.ui.backgroundColor,
@@ -533,14 +598,17 @@ public final class EngineRenderer {
                 continue
             }
             guard refreshAuxMetrics(aux) else { continue }
+            syncAuxWindowTitle(aux)
+            // Float windows render the FULL AppUI (role-gated: no file tab
+            // bar / top chrome / app-global dialogs), same as main.
             if hostedID == engine.tabManager.activeTab?.id {
                 renderPrimaryWindow(
                     target: aux, deltaSec: deltaSec, t0: SDL_GetTicks(),
-                    uiBuilder: { self.renderFloatWindowUI(aux) })
+                    uiBuilder: mainUI)
             } else {
                 renderSecondaryWindow(
                     target: aux, tab: tab, deltaSec: deltaSec,
-                    uiBuilder: { self.renderFloatWindowUI(aux) })
+                    uiBuilder: mainUI)
             }
         }
 
@@ -549,6 +617,9 @@ public final class EngineRenderer {
         // active so focus toggles rebind instantly (staleness is caught by
         // the built-revision check instead of rebuilding blindly).
         var visibleTabs = Set<UUID>()
+        if let active = engine.tabManager.activeTab {
+            visibleTabs.insert(active.id)
+        }
         if let shown = engine.mainShownTab() {
             visibleTabs.insert(shown.id)
         }
@@ -596,7 +667,7 @@ public final class EngineRenderer {
         // regeneration (e.g. layer visibility) changes.
         if engine.interaction.cachedGripGeneration != engine.camera.renderGeneration
             || engine._cachedSelectionGen != engine.cadSelection._selectionGeneration
-            || engine._cachedApplyGen != primaryCtx.appliedGeneration
+            || engine._cachedApplyGen != (engine.tabManager.activeTab.map { tabCtx(for: $0.id) } ?? primaryCtx).appliedGeneration
             || engine.interaction.gripActive
             || engine.interaction.dragActive
         {
@@ -615,7 +686,7 @@ public final class EngineRenderer {
                 selectedLeaderContentHandle: engine.cadSelection.selectedLeaderContentHandle)
             engine.interaction.cachedGripGeneration = engine.camera.renderGeneration
             engine._cachedSelectionGen = engine.cadSelection._selectionGeneration
-            engine._cachedApplyGen = primaryCtx.appliedGeneration
+            engine._cachedApplyGen = (engine.tabManager.activeTab.map { tabCtx(for: $0.id) } ?? primaryCtx).appliedGeneration
         }
     }
 
@@ -713,6 +784,7 @@ public final class EngineRenderer {
         uiBuilder: () -> Void
     ) {
         engine.activateImGuiContext(for: target)
+        engine.ui.frameRole = .mainWindow
         // Layout from last frame's canvas (1-frame lag on resize — invisible).
         let canvasF = engine.ui.drawingViewportRect
             ?? SDL_FRect(x: 0, y: 0, w: Float(engine.windowWidth), h: Float(engine.windowHeight))
@@ -733,14 +805,17 @@ public final class EngineRenderer {
         let inBlockEditor = engine.tabManager.activeTab?.editingBlockID != nil
         let primaryW: Int32 = focusedShowsActive ? Int32(focusedLeaf.rect.w) : engine.windowWidth
         let primaryH: Int32 = focusedShowsActive ? Int32(focusedLeaf.rect.h) : engine.windowHeight
+        let activeTab = engine.tabManager.activeTab
+        let actx = activeTab.map { tabCtx(for: $0.id) } ?? primaryCtx
+        if let activeTab { supersedeCtxIfViewChanged(actx, tab: activeTab) }
         let pendingApplied = ensureContextRegenerated(
-            ctxID: nil, ctx: primaryCtx, doc: activeDoc,
+            ctxID: activeTab?.id, ctx: actx, doc: activeDoc,
             simplifyComplexBlocks: inBlockEditor ? false : engine.simplifyComplexBlocks,
             splineTessellationDivisor: engine.splineTessellationDivisor,
             background: engine.ui.backgroundColor,
             isPrimary: true)
         routeContextVertexBuild(
-            ctx: primaryCtx, camera: engine.camera,
+            ctx: actx, camera: engine.camera,
             viewportWidth: primaryW, viewportHeight: primaryH,
             pixelScale: lineWidthPixelScale,
             background: engine.ui.backgroundColor,
@@ -915,8 +990,8 @@ public final class EngineRenderer {
         // Pick pass for the focused pane (pending coords are pane-local).
         if focusedShowsActive,
            let pickX = _pendingPickScreenX, let pickY = _pendingPickScreenY,
-           let pickTex = pickTexture, cadIDPipeline != nil, primaryCtx.vertexBuffer != nil,
-           primaryCtx.vertexCount > 0
+           let pickTex = pickTexture, cadIDPipeline != nil, actx.vertexBuffer != nil,
+           actx.vertexCount > 0
         {
             _pendingPickScreenX = nil
             _pendingPickScreenY = nil
@@ -934,7 +1009,7 @@ public final class EngineRenderer {
                 if let pickPass = SDL_BeginGPURenderPass(pickCmd, &pickColorTarget, 1, nil) {
                     SDL_BindGPUGraphicsPipeline(pickPass, cadIDPipeline)
 
-                    var vertexBinding = SDL_GPUBufferBinding(buffer: primaryCtx.vertexBuffer!, offset: 0)
+                    var vertexBinding = SDL_GPUBufferBinding(buffer: actx.vertexBuffer!, offset: 0)
                     SDL_BindGPUVertexBuffers(pickPass, 0, &vertexBinding, 1)
 
                     var pickMatrix = engine.camera.computePickMatrix(
@@ -942,11 +1017,11 @@ public final class EngineRenderer {
                         cursorScreenY: pickY,
                         windowWidth: Int32(focusedLeaf.rect.w),
                         windowHeight: Int32(focusedLeaf.rect.h),
-                        renderOrigin: primaryCtx.geometry.renderOrigin)
+                        renderOrigin: actx.geometry.renderOrigin)
                     SDL_PushGPUVertexUniformData(pickCmd, 0, &pickMatrix, UInt32(pickMatrix.count * 4))
 
                     var lastBoundType: CADPipelineType? = nil
-                    for batch in primaryCtx.batches {
+                    for batch in actx.batches {
                         if batch.isPanProxy { continue }
                         let pipe: OpaquePointer?
                         switch batch.pipelineType {
@@ -1201,12 +1276,14 @@ public final class EngineRenderer {
     ) -> WindowRenderContext? {
         guard leaf.id == focusedID,
               let tabID = leaf.tabID, tabID == activeID,
-              primaryCtx.vertexCount == 0
+              tabCtx(for: tabID).vertexCount == 0
         else { return nil }
         let wantView = engine.tabManager.activeTab?.activeViewIndex ?? -1
+        let wantDocumentID = engine.tabManager.activeTab.map { ObjectIdentifier($0.document) }
         func ready(_ ctx: WindowRenderContext) -> Bool {
             ctx.vertexBuffer != nil && ctx.vertexCount > 0
                 && ctx.builtTabID == tabID && ctx.builtViewIndex == wantView
+                && ctx.builtDocumentID == wantDocumentID
         }
         if let own = paneCtxs[leaf.id], ready(own) { return own }
         for ctx in paneCtxs.values where ready(ctx) { return ctx }
@@ -1232,9 +1309,10 @@ public final class EngineRenderer {
                     renderOrigin: interim.geometry.renderOrigin,
                     isPrimaryLeaf: true)
             }
+            let actx = tabCtx(for: activeID!)
             return LeafPassPlan(
-                bg: engine.ui.backgroundColor, ctx: primaryCtx,
-                camera: engine.camera, renderOrigin: primaryCtx.geometry.renderOrigin,
+                bg: engine.ui.backgroundColor, ctx: actx,
+                camera: engine.camera, renderOrigin: actx.geometry.renderOrigin,
                 isPrimaryLeaf: true)
         }
         let bg = leafBgs[leaf.id] ?? engine.ui.backgroundColor
@@ -1260,10 +1338,11 @@ public final class EngineRenderer {
                 engine.tabManager.tab(for: $0)?.activeViewIndex
             } ?? 0
             if (entry?.viewIndex ?? activeView) == activeView {
+                let actx = tabCtx(for: activeID!)
                 return LeafPassPlan(
-                    bg: bg, ctx: primaryCtx,
+                    bg: bg, ctx: actx,
                     camera: paneCtxs[leaf.id]?.camera ?? engine.camera,
-                    renderOrigin: primaryCtx.geometry.renderOrigin,
+                    renderOrigin: actx.geometry.renderOrigin,
                     isPrimaryLeaf: false)
             }
         }
@@ -1591,6 +1670,8 @@ public final class EngineRenderer {
         uiBuilder: () -> Void
     ) {
         engine.activateImGuiContext(for: target)
+        engine.ui.frameRole = target.isMain ? .mainWindow : .floatWindow(hostedTabID: target.hostedTabID)
+        let actx = engine.tabManager.activeTab.map { tabCtx(for: $0.id) } ?? primaryCtx
         // Float windows borrow the engine-global metrics slots so the whole
         // primary pipeline (transforms, overlays, passes) just works.
         let savedMetrics = target.isMain ? nil : engine.snapshotMetrics()
@@ -1676,8 +1757,8 @@ public final class EngineRenderer {
 
         // --- Phase 2: GPU ID-buffer pick pass ---
         if let pickX = _pendingPickScreenX, let pickY = _pendingPickScreenY,
-           let pickTex = pickTexture, cadIDPipeline != nil, primaryCtx.vertexBuffer != nil,
-           primaryCtx.vertexCount > 0
+           let pickTex = pickTexture, cadIDPipeline != nil, actx.vertexBuffer != nil,
+           actx.vertexCount > 0
         {
             _pendingPickScreenX = nil
             _pendingPickScreenY = nil
@@ -1696,7 +1777,7 @@ public final class EngineRenderer {
                 if let pickPass = SDL_BeginGPURenderPass(pickCmd, &pickColorTarget, 1, nil) {
                     SDL_BindGPUGraphicsPipeline(pickPass, cadIDPipeline)
 
-                    var vertexBinding = SDL_GPUBufferBinding(buffer: primaryCtx.vertexBuffer!, offset: 0)
+                    var vertexBinding = SDL_GPUBufferBinding(buffer: actx.vertexBuffer!, offset: 0)
                     SDL_BindGPUVertexBuffers(pickPass, 0, &vertexBinding, 1)
 
                     // Upload pick matrix (9×9 viewport centered on cursor)
@@ -1710,7 +1791,7 @@ public final class EngineRenderer {
 
                     // Draw all batches with appropriate ID pipeline per primitive type
                     var lastBoundType: CADPipelineType? = nil
-                    for batch in primaryCtx.batches {
+                    for batch in actx.batches {
                         if batch.isPanProxy { continue }
                         let pipe: OpaquePointer?
                         switch batch.pipelineType {
@@ -1791,7 +1872,7 @@ public final class EngineRenderer {
 
             let renderPass = SDL_BeginGPURenderPass(cmd, &colorTarget, 1, nil)
             if renderPass != nil {
-                if let vertexBuf = primaryCtx.vertexBuffer, primaryCtx.vertexCount > 0 {
+                if let vertexBuf = actx.vertexBuffer, actx.vertexCount > 0 {
                     var lastBoundPipeline: CADPipelineType? = nil
                     var vertexBinding = SDL_GPUBufferBinding(buffer: vertexBuf, offset: 0)
                     SDL_BindGPUVertexBuffers(renderPass, 0, &vertexBinding, 1)
@@ -1804,7 +1885,7 @@ public final class EngineRenderer {
                     pushCADUniforms(cmd: cmd, matrix: cameraMatrix, includeHiddenHandles: true)
 
                     let isPanning = _panProxyActiveThisFrame
-                    for batch in primaryCtx.batches {
+                    for batch in actx.batches {
                         if batch.isPanProxy && !isPanning { continue }
                         let pipeline: OpaquePointer?
                         switch batch.pipelineType {
@@ -1874,6 +1955,7 @@ public final class EngineRenderer {
         uiBuilder: () -> Void
     ) {
         engine.activateImGuiContext(for: target)
+        engine.ui.frameRole = target.isMain ? .mainWindow : .floatWindow(hostedTabID: target.hostedTabID)
         let dims: (w: Int32, h: Int32, sx: Float, sy: Float) = target.isMain
             ? (engine.windowWidth, engine.windowHeight, engine.scaleX, engine.scaleY)
             : (target.width, target.height, target.scaleX, target.scaleY)
@@ -1893,16 +1975,7 @@ public final class EngineRenderer {
             let view = tab.drawingViews[tab.activeViewIndex]
             bg = engine.ui.backgroundColor(forViewBackground: view.backgroundColor)
             let isLight = EngineUIManager.isLightBackground(bg)
-            let c: WindowRenderContext
-            if let existing = secondaryCtxs[tab.id] {
-                c = existing
-            } else {
-                c = WindowRenderContext(
-                    geometry: GeometryManager(),
-                    sprites: SpriteManager(),
-                    bridge: CADRendererBridge())
-                secondaryCtxs[tab.id] = c
-            }
+            let c = tabCtx(for: tab.id)
             ctx = c
             c.camera.applyState(tab.cameraState)
             // Same stale-geometry guard as split panes: a drawing-view
@@ -1960,6 +2033,9 @@ public final class EngineRenderer {
                     viewportWidth: Float(dims.w), viewportHeight: Float(dims.h),
                     useLightPalette: isLight)
                 spriteEstimate += 4
+            }
+            if let tab {
+                renderSecondaryOverlays(target: target, tab: tab, ctx: ctx, transform: transform)
             }
         }
 
@@ -2057,49 +2133,132 @@ public final class EngineRenderer {
             title = "Zephyr CAD"
         }
         if main.lastTitle != title {
+            if ProcessInfo.processInfo.environment["ZEPHYR_DEBUG_INPUT"] != nil {
+                print("[Diag] main title: \(main.lastTitle ?? "nil") -> \(title)")
+            }
             main.lastTitle = title
             SDL_SetWindowTitle(main.handle, title)
         }
     }
 
-    /// Minimal chrome for float windows: a dock bar with the tab name and a
-    /// Dock button, with the drawing canvas filling the rest. Docking is
-    /// deferred via `closeRequestedByUI` so the window is never destroyed
-    /// mid-frame.
-    private func renderFloatWindowUI(_ aux: EngineManagedWindow) {
+    /// Keep a float window's OS title in sync with its hosted tab
+    /// (name + dirty dot). The window's chrome is the full AppUI rendered
+    /// in float role; docking is via TABDOCK or the OS close box.
+    private func syncAuxWindowTitle(_ aux: EngineManagedWindow) {
         guard let tabID = aux.hostedTabID,
               let tab = engine.tabManager.tab(for: tabID) else { return }
-
         let title = tab.displayName + (tab.hasUnsavedChanges ? " ●" : "")
         if aux.lastTitle != title {
             aux.lastTitle = title
             SDL_SetWindowTitle(aux.handle, title)
         }
+    }
 
-        let dw = Float(aux.width)
-        let barH = ImGuiGetFrameHeight() + 8
-        engine.ui.beginDrawingViewportFrame(
-            x: 0, y: barH, width: dw, height: max(1, Float(aux.height) - barH))
+    /// Passive feedback for a secondary (non-active-tab) view: crosshair at
+    /// this window's own mouse position, hover highlight via a
+    /// document-scoped CPU hit test, and this document's persisted
+    /// selection (bounding boxes + grip squares). Mirrors the primary
+    /// overlay colors, minus drag/edit state, which belongs to the
+    /// window showing the active tab.
+    private func renderSecondaryOverlays(
+        target: EngineManagedWindow, tab: DocumentTab,
+        ctx: WindowRenderContext, transform: CameraTransform
+    ) {
+        guard let vpF = engine.ui.drawingViewportRect else { return }
+        let vp = PaneRect(x: vpF.x, y: vpF.y, w: vpF.w, h: vpF.h)
+        let doc = tab.document
+        let handles = tab.selectionState.selectedHandles
+        let mouseInCanvas = target.hasMousePos
+            && target.mouseX >= vp.x && target.mouseX <= vp.x + vp.w
+            && target.mouseY >= vp.y && target.mouseY <= vp.y + vp.h
 
-        ImGuiSetNextWindowPos(ImVec2(x: 0, y: 0), Int32(ImGuiCond_Always.rawValue), ImVec2(x: 0, y: 0))
-        ImGuiSetNextWindowSize(ImVec2(x: dw, y: barH), Int32(ImGuiCond_Always.rawValue))
-        ImGuiPushStyleColor(Int32(ImGuiCol_WindowBg.rawValue), engine.ui.theme.tabBarBg)
-        var open = true
-        let flags = Int32(
-            ImGuiWindowFlags_NoTitleBar.rawValue | ImGuiWindowFlags_NoCollapse.rawValue
-                | ImGuiWindowFlags_NoResize.rawValue | ImGuiWindowFlags_NoMove.rawValue
-                | ImGuiWindowFlags_NoSavedSettings.rawValue)
-        if igBegin("##FloatDockBar", &open, flags) {
-            ImGuiTextV(title)
-            ImGuiSameLine(0, 0)
-            let textW = ImGuiCalcTextSize("Dock", nil, false, -1).x
-            ImGuiSetCursorPosX(dw - textW - 24)
-            if ImGuiButton("Dock", ImVec2(x: textW + 16, y: 0)) {
-                aux.closeRequestedByUI = true
+        if !handles.isEmpty || mouseInCanvas {
+            pushBackgroundClip(vp)
+            let drawList = igGetBackgroundDrawList(nil)
+            let selColor = igGetColorU32_Vec4(engine.ui.theme.brandGold)
+            for handle in handles {
+                guard let entity = doc.entity(for: handle),
+                      let layer = doc.layer(for: entity.layerID), layer.isVisible,
+                      let wbb = entity.worldBoundingBox else { continue }
+                let s0 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: transform)
+                let s1 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: transform)
+                let s2 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: transform)
+                let s3 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: transform)
+                ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), selColor, 2.0)
+                ImDrawListAddLine(drawList, ImVec2(x: s1.x, y: s1.y), ImVec2(x: s2.x, y: s2.y), selColor, 2.0)
+                ImDrawListAddLine(drawList, ImVec2(x: s2.x, y: s2.y), ImVec2(x: s3.x, y: s3.y), selColor, 2.0)
+                ImDrawListAddLine(drawList, ImVec2(x: s3.x, y: s3.y), ImVec2(x: s0.x, y: s0.y), selColor, 2.0)
+            }
+            if handles.count <= engine.gripObjectMax {
+                let grips = CADGripSystem.getAllGrips(
+                    document: doc, cam: transform, simplifyComplexBlocks: true,
+                    selectedHandles: handles,
+                    selectedLeaderContentHandle: tab.selectionState.selectedLeaderContentHandle)
+                var drawn = 0
+                for grip in grips {
+                    if drawn >= engine.gripMax { break }
+                    let half: Float = 4.0
+                    let pMin = ImVec2(x: grip.screenPos.x - half, y: grip.screenPos.y - half)
+                    let pMax = ImVec2(x: grip.screenPos.x + half, y: grip.screenPos.y + half)
+                    ImDrawListAddRectFilled(
+                        drawList, pMin, pMax,
+                        makeImCol32(r: 0, g: 100, b: 255, a: 255), 0.0, 0)
+                    ImDrawListAddRect(
+                        drawList, pMin, pMax,
+                        makeImCol32(r: 255, g: 255, b: 255, a: 255), 0.0, 1.0, 0)
+                    drawn += 1
+                }
+            }
+
+            // Hover highlight for this window's own document (CPU hit
+            // test; the GPU pick pass belongs to the primary view).
+            if mouseInCanvas, !engine.io.pointee.WantCaptureMouse {
+                let (wx, wy) = EngineCameraManager.screenToWorld(
+                    screenX: target.mouseX, screenY: target.mouseY, cam: transform)
+                let threshold = 6.0 / ctx.camera.zoom
+                if let hover = CADHitTesting.hitTest(
+                        worldX: wx, worldY: wy, document: doc,
+                        threshold: threshold,
+                        simplifyComplexBlocks: engine.simplifyComplexBlocks),
+                   !handles.contains(hover),
+                   let entity = doc.entity(for: hover),
+                   let layer = doc.layer(for: entity.layerID), layer.isVisible {
+                    let hc = makeImCol32(r: 64, g: 224, b: 208, a: 180)
+                    let geomCount = doc.resolvedGeometry(for: entity)?.count ?? 0
+                    if engine.simplifyComplexBlocks && geomCount > 50 {
+                        if let wbb = entity.worldBoundingBox {
+                            let s0 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: transform)
+                            let s1 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: transform)
+                            let s2 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: transform)
+                            let s3 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: transform)
+                            ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), hc, 2.0)
+                            ImDrawListAddLine(drawList, ImVec2(x: s1.x, y: s1.y), ImVec2(x: s2.x, y: s2.y), hc, 2.0)
+                            ImDrawListAddLine(drawList, ImVec2(x: s2.x, y: s2.y), ImVec2(x: s3.x, y: s3.y), hc, 2.0)
+                            ImDrawListAddLine(drawList, ImVec2(x: s3.x, y: s3.y), ImVec2(x: s0.x, y: s0.y), hc, 2.0)
+                        }
+                    } else {
+                        _ = engine.cadBridge.vertexEditor.forEachWorldSegment(
+                            handle: hover, in: ctx.geometry, maxSegments: 4096
+                        ) { x1, y1, x2, y2 in
+                            let s0 = EngineCameraManager.worldToScreen(worldX: x1, worldY: y1, cam: transform)
+                            let s1 = EngineCameraManager.worldToScreen(worldX: x2, worldY: y2, cam: transform)
+                            ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), hc, 2.0)
+                        }
+                    }
+                }
+            }
+            popBackgroundClip()
+        }
+
+        if target.hasMousePos, !engine.io.pointee.WantCaptureMouse {
+            let mx = target.mouseX
+            let my = target.mouseY
+            if mx >= vp.x, mx <= vp.x + vp.w, my >= vp.y, my <= vp.y + vp.h {
+                drawCrosshairArms(
+                    center: ImVec2(x: mx, y: my),
+                    drawList: igGetForegroundDrawList_ViewportPtr(nil))
             }
         }
-        igEnd()
-        ImGuiPopStyleColor(1)
     }
 
     /// Refresh an aux window's cached metrics.
@@ -2138,6 +2297,7 @@ public final class EngineRenderer {
     /// this is only a safe fallback for a stray aux window.
     private func renderAuxWindow(_ aux: EngineManagedWindow, deltaSec: Double) {
         engine.activateImGuiContext(for: aux)
+        engine.ui.frameRole = .floatWindow(hostedTabID: aux.hostedTabID)
         guard refreshAuxMetrics(aux) else { return }
         let windowWidth = aux.width
         let windowHeight = aux.height

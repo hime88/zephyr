@@ -1272,7 +1272,7 @@ public final class CADCommandProcessor {
                 return
             }
             engine.splineTessellationDivisor = val
-            engine.renderer.primaryCtx.regenGeneration &+= 1
+            engine.renderer.bumpAllContextGenerations()
             print("[CAD] Spline tessellation divisor set to \(val)")
             clearCommand()
         // --- Grid ---

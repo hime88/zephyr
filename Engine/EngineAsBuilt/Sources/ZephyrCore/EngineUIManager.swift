@@ -60,6 +60,21 @@ public final class EngineUIManager {
     public var layerMoveMatches: [Layer] = []
     
     public var topChromeExcludeRect: SDL_Rect? = nil
+
+    /// Which OS window the in-progress UI frame belongs to. The renderer
+    /// sets it before each window's uiBuilder runs; AppUI uses it to skip
+    /// main-only chrome (file tab bar, top chrome, app-global dialogs) in
+    /// float windows, which otherwise render the full interface.
+    public enum UIFrameRole: Equatable {
+        case mainWindow
+        case floatWindow(hostedTabID: UUID?)
+    }
+    public var frameRole: UIFrameRole = .mainWindow
+    public var isFloatFrame: Bool {
+        if case .floatWindow = frameRole { return true }
+        return false
+    }
+
     public private(set) var drawingViewportRect: SDL_FRect? = nil
     private var drawingViewportBaseRect: SDL_FRect? = nil
     private var dockedPanelRects: [SDL_FRect] = []

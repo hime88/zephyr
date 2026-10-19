@@ -57,10 +57,12 @@ struct TabBarUI {
         ImGuiPushStyleColor(Int32(ImGuiCol_WindowBg.rawValue), engine.ui.theme.tabBarBg)
 
         var requestedCloseIndex: Int?
+        var requestedActivateIndex: Int?
         var opened = true
         if igBegin("##TabBar", &opened, flags) {
             let tabs = engine.tabManager.tabs
             let activeIdx = engine.tabManager.activeIndex
+            let activeTabIsFloated = tabs.indices.contains(activeIdx) && tabs[activeIdx].isFloated
             
             let shouldForceSelection = (activeIdx != _lastActiveIdx)
             if shouldForceSelection {
@@ -96,7 +98,11 @@ struct TabBarUI {
                     
                     var tabOpen = true
                     let tabVisible = ImGuiBeginTabItem("\(label)###Tab_\(tab.id.uuidString)", &tabOpen, tabFlags)
-                    
+                    // BeginTabItem() also returns true for ImGui's persistently
+                    // selected tab on every frame. Capture the actual click
+                    // before drag/drop helpers below replace the last item.
+                    let tabItemClicked = igIsItemClicked(0)
+
                     if isActive, engine.ui.boldFont != nil {
                         ImGuiPopFont()
                     }
@@ -127,11 +133,22 @@ struct TabBarUI {
                         ImGuiEndDragDropTarget()
                     }
 
+                    // A floated active tab is skipped by this bar, so ImGui
+                    // keeps reporting its last docked tab as visible every
+                    // frame. That stale selection is not user intent: while a
+                    // floated tab is active, only an actual click may switch
+                    // back to a docked tab. (Without this guard, the bar
+                    // re-activated the docked tab after every float input.)
+                    if TabBarActivationPolicy.shouldActivateTab(
+                        isActive: isActive,
+                        tabItemClicked: tabItemClicked,
+                        tabItemVisible: tabVisible,
+                        activeTabIsFloated: activeTabIsFloated
+                    ) {
+                        requestedActivateIndex = i
+                    }
+
                     if tabVisible {
-                        if !isActive {
-                            engine.activateDockedTab(at: i)
-                            _lastActiveIdx = i
-                        }
                         
                         if isActive {
                             let min = ImGuiGetItemRectMin()
@@ -182,6 +199,11 @@ struct TabBarUI {
 
         ImGuiPopStyleVar(4)
         ImGuiPopStyleColor(1)
+
+        if let index = requestedActivateIndex, index != requestedCloseIndex {
+            engine.activateDockedTab(at: index)
+            _lastActiveIdx = index
+        }
 
         if let index = requestedCloseIndex {
             _ = engine.tabManager.requestCloseTab(at: index)
