@@ -48,6 +48,15 @@ struct AppCommandRegistration {
             factory: { ChamferCommand() }
         )
         engine.commandProcessor.registerFeatureCommand(
+            name: "OFFSET",
+            aliases: ["O"],
+            factory: { OffsetCommand() }
+        )
+        engine.commandProcessor.registerFeatureCommand(
+            name: "OFFSETGAPTYPE",
+            factory: { OffsetGapTypeCommand() }
+        )
+        engine.commandProcessor.registerFeatureCommand(
             name: "ARRAY",
             aliases: ["AR"],
             factory: { ArrayCommand() }

@@ -61,6 +61,37 @@ final class TabManagerFloatTests: XCTestCase {
         XCTAssertTrue(manager.floatedTabIDs.isEmpty)
     }
 
+    func testNearestDockedReplacementForLastFloatedTabIsPreviousTab() {
+        let manager = makeManager(tabCount: 3)
+        let ids = manager.tabs.map(\.id)
+
+        manager.setFloated(id: ids[2], true)
+
+        XCTAssertEqual(manager.nearestDockedTabID(replacing: ids[2]), ids[1])
+    }
+
+    func testNearestDockedReplacementPrefersTabSlidingIntoPlace() {
+        let manager = makeManager(tabCount: 4)
+        let ids = manager.tabs.map(\.id)
+
+        manager.setFloated(id: ids[1], true)
+        XCTAssertEqual(manager.nearestDockedTabID(replacing: ids[1]), ids[2])
+
+        manager.setFloated(id: ids[2], true)
+        XCTAssertEqual(manager.nearestDockedTabID(replacing: ids[1]), ids[3])
+        XCTAssertEqual(manager.nearestDockedTabID(replacing: ids[3]), ids[0])
+    }
+
+    func testNearestDockedReplacementIsNilWhenEveryTabFloats() {
+        let manager = makeManager(tabCount: 2)
+        let ids = manager.tabs.map(\.id)
+
+        manager.setFloated(id: ids[0], true)
+        manager.setFloated(id: ids[1], true)
+
+        XCTAssertNil(manager.nearestDockedTabID(replacing: ids[1]))
+    }
+
     func testCloseTabFiresIDHook() {
         let manager = makeManager(tabCount: 2)
         let closedID = manager.tabs[0].id

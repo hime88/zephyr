@@ -253,6 +253,8 @@ public struct CommandDescriptor: Sendable {
         CommandDescriptor(canonicalName: "TRIM",       aliases: ["TR"],            category: .modify,  syntax: "", description: "Trim lines at intersections — click the side to remove"),
         CommandDescriptor(canonicalName: "FILLET",     aliases: ["F"],            category: .modify,  syntax: "", description: "Round corners between objects using an exact tangent arc"),
         CommandDescriptor(canonicalName: "CHAMFER",    aliases: ["CHA", "BEVEL"], category: .modify,  syntax: "", description: "Bevel corners using distances or a distance and angle"),
+        CommandDescriptor(canonicalName: "OFFSET",     aliases: ["O"],            category: .modify,  syntax: "", description: "Create a parallel copy at a distance or through a point"),
+        CommandDescriptor(canonicalName: "OFFSETGAPTYPE", aliases: [],            category: .settings, syntax: "[0|1|2]", description: "Polyline offset corner style: 0 extend, 1 fillet, 2 chamfer"),
         CommandDescriptor(canonicalName: "ARRAY", aliases: ["AR"], category: .modify, syntax: "", description: "Create a rectangular, polar, or path array"),
         CommandDescriptor(canonicalName: "ARRAYRECT", aliases: ["ARRAYR"], category: .modify, syntax: "", description: "Create an associative rectangular array"),
         CommandDescriptor(canonicalName: "ARRAYPOLAR", aliases: ["ARRAYP"], category: .modify, syntax: "", description: "Create an associative polar array"),

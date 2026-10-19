@@ -668,6 +668,11 @@ public final class PhrostEngine {
             if ProcessInfo.processInfo.environment["ZEPHYR_DEBUG_INPUT"] != nil {
                 print("[Diag] activeTab -> \(self.tabManager.activeTab?.displayName ?? "nil") (floated: \(self.tabManager.activeTab?.isFloated ?? false))")
             }
+            // A pending rectangle selection belongs to the tab/view (and
+            // window) where its first corner landed. Switching tabs or
+            // views — including focus moving to another OS window — must
+            // not let the next click land as its second corner elsewhere.
+            self.interaction.cancelRectSelect()
             if let color = self.tabManager.activeViewBackgroundColor {
                 self.ui.viewBackgroundOverride = SDL_FColor(
                     r: Float(color.r) / 255.0,
@@ -949,9 +954,14 @@ public final class PhrostEngine {
            let tab = tabManager.tab(for: id), !tab.isFloated {
             return tab
         }
-        if let first = tabManager.tabs.first(where: { !$0.isFloated }) {
-            mainShownTabID = first.id
-            return first
+        // The tracked tab just floated (or vanished): stay on its nearest
+        // docked neighbor instead of jumping back to the first tab.
+        let fallbackID = mainShownTabID
+            .flatMap { tabManager.nearestDockedTabID(replacing: $0) }
+            ?? tabManager.tabs.first(where: { !$0.isFloated })?.id
+        if let fallbackID, let fallback = tabManager.tab(for: fallbackID) {
+            mainShownTabID = fallback.id
+            return fallback
         }
         mainShownTabID = nil
         return nil
@@ -1147,12 +1157,13 @@ public final class PhrostEngine {
         aux.hostedTabID = id
         floatWindowIDs[id] = aux.id
         tabManager.setFloated(id: id, true)
-        mainPanes.rebindAll(from: id, to: tabManager.tabs.first(where: { !$0.isFloated })?.id)
+        let replacementID = tabManager.nearestDockedTabID(replacing: id)
+        mainPanes.rebindAll(from: id, to: replacementID)
         if let activeID = tabManager.activeTab?.id {
             ensurePaneViews(for: activeID)
         }
         if mainShownTabID == id {
-            mainShownTabID = tabManager.tabs.first(where: { !$0.isFloated })?.id
+            mainShownTabID = replacementID
         }
         SDL_RaiseWindow(aux.handle)
         return true

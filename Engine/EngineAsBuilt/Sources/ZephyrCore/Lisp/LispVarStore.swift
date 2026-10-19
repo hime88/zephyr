@@ -66,7 +66,8 @@ final class LispVarStore: @unchecked Sendable {
         "MENUECHO": .int(0),
         "MIRRTEXT": .int(1),
         "NOMUTT": .int(0),
-        "OFFSETDIST": .real(1),
+        "OFFSETDIST": .real(-1),
+        "OFFSETGAPTYPE": .int(0),
         "ORTHOMODE": .int(0),
         "OSMODE": .int(0),
         "PDMODE": .int(0),
@@ -112,6 +113,11 @@ final class LispVarStore: @unchecked Sendable {
             return .string(activeCommand ?? "")
         case "MILLISECS":
             return .int(Int(Date().timeIntervalSince1970 * 1000))
+        case "OFFSETDIST":
+            // Live: shared with the OFFSET command (-1 = Through default).
+            return .real(OffsetSettings.lastDistance ?? -1)
+        case "OFFSETGAPTYPE":
+            return .int(OffsetSettings.gapType.rawValue)
         case "LASTPOINT":
             return lock.withLock { memory["LASTPOINT"] ?? .nilValue }
         default:
@@ -158,6 +164,24 @@ final class LispVarStore: @unchecked Sendable {
                 return "AUNITS requires an integer 0..4"
             }
             store(name, value)
+            return nil
+        case "OFFSETDIST":
+            let numeric: Double?
+            switch value {
+            case .real(let r): numeric = r
+            case .int(let i): numeric = Double(i)
+            default: numeric = nil
+            }
+            guard let numeric, numeric != 0, numeric.isFinite else {
+                return "OFFSETDIST requires a positive real, or -1 for Through"
+            }
+            OffsetSettings.lastDistance = numeric > 0 ? numeric : nil
+            return nil
+        case "OFFSETGAPTYPE":
+            guard case let .int(i) = value, let gapType = OffsetGapType(rawValue: i) else {
+                return "OFFSETGAPTYPE requires an integer 0..2"
+            }
+            OffsetSettings.gapType = gapType
             return nil
         case "TEXTSTYLE":
             guard case let .string(style) = value else {

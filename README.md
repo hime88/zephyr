@@ -50,7 +50,7 @@ On top of that, finding great cross-platform tools that treat macOS and Linux as
 ## Why Zephyr?
 
 - **QCAD/LibreCAD replacement** — DXF parsing that actually works: MText formatting, SHX shape fonts, NURBS splines, dimension styles, and title blocks all render correctly. No raw escape codes leaking into labels, no scrambled curves, no missing logos.
-- **AutoCAD LT alternative** — AutoCAD muscle memory preserved. `L`, `PL`, `C`, `REC`, `M`, `TR`, `J` all work. Command palette with fuzzy autocomplete, polar tracking, object snap tracking, grips, and a full snap engine.
+- **AutoCAD LT alternative** — AutoCAD muscle memory preserved. `L`, `PL`, `C`, `REC`, `M`, `O`, `TR`, `J` all work. Command palette with fuzzy autocomplete, polar tracking, object snap tracking, grips, and a full snap engine.
 - **GPU-native** — Metal on macOS, Direct3D 12 on Windows, Vulkan on Linux. Single Swift rendering pipeline. 120 FPS canvas with pixel-perfect GPU picking. No OpenGL emulation layer.
 - **Free forever** — GPL v3. No account, no email gate, no subscription.
 
@@ -204,8 +204,27 @@ Dialogs are parented to the window hosting the active drawing where the platform
 | HATCHTOBACK | `HTB` | Send all hatches and solid fills to back |
 | FILLET | `F` | Round corners between objects using an exact tangent arc |
 | CHAMFER | `CHA` | Bevel corners between two objects |
+| OFFSET | `O` | Parallel copy at a distance or through a point — Through, Erase, Layer, and Multiple options |
 | ALIGN | `AL` | Align objects by matching two pairs of source/destination points (move, rotate, optionally scale) |
 | TORIENT | `TO` | Rotate text individually to an absolute or most-readable angle |
+
+#### Offset
+
+`OFFSET` (`O`) makes a parallel copy of one object at a time, then loops back for the next object until Enter or Esc.
+
+1. **Specify the distance** — type a value, press Enter to reuse the last distance, or pick two points and Zephyr uses the distance between them. A live preview follows the cursor once an object is picked.
+2. **Select object to offset** — lines, rays, circles, arcs, ellipses, splines, and polylines (arc/bulge segments included). Block references, text, hatches, leaders, and dimensions cannot be offset.
+3. **Pick a point on the side** to place the copy.
+
+Options at the distance prompt, AutoCAD-style:
+
+- **Through (`T`)** — skip the distance; the copy passes through the point you pick.
+- **Erase (`E`)** — delete the source object after offsetting (Yes/No, default No).
+- **Layer (`L`)** — `Source` (default) keeps the original layer and color; `Current` places copies on the active layer with BYLAYER color.
+
+At the side prompt, **Multiple (`M`)** offsets the same object repeatedly with each click, **Undo (`U`)** reverts the last offset without leaving the command, and **Exit (`E`)** ends it. Ellipses and splines offset to splines, as in AutoCAD.
+
+`OFFSETGAPTYPE` controls outside corners when offsetting polylines: `0` extends segments to sharp corners (default), `1` rounds corners with an arc whose radius equals the offset distance, `2` chamfers them. Inside corners always trim to the intersection. The last distance is remembered as the next default; from AutoLISP both settings are the `OFFSETDIST` (`-1` means Through is the default) and `OFFSETGAPTYPE` system variables.
 
 ### Array Commands
 | Command | Alias | Description |
@@ -356,6 +375,7 @@ Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, ActiveX
 | UNITS | `UNIT`, `DDUNITS` | Set or display the drawing base unit (mm, cm, m, in, ft, yd). Flows through to PDF `/Measure` dictionary for Bluebeam Revu, DXF `$INSUNITS`, and EAB file header. |
 | SETUISCALE | `ZOOMUI`, `UISCALE` | Override UI zoom scale (e.g. `SETUISCALE 1.5` for 150%). `SETUISCALE AUTO` reverts to system DPI. Scales all UI elements including fonts. |
 | STYLE | `ST` | Create, edit, and manage text styles (font file, height, width, oblique) |
+| OFFSETGAPTYPE | | Polyline offset corner style for `OFFSET`: `0` extend (sharp corners), `1` fillet (arc radius = offset distance), `2` chamfer |
 | LANGUAGE | `LANG` | Set the UI font glyph profile without translating UI text (e.g. `LANGUAGE cjk` for Chinese/Japanese/Korean glyphs) |
 
 ## Nightly Builds
