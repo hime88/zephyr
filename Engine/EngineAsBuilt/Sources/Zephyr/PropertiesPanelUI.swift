@@ -207,6 +207,9 @@ struct PropertiesPanelUI {
                 Self.copyToClipboard(uuidStr)
             }
             ImGuiTextWrappedV(uuidStr)
+            if case .string(let dxfHandle) = entity.xdata["dxf.handle"], !dxfHandle.isEmpty {
+                ImGuiTextV("DXF Handle: \(dxfHandle)")
+            }
 
             let layerName = layer?.name ?? "?"
             if let ly = layer {

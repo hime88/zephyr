@@ -2269,4 +2269,192 @@ final class DXFImportTests: XCTestCase {
             "Entities without 330/67 tags implicitly belong to model space"
         )
     }
+
+    @MainActor
+    func testMlineImportAndHandlePreservation() throws {
+        let dxfContent = """
+          0
+        SECTION
+          2
+        ENTITIES
+          0
+        MLINE
+          5
+        6DC3
+        330
+        1F
+        100
+        AcDbEntity
+          8
+        B-WALL-2
+        100
+        AcDbMline
+          2
+        STANDARD
+        340
+        18
+         40
+        100.0
+         70
+             1
+         71
+             1
+         72
+             2
+         73
+             2
+         10
+        1250.0
+         20
+        20506.5
+         30
+        0.0
+        210
+        0.0
+        220
+        0.0
+        230
+        1.0
+         11
+        1250.0
+         21
+        20506.5
+         31
+        0.0
+         12
+        1.0
+         22
+        0.0
+         32
+        0.0
+         13
+        0.0
+         23
+        1.0
+         33
+        0.0
+         74
+             2
+         41
+        50.0
+         41
+        0.0
+         75
+             0
+         74
+             2
+         41
+        -50.0
+         41
+        0.0
+         75
+             0
+         11
+        2025.0
+         21
+        20506.5
+         31
+        0.0
+         12
+        1.0
+         22
+        0.0
+         32
+        0.0
+         13
+        0.0
+         23
+        1.0
+         33
+        0.0
+         74
+             2
+         41
+        50.0
+         41
+        0.0
+         75
+             0
+         74
+             2
+         41
+        -50.0
+         41
+        0.0
+         75
+             0
+          0
+        ENDSEC
+          0
+        SECTION
+          2
+        OBJECTS
+          0
+        MLINESTYLE
+          5
+        18
+        100
+        AcDbMlineStyle
+          2
+        STANDARD
+         70
+             0
+          3
+        
+         62
+           256
+         51
+        90.0
+         52
+        90.0
+         71
+             2
+         49
+        0.5
+         62
+           256
+          6
+        BYLAYER
+         49
+        -0.5
+         62
+           256
+          6
+        BYLAYER
+          0
+        ENDSEC
+          0
+        EOF
+        """
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test_mline_\(UUID().uuidString).dxf")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        try dxfContent.write(to: tempURL, atomically: true, encoding: .utf8)
+
+        let imported = try DXFImporter.importDXFViews(filePath: tempURL.path)
+        XCTAssertEqual(imported.entities.count, 1)
+        let entity = try XCTUnwrap(imported.entities.first)
+        XCTAssertEqual(entity.xdata["dxf.handle"], .string("6DC3"))
+        XCTAssertEqual(entity.xdata["dxf.mlineStyle"], .string("STANDARD"))
+        XCTAssertEqual(entity.xdata["dxf.mlineScale"], .double(100.0))
+        XCTAssertEqual(entity.xdata["dxf.mlineJustification"], .int(1))
+
+        let geometry = try XCTUnwrap(entity.localGeometry)
+        XCTAssertEqual(geometry.count, 2)
+        if case .line(let s1, let e1, _) = geometry[0],
+           case .line(let s2, let e2, _) = geometry[1] {
+            XCTAssertEqual(s1.x, 1250.0, accuracy: 1e-6)
+            XCTAssertEqual(e1.x, 2025.0, accuracy: 1e-6)
+            XCTAssertEqual(s1.y, -20556.5, accuracy: 1e-6)
+            XCTAssertEqual(e1.y, -20556.5, accuracy: 1e-6)
+
+            XCTAssertEqual(s2.x, 1250.0, accuracy: 1e-6)
+            XCTAssertEqual(e2.x, 2025.0, accuracy: 1e-6)
+            XCTAssertEqual(s2.y, -20456.5, accuracy: 1e-6)
+            XCTAssertEqual(e2.y, -20456.5, accuracy: 1e-6)
+        } else {
+            XCTFail("Expected 2 line primitives for MLINE")
+        }
+    }
 }

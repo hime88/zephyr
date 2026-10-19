@@ -33,6 +33,8 @@ public enum DXFEntityConverter {
                         startAngle: angles.start, endAngle: angles.end, color: primColor)]
         case .lWPOLYLINE, .pOLYLINE:
             return convertPolyline(e, color: primColor)
+        case .mLINE:
+            return convertMline(e, color: primColor)
         case .rEGION:
             return convertRegion(e, color: primColor)
         case .eLLIPSE:
@@ -91,6 +93,248 @@ public enum DXFEntityConverter {
         default:
             return []
         }
+    }
+
+    // MARK: - Multiline (MLINE)
+
+    private static func convertMline(_ e: DXFEntity, color: ColorRGBA?) -> [CADPrimitive] {
+        guard let mline = e as? DXFMlineEntity, mline.vertices.count >= 2 else { return [] }
+
+        let vertexCount = mline.vertices.count
+        let styleElements = mline.resolvedStyle?.elements ?? []
+        let maxVertexElements = mline.vertices.map(\.elements.count).max() ?? 0
+        let elementCount = max(mline.elementCount, max(styleElements.count, maxVertexElements))
+        guard elementCount > 0 else { return [] }
+
+        let rawStyleOffsets: [Double] = {
+            if !styleElements.isEmpty {
+                var offsets = styleElements.map(\.offset)
+                while offsets.count < elementCount { offsets.append(0) }
+                return offsets
+            }
+            if elementCount == 2 { return [0.5, -0.5] }
+            return Array(repeating: 0.0, count: elementCount)
+        }()
+
+        let justificationShift: Double = {
+            switch mline.justification {
+            case 0: return -(rawStyleOffsets.max() ?? 0) // Top
+            case 2: return -(rawStyleOffsets.min() ?? 0) // Bottom
+            default: return 0                             // Zero
+            }
+        }()
+
+        let fallbackOffsets = rawStyleOffsets.map { ($0 + justificationShift) * mline.scale }
+        let isClosed = (mline.flags & 2) != 0
+
+        func segmentDirection(at index: Int) -> Vector3 {
+            let dir = mline.vertices[index].direction
+            if dir.magnitudeSquared > 1e-18 {
+                return dir.normalized
+            }
+            let nextIndex = isClosed
+                ? (index + 1) % vertexCount
+                : min(index + 1, vertexCount - 1)
+            let prevIndex = isClosed
+                ? (index - 1 + vertexCount) % vertexCount
+                : max(index - 1, 0)
+            let delta = nextIndex != index
+                ? (mline.vertices[nextIndex].position - mline.vertices[index].position)
+                : (mline.vertices[index].position - mline.vertices[prevIndex].position)
+            return delta.magnitudeSquared > 1e-18 ? delta.normalized : Vector3(x: 1, y: 0, z: 0)
+        }
+
+        var elementPoints: [[Vector3]] = Array(
+            repeating: Array(repeating: .zero, count: elementCount),
+            count: vertexCount)
+        var elementOffsets: [[Double]] = Array(
+            repeating: Array(repeating: 0, count: elementCount),
+            count: vertexCount)
+
+        for i in 0..<vertexCount {
+            let vertex = mline.vertices[i]
+            let miter: Vector3 = {
+                if vertex.miter.magnitudeSquared > 1e-18 {
+                    return vertex.miter.normalized
+                }
+                let dir = segmentDirection(at: i)
+                return Vector3(x: -dir.y, y: dir.x, z: 0).normalized
+            }()
+
+            for k in 0..<elementCount {
+                let offset: Double
+                if k < vertex.elements.count, let firstParam = vertex.elements[k].params.first {
+                    offset = firstParam
+                } else {
+                    offset = fallbackOffsets[k]
+                }
+                elementOffsets[i][k] = offset
+                elementPoints[i][k] = vertex.position + miter * offset
+            }
+        }
+
+        func sortedElementIndices(at vertexIndex: Int) -> [Int] {
+            (0..<elementCount).sorted { elementOffsets[vertexIndex][$0] < elementOffsets[vertexIndex][$1] }
+        }
+
+        let segmentCount = isClosed ? vertexCount : (vertexCount - 1)
+        let styleFlags = mline.resolvedStyle?.flags ?? 0
+        var primitives: [CADPrimitive] = []
+        primitives.reserveCapacity(segmentCount * elementCount + 4)
+
+        // 1. Background fill (MLINESTYLE flag bit 1)
+        if (styleFlags & 1) != 0, elementCount >= 2 {
+            let fillColor: ColorRGBA? = {
+                guard let style = mline.resolvedStyle,
+                      style.fillColor > 0 && style.fillColor < 256 else {
+                    return color
+                }
+                return DXFColorTable.aciToRGBA(style.fillColor, color24: -1)
+            }()
+            for s in 0..<segmentCount {
+                let i = s
+                let j = (s + 1) % vertexCount
+                let sortedI = sortedElementIndices(at: i)
+                let sortedJ = sortedElementIndices(at: j)
+                guard let minI = sortedI.first, let maxI = sortedI.last,
+                      let minJ = sortedJ.first, let maxJ = sortedJ.last else { continue }
+                primitives.append(.fillPolygon(
+                    points: [
+                        yflip(elementPoints[i][minI]),
+                        yflip(elementPoints[j][minJ]),
+                        yflip(elementPoints[j][maxJ]),
+                        yflip(elementPoints[i][maxI])
+                    ],
+                    color: fillColor))
+            }
+        }
+
+        // 2. Parallel element segments (with optional break/gap parameters)
+        for k in 0..<elementCount {
+            let elementColor: ColorRGBA? = {
+                guard k < styleElements.count else { return color }
+                let aci = styleElements[k].color
+                if aci > 0 && aci < 256 {
+                    return DXFColorTable.aciToRGBA(aci, color24: -1)
+                }
+                return color
+            }()
+
+            for s in 0..<segmentCount {
+                let i = s
+                let j = (s + 1) % vertexCount
+                let pStart = elementPoints[i][k]
+                let pEnd = elementPoints[j][k]
+                let params = k < mline.vertices[i].elements.count
+                    ? mline.vertices[i].elements[k].params
+                    : []
+
+                if params.count <= 1 || (params.count == 2 && abs(params[1]) <= 1e-6) {
+                    if (pEnd - pStart).magnitudeSquared > 1e-18 {
+                        primitives.append(.line(start: yflip(pStart), end: yflip(pEnd), color: elementColor))
+                    }
+                } else {
+                    let segDir = segmentDirection(at: i)
+                    let breaks = Array(params.dropFirst())
+                    for bIndex in stride(from: 0, to: breaks.count, by: 2) {
+                        let subStart = pStart + segDir * breaks[bIndex]
+                        let subEnd = (bIndex + 1 < breaks.count)
+                            ? (pStart + segDir * breaks[bIndex + 1])
+                            : pEnd
+                        if (subEnd - subStart).magnitudeSquared > 1e-18 {
+                            primitives.append(.line(start: yflip(subStart), end: yflip(subEnd), color: elementColor))
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Miters and end caps
+        if elementCount >= 2 {
+            func appendCapArc(p1DXF: Vector3, p2DXF: Vector3, outwardDXF: Vector3) {
+                let p1 = yflip(p1DXF)
+                let p2 = yflip(p2DXF)
+                let chord = p2 - p1
+                let radius = chord.magnitude * 0.5
+                guard radius > 1e-9 else { return }
+                let center = (p1 + p2) * 0.5
+                let outDir = yflip(outwardDXF).normalized
+                let a1 = atan2(p1.y - center.y, p1.x - center.x)
+                let a2 = atan2(p2.y - center.y, p2.x - center.x)
+                let midCCW = a1 + .pi * 0.5
+                let dot = cos(midCCW) * outDir.x + sin(midCCW) * outDir.y
+                if dot >= 0 {
+                    primitives.append(.arc(center: center, radius: radius, startAngle: a1, endAngle: a2, color: color))
+                } else {
+                    primitives.append(.arc(center: center, radius: radius, startAngle: a2, endAngle: a1, color: color))
+                }
+            }
+
+            // Inner vertex miters (flag bit 2)
+            if (styleFlags & 2) != 0 {
+                let miterRange = isClosed ? (0..<vertexCount) : (1..<(vertexCount - 1))
+                for i in miterRange {
+                    let sorted = sortedElementIndices(at: i)
+                    guard let kMin = sorted.first, let kMax = sorted.last else { continue }
+                    let pMin = elementPoints[i][kMin]
+                    let pMax = elementPoints[i][kMax]
+                    if (pMax - pMin).magnitudeSquared > 1e-18 {
+                        primitives.append(.line(start: yflip(pMin), end: yflip(pMax), color: color))
+                    }
+                }
+            }
+
+            // Start caps (when open and not suppressed by MLINE flag bit 4)
+            if !isClosed && (mline.flags & 4) == 0 {
+                let sorted0 = sortedElementIndices(at: 0)
+                if let kMin = sorted0.first, let kMax = sorted0.last {
+                    let pMin = elementPoints[0][kMin]
+                    let pMax = elementPoints[0][kMax]
+                    let outDir = segmentDirection(at: 0) * -1
+                    if (styleFlags & 16) != 0, (pMax - pMin).magnitudeSquared > 1e-18 {
+                        primitives.append(.line(start: yflip(pMin), end: yflip(pMax), color: color))
+                    }
+                    if (styleFlags & 64) != 0 {
+                        appendCapArc(p1DXF: pMin, p2DXF: pMax, outwardDXF: outDir)
+                    }
+                    if (styleFlags & 32) != 0 && sorted0.count >= 4 {
+                        for m in 1..<(sorted0.count / 2) {
+                            appendCapArc(
+                                p1DXF: elementPoints[0][sorted0[m]],
+                                p2DXF: elementPoints[0][sorted0[sorted0.count - 1 - m]],
+                                outwardDXF: outDir)
+                        }
+                    }
+                }
+            }
+
+            // End caps (when open and not suppressed by MLINE flag bit 8)
+            if !isClosed && (mline.flags & 8) == 0 {
+                let lastIdx = vertexCount - 1
+                let sortedLast = sortedElementIndices(at: lastIdx)
+                if let kMin = sortedLast.first, let kMax = sortedLast.last {
+                    let pMin = elementPoints[lastIdx][kMin]
+                    let pMax = elementPoints[lastIdx][kMax]
+                    let outDir = segmentDirection(at: max(0, lastIdx - 1))
+                    if (styleFlags & 256) != 0, (pMax - pMin).magnitudeSquared > 1e-18 {
+                        primitives.append(.line(start: yflip(pMin), end: yflip(pMax), color: color))
+                    }
+                    if (styleFlags & 1024) != 0 {
+                        appendCapArc(p1DXF: pMin, p2DXF: pMax, outwardDXF: outDir)
+                    }
+                    if (styleFlags & 512) != 0 && sortedLast.count >= 4 {
+                        for m in 1..<(sortedLast.count / 2) {
+                            appendCapArc(
+                                p1DXF: elementPoints[lastIdx][sortedLast[m]],
+                                p2DXF: elementPoints[lastIdx][sortedLast[sortedLast.count - 1 - m]],
+                                outwardDXF: outDir)
+                        }
+                    }
+                }
+            }
+        }
+
+        return primitives
     }
 
     // MARK: - Region
