@@ -63,6 +63,7 @@ public class DXFReader {
     public var layouts: [DXFLayoutEntry] = []
     public var sortEntsTables: [DXFSortEntsTable] = []
     public var mleaderStyles: [DXFMLeaderStyleEntry] = []
+    public var mlineStyles: [DXFMlineStyleEntry] = []
     public var rawClasses: [DXFRawRecord] = []
     public var rawTables: [DXFRawRecord] = []
     public var rawObjects: [DXFRawRecord] = []
@@ -151,6 +152,7 @@ public class DXFReader {
         resolveTableStyles()
         resolveTableObjectGraphs()
         resolveImageReferences()
+        resolveMlineStyles()
         DXFProfile.mark("resolve styles/graphs/images")
         DXFProfile.dump("DXFReader total")
         return self
@@ -583,6 +585,7 @@ public class DXFReader {
         case "DIMENSION": return parseDimension(allPairs)
         case "LEADER":   return parseLeader(allPairs)
         case "MULTILEADER", "MLEADER": return parseMLeader(allPairs)
+        case "MLINE":    return parseMline(allPairs)
         case "IMAGE":    return parseImage(allPairs)
         case "VIEWPORT": return parseViewport(allPairs)
         case "ACAD_TABLE", "TABLE": return parseTable(allPairs)
@@ -1162,6 +1165,93 @@ extension DXFReader {
             case 31: e.secPoint.z = d(v)
             default: break
             }
+        }
+        return e
+    }
+
+    func parseMline(_ pairs: [(Int, String)]) -> DXFMlineEntity {
+        let e = DXFMlineEntity()
+        applyCommon(pairs, to: e)
+        var inAppData = false
+        var currentVertex: DXFMlineVertex?
+        var currentElement: DXFMlineElementSegment?
+
+        func flushElement() {
+            guard let element = currentElement else { return }
+            currentVertex?.elements.append(element)
+            currentElement = nil
+        }
+
+        func flushVertex() {
+            flushElement()
+            guard let vertex = currentVertex else { return }
+            e.vertices.append(vertex)
+            currentVertex = nil
+        }
+
+        for (c, v) in pairs {
+            if c == 1001 { break }
+            if c == 102 {
+                let t = v.trimmingCharacters(in: .whitespaces)
+                if t.hasPrefix("{") {
+                    inAppData = true
+                } else if t == "}" {
+                    inAppData = false
+                }
+                continue
+            }
+            if inAppData { continue }
+
+            switch c {
+            case 2:   e.styleName = decode(v)
+            case 340: e.styleHandle = parseHandle(v)
+            case 40:  e.scale = d(v)
+            case 70:  e.justification = i(v)
+            case 71:  e.flags = i(v)
+            case 72:
+                e.vertexCount = max(0, i(v))
+                e.vertices.reserveCapacity(e.vertexCount)
+            case 73:
+                e.elementCount = max(0, i(v))
+            case 10:  e.basePoint.x = d(v)
+            case 20:  e.basePoint.y = d(v)
+            case 30:  e.basePoint.z = d(v)
+            case 11:
+                flushVertex()
+                var vertex = DXFMlineVertex(position: Vector3(x: d(v), y: 0, z: 0))
+                if e.elementCount > 0 {
+                    vertex.elements.reserveCapacity(e.elementCount)
+                }
+                currentVertex = vertex
+            case 21:  currentVertex?.position.y = d(v)
+            case 31:  currentVertex?.position.z = d(v)
+            case 12:  currentVertex?.direction.x = d(v)
+            case 22:  currentVertex?.direction.y = d(v)
+            case 32:  currentVertex?.direction.z = d(v)
+            case 13:  currentVertex?.miter.x = d(v)
+            case 23:  currentVertex?.miter.y = d(v)
+            case 33:  currentVertex?.miter.z = d(v)
+            case 74:
+                flushElement()
+                var seg = DXFMlineElementSegment()
+                seg.params.reserveCapacity(max(0, i(v)))
+                currentElement = seg
+            case 41:
+                currentElement?.params.append(d(v))
+            case 75:
+                let count = max(0, i(v))
+                if count > 0 {
+                    currentElement?.areaFillParams.reserveCapacity(count)
+                }
+            case 42:
+                currentElement?.areaFillParams.append(d(v))
+            default:
+                break
+            }
+        }
+        flushVertex()
+        if e.vertexCount == 0 {
+            e.vertexCount = e.vertices.count
         }
         return e
     }
@@ -2470,6 +2560,12 @@ extension DXFReader {
                         mleaderStyles[index].name = dictionaryName
                     }
                 }
+                for index in mlineStyles.indices where mlineStyles[index].name.isEmpty {
+                    if let dictionaryName = objectDictionaryNameByHandle[mlineStyles[index].handle],
+                       !dictionaryName.isEmpty {
+                        mlineStyles[index].name = dictionaryName
+                    }
+                }
                 pos += 1
                 return
             }
@@ -2488,6 +2584,8 @@ extension DXFReader {
                 tryParse { try parseSortEntsTable(at: pos) }
             } else if c == 0 && v == "MLEADERSTYLE" {
                 tryParse { try parseMLeaderStyle(at: pos) }
+            } else if c == 0 && v == "MLINESTYLE" {
+                tryParse { try parseMlineStyle(at: pos) }
             } else {
                 pos += 1
             }
@@ -2515,6 +2613,64 @@ extension DXFReader {
             }
         }
         pos = idx
+    }
+
+    private func parseMlineStyle(at startIdx: Int) throws {
+        var idx = startIdx + 1
+        var style = DXFMlineStyleEntry()
+        var inStyleSubclass = false
+        var currentElement: DXFMlineStyleElement?
+
+        func flushElement() {
+            guard let element = currentElement else { return }
+            style.elements.append(element)
+            currentElement = nil
+        }
+
+        while idx < pairs.count {
+            let (code, value) = pairs[idx]
+            if code == 0 { break }
+            idx += 1
+
+            if code == 5 && style.handle == 0 {
+                style.handle = parseHandle(value)
+                continue
+            }
+            if code == 100 {
+                inStyleSubclass = value.caseInsensitiveCompare("AcDbMlineStyle") == .orderedSame
+                continue
+            }
+            guard inStyleSubclass else { continue }
+
+            switch code {
+            case 2:  style.name = decode(value)
+            case 70: style.flags = i(value)
+            case 3:  style.desc = decode(value)
+            case 51: style.startAngle = d(value)
+            case 52: style.endAngle = d(value)
+            case 71:
+                style.elements.reserveCapacity(max(0, i(value)))
+            case 49:
+                flushElement()
+                currentElement = DXFMlineStyleElement(offset: d(value))
+            case 62:
+                if currentElement != nil {
+                    currentElement?.color = i32(value)
+                } else {
+                    style.fillColor = i32(value)
+                }
+            case 6:
+                if currentElement != nil {
+                    currentElement?.lineType = decode(value)
+                }
+            default:
+                break
+            }
+        }
+        flushElement()
+        pos = idx
+        if style.name.isEmpty { style.name = "STANDARD" }
+        mlineStyles.append(style)
     }
 
     private func parseMLeaderStyle(at startIdx: Int) throws {
@@ -2807,6 +2963,40 @@ extension DXFReader {
                     image.imageFilePath = path
                 }
                 if let block = entity as? DXFBlockEntity { resolve(block.entities) }
+            }
+        }
+
+        resolve(entities)
+        for block in blocks { resolve(block.entities) }
+    }
+
+    private func resolveMlineStyles() {
+        var byHandle: [UInt32: DXFMlineStyleEntry] = [:]
+        var byName: [String: DXFMlineStyleEntry] = [:]
+        for style in mlineStyles {
+            if style.handle != 0 {
+                byHandle[style.handle] = style
+            }
+            let key = style.name.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if !key.isEmpty {
+                byName[key] = style
+            }
+        }
+        guard !byHandle.isEmpty || !byName.isEmpty else { return }
+
+        func resolve(_ list: [DXFEntity]) {
+            for entity in list {
+                if let mline = entity as? DXFMlineEntity {
+                    if mline.styleHandle != 0, let style = byHandle[mline.styleHandle] {
+                        mline.resolvedStyle = style
+                    } else {
+                        let key = mline.styleName.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                        mline.resolvedStyle = byName[key] ?? byName["STANDARD"]
+                    }
+                }
+                if let block = entity as? DXFBlockEntity {
+                    resolve(block.entities)
+                }
             }
         }
 

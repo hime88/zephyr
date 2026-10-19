@@ -1641,12 +1641,23 @@ public enum DXFImporter {
             xdata["dxf.polylineWidth"] = .double(width)
         }
 
+        if entity.handle != 0 {
+            xdata["dxf.handle"] = .string(
+                String(entity.handle, radix: 16).uppercased())
+        }
         if entity.plotStyleHandle != 0 {
             xdata["dxf.plotStyleHandle"] = .string(
                 String(entity.plotStyleHandle, radix: 16).uppercased())
         }
         if !entity.colorName.isEmpty {
             xdata["dxf.colorName"] = .string(entity.colorName)
+        }
+        if let mline = entity as? DXFMlineEntity {
+            if !mline.styleName.isEmpty {
+                xdata["dxf.mlineStyle"] = .string(mline.styleName)
+            }
+            xdata["dxf.mlineScale"] = .double(mline.scale)
+            xdata["dxf.mlineJustification"] = .int(mline.justification)
         }
 
         if let text = entity as? DXFTextEntity {

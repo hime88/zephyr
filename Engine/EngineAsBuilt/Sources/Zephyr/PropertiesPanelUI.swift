@@ -119,7 +119,11 @@ struct PropertiesPanelUI {
         if ImGuiCollapsingHeader("General", Int32(ImGuiTreeNodeFlags_DefaultOpen.rawValue)) {
             let uuidStr = entity.handle.uuidString
             let shortUUID = String(uuidStr.prefix(12)) + "..."
-            ImGuiTextV("Handle: \(shortUUID)")
+            if case .string(let dxfHandle) = entity.xdata["dxf.handle"], !dxfHandle.isEmpty {
+                ImGuiTextV("Handle: \(dxfHandle)  (\(shortUUID))")
+            } else {
+                ImGuiTextV("Handle: \(shortUUID)")
+            }
 
             let layerName = layer?.name ?? "?"
             if let ly = layer {

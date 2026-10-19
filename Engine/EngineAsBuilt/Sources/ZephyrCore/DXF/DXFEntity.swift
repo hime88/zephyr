@@ -191,6 +191,7 @@ public enum DXFEType: String, Sendable {
     case mLEADER       = "MULTILEADER"
     case lINE          = "LINE"
     case lWPOLYLINE    = "LWPOLYLINE"
+    case mLINE         = "MLINE"
     case mTEXT         = "MTEXT"
     case pOINT         = "POINT"
     case pOLYLINE      = "POLYLINE"
@@ -1214,6 +1215,86 @@ public class DXFTableEntity: DXFEntity {
         self.insertion = .zero
         self.horizontal = Vector3(x: 1, y: 0, z: 0)
         self.data = DataTableData()
+        super.init(eType: eType)
+    }
+}
+
+// MARK: - Multiline (MLINE & MLINESTYLE)
+
+public struct DXFMlineStyleElement: Sendable {
+    public var offset: Double = 0
+    public var color: Int32 = 256           // 62 (ACI color, 256 = BYLAYER, 0 = BYBLOCK)
+    public var lineType: String = "BYLAYER" // 6
+
+    public init(
+        offset: Double = 0,
+        color: Int32 = 256,
+        lineType: String = "BYLAYER"
+    ) {
+        self.offset = offset
+        self.color = color
+        self.lineType = lineType
+    }
+}
+
+public struct DXFMlineStyleEntry: Sendable {
+    public var handle: UInt32 = 0
+    public var name: String = "STANDARD" // 2
+    public var flags: Int = 0            // 70: 1=fill, 2=miters, 16=start square, 32=start inner arcs, 64=start round, 256=end square, 512=end inner arcs, 1024=end round
+    public var desc: String = ""         // 3
+    public var fillColor: Int32 = 256    // 62
+    public var startAngle: Double = 90.0 // 51 (degrees)
+    public var endAngle: Double = 90.0   // 52 (degrees)
+    public var elements: [DXFMlineStyleElement] = []
+
+    public init() {}
+}
+
+public struct DXFMlineElementSegment: Sendable {
+    public var params: [Double] = []         // 41 (first is miter offset, rest are break distances along segment direction)
+    public var areaFillParams: [Double] = [] // 42
+
+    public init(
+        params: [Double] = [],
+        areaFillParams: [Double] = []
+    ) {
+        self.params = params
+        self.areaFillParams = areaFillParams
+    }
+}
+
+public struct DXFMlineVertex: Sendable {
+    public var position: Vector3 = .zero                      // 11, 21, 31
+    public var direction: Vector3 = Vector3(x: 1, y: 0, z: 0) // 12, 22, 32
+    public var miter: Vector3 = Vector3(x: 0, y: 1, z: 0)     // 13, 23, 33
+    public var elements: [DXFMlineElementSegment] = []        // 74/41/75/42 groups
+
+    public init(
+        position: Vector3 = .zero,
+        direction: Vector3 = Vector3(x: 1, y: 0, z: 0),
+        miter: Vector3 = Vector3(x: 0, y: 1, z: 0),
+        elements: [DXFMlineElementSegment] = []
+    ) {
+        self.position = position
+        self.direction = direction
+        self.miter = miter
+        self.elements = elements
+    }
+}
+
+public class DXFMlineEntity: DXFEntity {
+    public var styleName: String = "STANDARD" // 2
+    public var styleHandle: UInt32 = 0        // 340
+    public var scale: Double = 1.0            // 40
+    public var justification: Int = 0         // 70: 0=top, 1=zero, 2=bottom
+    public var flags: Int = 1                 // 71: 1=has vertices, 2=closed, 4=suppress start caps, 8=suppress end caps
+    public var vertexCount: Int = 0           // 72
+    public var elementCount: Int = 2          // 73
+    public var basePoint: Vector3 = .zero     // 10, 20, 30
+    public var vertices: [DXFMlineVertex] = []
+    public var resolvedStyle: DXFMlineStyleEntry?
+
+    public override init(eType: DXFEType = .mLINE) {
         super.init(eType: eType)
     }
 }
