@@ -81,6 +81,39 @@ public enum DrawingViewTabBarPolicy {
     }
 }
 
+/// The radial nav captures the mouse (relative mode) and warps it back on
+/// release. Both SDL calls must target the OS window the nav is rendered
+/// in: targeting the main window from a float frame teleports the cursor
+/// into the main window at the float-local coordinates.
+@MainActor
+public enum RadialNavWindowPolicy {
+    public static func targetWindow(
+        frameRole: EngineUIManager.UIFrameRole,
+        windowManager: EngineWindowManager,
+        floatWindowIDs: [UUID: SDL_WindowID]
+    ) -> EngineManagedWindow? {
+        switch frameRole {
+        case .mainWindow:
+            return windowManager.mainWindow
+        case .floatWindow(let hostedTabID):
+            if let hostedTabID {
+                if let windowID = floatWindowIDs[hostedTabID],
+                   let window = windowManager.window(for: windowID) {
+                    return window
+                }
+                if let window = windowManager.auxWindows
+                    .first(where: { $0.hostedTabID == hostedTabID }) {
+                    return window
+                }
+            }
+            if let focused = windowManager.focusedWindow, !focused.isMain {
+                return focused
+            }
+            return windowManager.mainWindow
+        }
+    }
+}
+
 @MainActor
 public final class EngineUIManager {
     
