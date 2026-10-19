@@ -284,7 +284,7 @@ public struct CommandDescriptor: Sendable {
         CommandDescriptor(canonicalName: "NEXTVIEW",   aliases: ["VIEWNEXT"],      category: .view,    syntax: "", description: "Switch to the next model or sheet view"),
         CommandDescriptor(canonicalName: "PREVIOUSVIEW", aliases: ["PREVVIEW", "VIEWPREV"], category: .view, syntax: "", description: "Switch to the previous model or sheet view"),
         CommandDescriptor(canonicalName: "AALINES",    aliases: ["AA"],            category: .view,    syntax: "", description: "Toggle anti-aliased line rendering on/off"),
-        CommandDescriptor(canonicalName: "PROPS",      aliases: ["PROPERTIES", "PR"], category: .view, syntax: "", description: "Show/hide the properties panel for the selected entity"),
+        CommandDescriptor(canonicalName: "PROPS",      aliases: ["PROPERTIES", "PR"], category: .view, syntax: "", description: "Show/hide the properties panel"),
         CommandDescriptor(canonicalName: "NAV",        aliases: ["RADIALNAV"],     category: .view,    syntax: "", description: "Show/hide the radial navigation tool"),
         CommandDescriptor(canonicalName: "PAN",        aliases: ["P"],             category: .view,    syntax: "", description: "Pan the view by clicking and dragging"),
         CommandDescriptor(canonicalName: "-PAN",       aliases: [],                category: .view,    syntax: "", description: "Pan the view by specifying a displacement vector"),
@@ -932,7 +932,9 @@ public final class CADCommandProcessor {
             }
             clearCommand()
         case "PROPS", "PROPERTIES", "PR":
-            if let engine = engine, engine.cadSelection.hasSelection {
+            // Like BLOCKS/LAYER, toggles regardless of selection: an open
+            // panel with nothing selected shows its empty state.
+            if let engine = engine {
                 engine.ui.showPropertiesPanel.toggle()
             }
             clearCommand()

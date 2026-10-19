@@ -55,6 +55,30 @@ public enum SelectionContextUIPolicy {
     }
 }
 
+/// The properties inspector is a persistent panel, not a selection popup:
+/// while toggled on it stays open across deselection (Escape, deleting the
+/// selected entity, entering the block editor) and shows an empty state
+/// until something is selected again. It closes only when the user toggles
+/// it off (PROPS command or the window's close button).
+public enum PropertiesPanelUIPolicy {
+    public enum Content: Equatable {
+        /// Panel toggled off — render nothing.
+        case hidden
+        /// Panel open with no resolved selected entity — empty state.
+        case empty
+        /// Panel open with a resolved selected entity — its properties.
+        case entity
+    }
+
+    public static func content(
+        isVisible: Bool,
+        hasSelectedEntity: Bool
+    ) -> Content {
+        guard isVisible else { return .hidden }
+        return hasSelectedEntity ? .entity : .empty
+    }
+}
+
 /// Drawing-view tabs belong to the tab shown in each OS window/pane, not
 /// to the one global active tab. A window may display another tab's view
 /// list, but switching still runs through the active-tab path after input

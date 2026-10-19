@@ -17,8 +17,9 @@ import ImGui
 //   6. Geometry — Resolved primitives (delegates to GeometryPanelUI)
 //   7. XData — Any remaining custom extended data key-value pairs
 //
-// The panel auto-closes when the selection becomes invalid (entity deleted
-// or deselected).
+// The panel stays open when nothing is selected (deselected, entity
+// deleted, ...) and shows an empty state; it closes only via PROPS or
+// the window's close button — see PropertiesPanelUIPolicy.
 
 @MainActor
 struct PropertiesPanelUI {
@@ -27,31 +28,22 @@ struct PropertiesPanelUI {
     /// Tracks previous frame's showPropertiesPanel flag to detect re-open.
     static var _wasVisible: Bool = false
     /// Renders the properties panel if the engine's showPropertiesPanel flag is set.
-    /// Auto-closes when the selected entity is no longer valid.
+    /// With no selection the panel stays open and shows an empty state.
     /// - Parameter engine: The engine instance.
     static func render(engine: PhrostEngine) {
-        guard engine.ui.showPropertiesPanel else {
-            _wasVisible = false
-            return
-        }
-
         let doc = engine.document
-        // Validate the selection — if the entity no longer exists, dismiss the panel.
-        guard let handle = engine.cadSelection.lastSelectedHandle,
-              let entity = doc.entity(for: handle)
-        else {
+        // Resolve the selection if there is one. A missing or deleted
+        // entity is not an error: the panel just shows its empty state.
+        let handle = engine.cadSelection.lastSelectedHandle
+        let entity = handle.flatMap { doc.entity(for: $0) }
+
+        let content = PropertiesPanelUIPolicy.content(
+            isVisible: engine.ui.showPropertiesPanel,
+            hasSelectedEntity: entity != nil)
+        guard content != .hidden else {
             _wasVisible = false
-            engine.ui.showPropertiesPanel = false
             return
         }
-
-        let selectedHandles = engine.cadSelection.selectedHandles
-        let isMultiSelect = selectedHandles.count > 1
-
-        let layer = doc.layer(for: entity.layerID)
-        let block = entity.blockID.flatMap { doc.block(for: $0) }
-        // Resolve entity to renderable primitives (decomposes complex entities).
-        let geometry = doc.resolvedGeometry(for: entity) ?? []
 
         ImGuiSetNextWindowSize(
             ImVec2(x: ImGuiGetFontSize() * 24, y: ImGuiGetFontSize() * 36),
@@ -97,7 +89,7 @@ struct PropertiesPanelUI {
             ImGuiPopStyleColor(1)
             return
         }
-        print("[PropsPanel] igBegin returned true, isDocked=\(ImGuiIsWindowDocked()), handle=\(entity.handle)")
+        print("[PropsPanel] igBegin returned true, isDocked=\(ImGuiIsWindowDocked()), handle=\(entity?.handle.uuidString ?? "none")")
         defer {
             ImGuiEnd()
             ImGuiPopStyleVar(1)
@@ -108,6 +100,22 @@ struct PropertiesPanelUI {
             engine.ui.showPropertiesPanel = false
             return
         }
+
+        // No selection: stay open on an empty state until something is picked.
+        guard let handle, let entity else {
+            ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textDim)
+            ImGuiTextV("Nothing selected.")
+            ImGuiPopStyleColor(1)
+            return
+        }
+
+        let selectedHandles = engine.cadSelection.selectedHandles
+        let isMultiSelect = selectedHandles.count > 1
+
+        let layer = doc.layer(for: entity.layerID)
+        let block = entity.blockID.flatMap { doc.block(for: $0) }
+        // Resolve entity to renderable primitives (decomposes complex entities).
+        let geometry = doc.resolvedGeometry(for: entity) ?? []
 
         // Selection count indicator (multi-select only)
         if isMultiSelect {
