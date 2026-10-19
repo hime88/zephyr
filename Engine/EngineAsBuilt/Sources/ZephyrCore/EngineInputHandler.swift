@@ -209,10 +209,11 @@ internal final class EngineInputHandler {
                     // Mid-gesture continuation: if activation was bounced
                     // back after the gesture started, re-activate rather
                     // than dropping the rest of the gesture (which would
-                    // also strand panActive/relative-mouse-mode on).
-                    let it = engine.interaction
-                    if it.panActive || it.dragActive || it.gripActive
-                        || it.rectSelectActive || it.penState.penDrawing {
+                    // also strand panActive/relative-mouse-mode on). Only
+                    // the window the gesture started in may resume it —
+                    // motion in any other window is hover there, not a
+                    // continuation of a click it never received.
+                    if engine.interaction.shouldContinueWindowGesture(in: target.id) {
                         engine.activateTabForInteraction(in: target)
                         showsActive = engine.windowShowsActiveTab(target)
                     }
@@ -287,6 +288,7 @@ internal final class EngineInputHandler {
                 // Release relative mouse mode and show the system cursor.
                 _ = SDL_SetWindowRelativeMouseMode(target.handle, false)
                 _ = SDL_ShowCursor()
+                engine.interaction.clearWindowGestureIfIdle()
                 break
 
             case UInt32(SDL_EVENT_WINDOW_FOCUS_GAINED.rawValue):
@@ -353,9 +355,16 @@ internal final class EngineInputHandler {
                         swallowNextMouseUp = true
                         break
                     }
+                    engine.interaction.beginWindowGesture(
+                        windowID: target.id, tabID: engine.tabManager.activeTab?.id)
                     let downLocal = paneLocal(x: e.button.x, y: e.button.y, isMain: isMain)
                     handleMouseDown(x: downLocal.x, y: downLocal.y)
+                    // No clear here: an entity drag only becomes
+                    // dragActive after the motion threshold, and the
+                    // claim must survive until mouse-up to cover it.
                 } else if Int(e.button.button) == SDL_BUTTON_MIDDLE && !handledByImGui {
+                    engine.interaction.beginWindowGesture(
+                        windowID: target.id, tabID: engine.tabManager.activeTab?.id)
                     engine.interaction.panActive = true
                     engine.interaction.forceHideOSCursor = true
                     _ = SDL_SetWindowRelativeMouseMode(target.handle, true)
@@ -375,10 +384,12 @@ internal final class EngineInputHandler {
                     }
                     let upLocal = paneLocal(x: e.button.x, y: e.button.y, isMain: isMain)
                     handleMouseUp(x: upLocal.x, y: upLocal.y)
+                    engine.interaction.clearWindowGestureIfIdle()
                 } else if Int(e.button.button) == SDL_BUTTON_MIDDLE {
                     engine.interaction.panActive = false
                     engine.interaction.forceHideOSCursor = false
                     _ = SDL_SetWindowRelativeMouseMode(target.handle, false)
+                    engine.interaction.clearWindowGestureIfIdle()
                 }
 
             case UInt32(SDL_EVENT_MOUSE_WHEEL.rawValue):
@@ -404,6 +415,8 @@ internal final class EngineInputHandler {
             case UInt32(SDL_EVENT_PEN_DOWN.rawValue):
                 SDL_RaiseWindow(target.handle) // click-to-raise, as above
                 guard showsActive else { break }
+                engine.interaction.beginWindowGesture(
+                    windowID: target.id, tabID: engine.tabManager.activeTab?.id)
                 let penLocal = paneLocal(x: e.ptouch.x, y: e.ptouch.y, isMain: isMain)
                 engine.interaction.penState.penActive = true
                 engine.interaction.penState.penDrawing = true
@@ -434,6 +447,7 @@ internal final class EngineInputHandler {
                 if !handledByImGui {
                     handleMouseUp(x: penLocal.x, y: penLocal.y)
                 }
+                engine.interaction.clearWindowGestureIfIdle()
 
             case UInt32(SDL_EVENT_PEN_AXIS.rawValue):
                 guard showsActive else { break }
@@ -713,8 +727,7 @@ internal final class EngineInputHandler {
                     if engine.commandProcessor.activeCommand != nil {
                         engine.commandProcessor.clearCommand()
                     } else if engine.interaction.rectSelectActive {
-                        engine.interaction.rectSelectActive = false
-                        engine.interaction.rectSelectPreviewHandles.removeAll()
+                        engine.interaction.cancelRectSelect()
                     } else if engine.interaction.tableCellEditorActive {
                         DataTableEditor.cancelCellEditing(engine: engine)
                     } else if let handle = engine.interaction.selectedTableHandle,

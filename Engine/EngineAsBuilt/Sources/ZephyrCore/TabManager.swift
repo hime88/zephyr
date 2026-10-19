@@ -598,6 +598,25 @@ public final class TabManager {
         tabs.filter(\.isFloated).map(\.id)
     }
 
+    /// Docked tab that should take over the main canvas (or a split pane)
+    /// when `id` leaves it by floating: the next docked tab to the right —
+    /// the one that visually slides into its place — else the nearest
+    /// docked tab to the left. Picking the first docked tab instead made
+    /// floating the last of three tabs jump the main window back to tab 1
+    /// instead of staying on tab 2.
+    public func nearestDockedTabID(replacing id: UUID) -> UUID? {
+        guard let index = indexOfTab(id: id) else {
+            return tabs.first(where: { !$0.isFloated })?.id
+        }
+        for candidate in tabs[(index + 1)...] where !candidate.isFloated {
+            return candidate.id
+        }
+        for candidate in tabs[..<index].reversed() where !candidate.isFloated {
+            return candidate.id
+        }
+        return nil
+    }
+
     /// Close the active tab.
     @discardableResult
     public func closeActiveTab() -> Bool {
