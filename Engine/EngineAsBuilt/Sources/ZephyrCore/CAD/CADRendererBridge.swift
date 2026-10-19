@@ -98,9 +98,16 @@ public final class CADRendererBridge {
 
     /// Called by the render loop (on the main thread) to apply any pending regeneration whose
     /// generation matches `wantGen`. Results from a superseded generation are discarded.
+    ///
+    /// The sprite manager, image store, and viewport background are explicit so
+    /// secondary (unfocused-window) contexts can apply specs without touching
+    /// the primary pipeline's stores. Primary callers pass the engine's own.
     public func applyPendingIfNeeded(
         forGeneration wantGen: Int,
         into geometryManager: GeometryManager,
+        spriteManager: SpriteManager,
+        imageStore: [String: CADImageAsset],
+        viewportBackground: (UInt8, UInt8, UInt8, UInt8),
         splineTessellationDivisor: Double = 5000.0,
         engine: PhrostEngine
     ) -> Bool {
@@ -118,7 +125,10 @@ public final class CADRendererBridge {
         }
         guard let (renderOrigin, results) = applied else { return false }
         geometryManager.renderOrigin = renderOrigin
-        applySpecs(results, into: geometryManager, engine: engine)
+        applySpecs(
+            results, into: geometryManager, spriteManager: spriteManager,
+            imageStore: imageStore, viewportBackground: viewportBackground,
+            engine: engine)
         print("[CADBridge] applySpecs (gen \(wantGen)) done, geomMgr has \(geometryManager.primitiveCount) primitives")
         return true
     }
@@ -1255,6 +1265,9 @@ public final class CADRendererBridge {
     private func applySpecs(
         _ results: [EntityResult],
         into geometryManager: GeometryManager,
+        spriteManager: SpriteManager,
+        imageStore: [String: CADImageAsset],
+        viewportBackground: (UInt8, UInt8, UInt8, UInt8),
         splineTessellationDivisor: Double = 5000.0,
         engine: PhrostEngine
     ) {
@@ -1262,7 +1275,7 @@ public final class CADRendererBridge {
         geometryManager.clearAll()
         for (_, oldSprites) in entitySpriteMap {
             for id in oldSprites {
-                engine.spriteManager.removeSprite(id: id)
+                spriteManager.removeSprite(id: id)
             }
         }
         entityPrimitiveMap.removeAll()
@@ -1270,14 +1283,6 @@ public final class CADRendererBridge {
         var newEntityIndexToHandle: [UInt32: UUID] = [:]
         var newHandleToEntityIndex: [UUID: UInt32] = [:]
         var nextEntityIndex: UInt32 = 1
-
-        let viewport = engine.ui.backgroundColor
-        func channel(_ value: Float) -> UInt8 {
-            UInt8(max(0.0, min(255.0, value * 255.0)).rounded())
-        }
-        let viewportBackground = (
-            channel(viewport.r), channel(viewport.g),
-            channel(viewport.b), channel(viewport.a))
 
         // Add new primitives
         for (entityIdx, res) in results.enumerated() {
@@ -1330,7 +1335,7 @@ public final class CADRendererBridge {
                     backgroundUsesViewportColor: ts.backgroundUsesViewportColor,
                     z: ts.z,
                     geometryManager: geometryManager,
-                    spriteManager: engine.spriteManager,
+                    spriteManager: spriteManager,
                     renderer: engine.renderer,
                     gpuDevice: engine.gpuDevice
                 )
@@ -1339,7 +1344,7 @@ public final class CADRendererBridge {
                 primIDs.append(contentsOf: rendered.primitiveIDs)
                 if let clipPolygon = res.clipPolygon {
                     for spriteID in rendered.spriteIDs {
-                        if let sprite = engine.spriteManager.getSprite(for: spriteID) {
+                        if let sprite = spriteManager.getSprite(for: spriteID) {
                             sprite.clipPolygon = clipPolygon
                             sprite.clipInverted = res.clipInverted
                             sprite.clipBasePosition = (sprite.position.0, sprite.position.1)
@@ -1353,7 +1358,7 @@ public final class CADRendererBridge {
 
             // Handle image specs: load textures and create textured sprites
             for imgSpec in res.imageSpecs {
-                guard let asset = engine.document.imageStore[imgSpec.imageName] else {
+                guard let asset = imageStore[imgSpec.imageName] else {
                     print("[CADBridge] Image asset '\(imgSpec.imageName)' not found in document imageStore")
                     continue
                 }
@@ -1373,7 +1378,7 @@ public final class CADRendererBridge {
                 let spriteColor = imgSpec.tint ?? (UInt8(255), UInt8(255), UInt8(255), UInt8(255))
                 let spriteID = SpriteID(id1: Int64(entityIdx) + 1000000, id2: 0)
                 // Use sprite system to render as textured quad
-                engine.spriteManager.addSprite(
+                spriteManager.addSprite(
                     id1: spriteID.id1, id2: spriteID.id2,
                     position: (
                         geometryManager.renderOrigin.worldX(imgSpec.c0.x),
@@ -1385,7 +1390,7 @@ public final class CADRendererBridge {
                 )
                 // Suppress textured quad during camera pan (like TTF fonts);
                 // bounding box is drawn by the CAD selection highlight.
-                if let sprite = engine.spriteManager.getSprite(for: spriteID) {
+                if let sprite = spriteManager.getSprite(for: spriteID) {
                     sprite.useBoundsWhilePanning = true
                     let q0 = Vector3(
                         x: geometryManager.renderOrigin.worldX(imgSpec.c0.x),
@@ -1424,11 +1429,11 @@ public final class CADRendererBridge {
 
 
     /// Remove all CAD-generated primitives from the geometry manager.
-    public func clear(from geometryManager: GeometryManager, engine: PhrostEngine) {
+    public func clear(from geometryManager: GeometryManager, spriteManager: SpriteManager) {
         geometryManager.clearAll()
         for (_, oldSprites) in entitySpriteMap {
             for id in oldSprites {
-                engine.spriteManager.removeSprite(id: id)
+                spriteManager.removeSprite(id: id)
             }
         }
         entityPrimitiveMap.removeAll()

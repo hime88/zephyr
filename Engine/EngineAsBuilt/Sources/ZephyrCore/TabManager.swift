@@ -23,8 +23,51 @@ public struct CameraState: Sendable {
 }
 
 // =========================================================================
+// MARK: - TabBarActivationPolicy
+// =========================================================================
+
+/// Decides whether a tab-bar item should activate its document tab.
+///
+/// ImGui's `BeginTabItem` returns true every frame for the item it keeps
+/// selected internally. That is not, by itself, a user action when the
+/// model-active tab is floated and therefore omitted from the main tab bar:
+/// the last docked item can remain "visible" indefinitely. In that state only
+/// an actual item click may activate a docked tab.
+public enum TabBarActivationPolicy {
+    public static func shouldActivateTab(
+        isActive: Bool,
+        tabItemClicked: Bool,
+        tabItemVisible: Bool,
+        activeTabIsFloated: Bool
+    ) -> Bool {
+        !isActive && (tabItemClicked || (tabItemVisible && !activeTabIsFloated))
+    }
+}
+
+// =========================================================================
 // MARK: - DocumentTab
 // =========================================================================
+
+/// Per-view selection snapshot, saved/restored across tab and view
+/// switches (mirrors `CameraState`) so each document keeps its own
+/// selection — including while shown passively in a float/split view.
+public struct SelectionState: Equatable, Sendable {
+    public var selectedHandles: Set<UUID> = []
+    public var lastSelectedHandle: UUID? = nil
+    public var selectedLeaderContentHandle: UUID? = nil
+
+    public init(
+        selectedHandles: Set<UUID> = [],
+        lastSelectedHandle: UUID? = nil,
+        selectedLeaderContentHandle: UUID? = nil
+    ) {
+        self.selectedHandles = selectedHandles
+        self.lastSelectedHandle = lastSelectedHandle
+        self.selectedLeaderContentHandle = selectedLeaderContentHandle
+    }
+
+    public static let empty = SelectionState()
+}
 
 /// A single drawing tab — owns a `CADDocument` and associated file metadata.
 public struct DrawingView {
@@ -32,6 +75,7 @@ public struct DrawingView {
     public var kind: DXFDrawingViewKind
     public var document: CADDocument
     public var cameraState: CameraState
+    public var selectionState: SelectionState = .empty
     public var backgroundColor: ColorRGBA?
 
     public init(
@@ -79,10 +123,19 @@ public struct DocumentTab {
         set { drawingViews[activeViewIndex].cameraState = newValue }
     }
 
+    /// Per-view selection, preserved across tab/view switches.
+    public var selectionState: SelectionState {
+        get { drawingViews[activeViewIndex].selectionState }
+        set { drawingViews[activeViewIndex].selectionState = newValue }
+    }
+
     /// If this tab is currently in block editing mode, the ID of the block being edited.
     public var editingBlockID: UUID?
     /// The original document before entering block edit mode.
     public var parentDocument: CADDocument?
+    /// True while this tab lives in its own OS window instead of the main tab bar.
+    /// Runtime UI state only — never persisted to disk.
+    public var isFloated: Bool = false
 
     public init(document: CADDocument = CADDocument(),
                 fileURL: URL? = nil,
@@ -92,7 +145,8 @@ public struct DocumentTab {
                 editingBlockID: UUID? = nil,
                 parentDocument: CADDocument? = nil,
                 cameraState: CameraState = .default,
-                drawingViews: [DrawingView]? = nil) {
+                drawingViews: [DrawingView]? = nil,
+                isFloated: Bool = false) {
         self.drawingViews = drawingViews ?? [
             DrawingView(name: "Model", kind: .model, document: document, cameraState: cameraState)
         ]
@@ -110,6 +164,7 @@ public struct DocumentTab {
         }
         self.editingBlockID = editingBlockID
         self.parentDocument = parentDocument
+        self.isFloated = isFloated
     }
 
     /// True when any model or layout view in this tab has unsaved changes.
@@ -212,6 +267,10 @@ public final class TabManager {
     /// Callback invoked when a tab is closed.
     public var onTabClosed: ((Int) -> Void)? = nil
 
+    /// Callback invoked with the closed tab's ID (unlike `onTabClosed`, this
+    /// stays valid when the last tab is replaced by a fresh untitled tab).
+    public var onTabClosedID: ((UUID) -> Void)? = nil
+
     /// Callback invoked when a dirty tab needs user confirmation before closing.
     public var onTabCloseConfirmationRequested: ((UUID) -> Void)? = nil
 
@@ -224,6 +283,11 @@ public final class TabManager {
     /// Callback that applies a camera state to the engine.
     /// Used by `switchToTab` to restore camera state from the incoming tab.
     public var applyCameraState: ((CameraState) -> Void)?
+
+    /// Selection counterparts of the camera callbacks: capture on the
+    /// departing tab/view, apply on the incoming one.
+    public var captureSelectionState: (() -> SelectionState)?
+    public var applySelectionState: ((SelectionState) -> Void)?
 
     // MARK: - Save State (per-tab, background-save)
 
@@ -466,8 +530,10 @@ public final class TabManager {
             doc.savedRevision = doc.editRevision
             tabs[0] = DocumentTab(document: doc, fileURL: nil, displayName: "Untitled")
             activeIndex = 0
+            applySelectionState?(.empty)
             onActiveTabChanged?()
             onTabClosed?(index)
+            onTabClosedID?(tabID)
             return true
         }
 
@@ -490,13 +556,46 @@ public final class TabManager {
             if let apply = applyCameraState {
                 apply(tabs[activeIndex].cameraState)
             }
+            if let apply = applySelectionState {
+                apply(tabs[activeIndex].selectionState)
+            }
             onActiveTabChanged?()
         } else if index < activeIndex {
             activeIndex -= 1
         }
 
         onTabClosed?(index)
+        onTabClosedID?(tabID)
         return true
+    }
+
+    // MARK: - Float State
+
+    /// The tab with the given ID, or nil when unknown.
+    public func tab(for id: UUID) -> DocumentTab? {
+        guard let index = indexOfTab(id: id) else { return nil }
+        return tabs[index]
+    }
+
+    /// Whether the tab with the given ID is currently floated into its own window.
+    public func isFloated(id: UUID) -> Bool {
+        guard let index = indexOfTab(id: id) else { return false }
+        return tabs[index].isFloated
+    }
+
+    /// Mark a tab floated or docked. Order is preserved so dock-back restores
+    /// the tab to its original bar position.
+    /// - Returns: False when the ID is unknown.
+    @discardableResult
+    public func setFloated(id: UUID, _ floated: Bool) -> Bool {
+        guard let index = indexOfTab(id: id) else { return false }
+        tabs[index].isFloated = floated
+        return true
+    }
+
+    /// IDs of all currently floated tabs, in bar order.
+    public var floatedTabIDs: [UUID] {
+        tabs.filter(\.isFloated).map(\.id)
     }
 
     /// Close the active tab.
@@ -510,14 +609,20 @@ public final class TabManager {
     /// the incoming tab's camera state before firing `onActiveTabChanged`.
     public func switchToTab(at index: Int) {
         guard index >= 0, index < tabs.count, index != activeIndex else { return }
-        // Save camera state to departing tab
+        // Save camera + selection state to departing tab
         if let capture = captureCameraState, activeIndex < tabs.count {
             tabs[activeIndex].cameraState = capture()
         }
+        if let capture = captureSelectionState, activeIndex < tabs.count {
+            tabs[activeIndex].selectionState = capture()
+        }
         activeIndex = index
-        // Restore camera state from incoming tab
+        // Restore camera + selection state from incoming tab
         if let apply = applyCameraState {
             apply(tabs[activeIndex].cameraState)
+        }
+        if let apply = applySelectionState {
+            apply(tabs[activeIndex].selectionState)
         }
         onActiveTabChanged?()
     }
@@ -532,8 +637,12 @@ public final class TabManager {
         if let capture = captureCameraState {
             tabs[activeIndex].cameraState = capture()
         }
+        if let capture = captureSelectionState {
+            tabs[activeIndex].selectionState = capture()
+        }
         tabs[activeIndex].activeViewIndex = index
         applyCameraState?(tabs[activeIndex].cameraState)
+        applySelectionState?(tabs[activeIndex].selectionState)
         onActiveTabChanged?()
         return true
     }
@@ -570,6 +679,57 @@ public final class TabManager {
             nextPosition = direction >= 0 ? 0 : candidates.count - 1
         }
         return switchToView(at: candidates[nextPosition])
+    }
+
+    // MARK: - Tab Reordering
+
+    /// Move the tab at `from` to position `to`.
+    /// The destination is clamped into range; the same tab stays active
+    /// (resolved by identity, since indices shift). Camera state is stored
+    /// per tab, so no save/restore is needed.
+    /// - Returns: False when `from` is out of range; true otherwise
+    ///   (including a no-op move to the tab's own position).
+    @discardableResult
+    public func moveTab(from: Int, to: Int) -> Bool {
+        guard from >= 0, from < tabs.count else { return false }
+        let clampedTo = max(0, min(to, tabs.count - 1))
+        guard clampedTo != from else { return true }
+        let activeID = tabs[activeIndex].id
+        let tab = tabs.remove(at: from)
+        tabs.insert(tab, at: clampedTo)
+        if let newActive = tabs.firstIndex(where: { $0.id == activeID }) {
+            activeIndex = newActive
+        }
+        return true
+    }
+
+    /// Move the active tab one position left.
+    /// - Returns: False when the active tab is already first.
+    @discardableResult
+    public func moveActiveTabLeft() -> Bool {
+        guard activeIndex > 0 else { return false }
+        return moveTab(from: activeIndex, to: activeIndex - 1)
+    }
+
+    /// Move the active tab one position right.
+    /// - Returns: False when the active tab is already last.
+    @discardableResult
+    public func moveActiveTabRight() -> Bool {
+        guard activeIndex < tabs.count - 1 else { return false }
+        return moveTab(from: activeIndex, to: activeIndex + 1)
+    }
+
+    // MARK: - Tab Cycling
+
+    /// Switch to the next (direction > 0) or previous tab, wrapping around.
+    /// - Returns: False when there are no tabs.
+    @discardableResult
+    public func cycleTab(direction: Int = 1) -> Bool {
+        guard !tabs.isEmpty else { return false }
+        let count = tabs.count
+        let next = (activeIndex + direction % count + count) % count
+        switchToTab(at: next)
+        return true
     }
 
     // MARK: - Block Editor Operations
@@ -975,6 +1135,10 @@ public final class TabManager {
             parentDoc.invalidateEntityGrid()
         }
 
+        // The visible document object changes on both Save and Discard.
+        // Discard does not edit the parent, but render contexts are still
+        // holding the temporary block-editor document and must rebuild.
+        parentDoc.markNeedsRegeneration()
         tab.document = parentDoc
         tab.parentDocument = nil
         tab.editingBlockID = nil

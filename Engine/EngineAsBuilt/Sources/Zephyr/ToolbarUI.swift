@@ -47,7 +47,7 @@ struct ToolbarUI {
             // File operations: Open, Save, Save As
             if igSmallButton("Open..") {
                 NativeFileDialog.showOpenDialog(
-                    window: engine.window,
+                    window: engine.dialogParentWindow,
                     filters: [
                         NativeFileDialog.Filter(label: "Drawings", extensions: ["dxf", "dwg", "eab"])
                     ],
@@ -265,7 +265,7 @@ struct ToolbarUI {
         let defaultName = engine.tabManager.activeTab?.displayName ?? "untitled"
         let dxfVersion = engine.tabManager.activeTab?.dxfVersion ?? .r2018
         NativeFileDialog.showSaveDialog(
-            window: engine.window,
+            window: engine.dialogParentWindow,
             filters: [
                 NativeFileDialog.Filter(label: "DXF Drawing", extensions: ["dxf"]),
                 NativeFileDialog.Filter(label: "Zephyr Drawing", extensions: ["eab"]),

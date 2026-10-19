@@ -149,7 +149,11 @@ struct CommandLineUI {
             var submitted = false
             ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textPrimary)
             
-            if CommandLineUI._needsFocus {
+            // Auxiliary-window frames never submit this input, so ImGui
+            // clears its active ID between main frames and typed characters
+            // would silently vanish. If nothing else holds activation, take
+            // focus back for this frame so this frame's keystrokes land.
+            if CommandLineUI._needsFocus || !ImGuiIsAnyItemActive() {
                 igSetKeyboardFocusHere(0)
                 CommandLineUI._needsFocus = false
             }

@@ -29,15 +29,66 @@ struct RadialNavUI {
     static var popupRotationDeg: Float = 0.0
     static var dragOffset: ImVec2? = nil
     static var dragStartMousePos: ImVec2? = nil
+    static var wasVisible: Bool = false
+    /// SDL window that owns the in-progress relative-mouse capture. The
+    /// release-side relative-mode-off + warp must go to this same window,
+    /// never implicitly to the main window.
+    static var activeWindowHandle: OpaquePointer? = nil
+
+    /// The OS window this frame is rendered into (main or float).
+    static func targetWindowHandle(engine: PhrostEngine) -> OpaquePointer {
+        RadialNavWindowPolicy.targetWindow(
+            frameRole: engine.ui.frameRole,
+            windowManager: engine.windowManager,
+            floatWindowIDs: engine.floatWindowIDs)?.handle ?? engine.window
+    }
+
+    /// Where the nav appears: bottom-right of the focused split pane when
+    /// split (the remembered full-window spot may sit in another pane or
+    /// outside what's visible), else bottom-right of the window.
+    static func defaultPosition(engine: PhrostEngine, dw: Float, dh: Float, size: Float, padding: Float) -> ImVec2 {
+        if engine.mainPanes.isSplit, let canvasF = engine.ui.drawingViewportRect {
+            let canvas = PaneRect(x: canvasF.x, y: canvasF.y, w: canvasF.w, h: canvasF.h)
+            if let leaf = engine.mainPanes.leafRects(canvas: canvas)
+                .first(where: { $0.id == engine.mainPanes.focusedLeafID }) {
+                return ImVec2(
+                    x: max(leaf.rect.x, leaf.rect.x + leaf.rect.w - size - padding),
+                    y: max(leaf.rect.y, leaf.rect.y + leaf.rect.h - size - padding))
+            }
+        }
+        return ImVec2(x: dw - size - padding, y: dh - size - padding - AppLayout.statusBarHeight)
+    }
 
     static func render(engine: PhrostEngine, dw: Float, dh: Float) {
-        guard engine.ui.radialNavVisible else { return }
+        guard engine.ui.radialNavVisible else {
+            // Hidden mid-drag (e.g. active window changed): never leave
+            // relative mouse mode dangling on the capture window.
+            if wasActive, let handle = activeWindowHandle {
+                _ = SDL_SetWindowRelativeMouseMode(handle, false)
+            }
+            if wasActive {
+                engine.interaction.forceHideOSCursor = false
+                engine.interaction.radialPanActive = false
+            }
+            wasActive = false
+            activeWindowHandle = nil
+            dragStartMousePos = nil
+            dragOffset = nil
+            activeZone = nil
+            wasVisible = false
+            return
+        }
+        let justShown = !wasVisible
+        wasVisible = true
+        let navWindow = targetWindowHandle(engine: engine)
 
         let size: Float = 320
         let padding: Float = 20
 
         // Use FirstUseEver so ImGui's ini file remembers position & size across runs.
         // When the user is actively dragging the nav, we override with Always.
+        // On each fresh show (NAV), force the pane-aware default so it always
+        // appears somewhere viewable instead of a stale remembered spot.
         if let offset = dragOffset {
             let io = ImGuiGetIO()!
             ImGuiSetNextWindowPos(
@@ -45,9 +96,12 @@ struct RadialNavUI {
                 Int32(ImGuiCond_Always.rawValue),
                 ImVec2(x: 0, y: 0))
         } else {
+            let cond: Int32 = justShown
+                ? Int32(ImGuiCond_Always.rawValue)
+                : Int32(ImGuiCond_FirstUseEver.rawValue)
             ImGuiSetNextWindowPos(
-                ImVec2(x: dw - size - padding, y: dh - size - padding - AppLayout.statusBarHeight),
-                Int32(ImGuiCond_FirstUseEver.rawValue),
+                defaultPosition(engine: engine, dw: dw, dh: dh, size: size, padding: padding),
+                cond,
                 ImVec2(x: 0, y: 0))
         }
         ImGuiSetNextWindowSize(ImVec2(x: size, y: size), Int32(ImGuiCond_FirstUseEver.rawValue))
@@ -218,7 +272,8 @@ struct RadialNavUI {
                 if !wasActive {
                     wasDragged = false
                     dragStartMousePos = mousePos
-                    _ = SDL_SetWindowRelativeMouseMode(engine.window, true)
+                    activeWindowHandle = navWindow
+                    _ = SDL_SetWindowRelativeMouseMode(navWindow, true)
                 }
                 
                 var relX: Float = 0
@@ -274,17 +329,19 @@ struct RadialNavUI {
             } else {
                 if wasActive {
                     engine.interaction.forceHideOSCursor = false
-                    _ = SDL_SetWindowRelativeMouseMode(engine.window, false)
+                    let releaseWindow = activeWindowHandle ?? navWindow
+                    _ = SDL_SetWindowRelativeMouseMode(releaseWindow, false)
                     dragOffset = nil
-                    
+
                     if let startPos = dragStartMousePos {
                         // When dragging the nav itself (zone 1), keep the mouse at the new position.
                         // For all other zones (pan/zoom/rotate), warp back so the user can continue.
                         if activeZone != 1 || !wasDragged {
-                            SDL_WarpMouseInWindow(engine.window, startPos.x, startPos.y)
+                            SDL_WarpMouseInWindow(releaseWindow, startPos.x, startPos.y)
                         }
                         dragStartMousePos = nil
                     }
+                    activeWindowHandle = nil
                     if !wasDragged {
                         if currentZone == 1 {
                             engine.ui.radialNavVisible = false

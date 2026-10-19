@@ -26,6 +26,10 @@ internal final class EngineInputHandler {
     /// through this reference.
     private unowned let engine: PhrostEngine
 
+    /// Set when a click focuses a split pane, so the matching mouse-up is
+    /// swallowed too (first click focuses, it doesn't select).
+    private var swallowNextMouseUp = false
+
     internal init(engine: PhrostEngine) {
         self.engine = engine
     }
@@ -34,7 +38,135 @@ internal final class EngineInputHandler {
         (engine.commandProcessor.activeFeatureCommand as? PenStrokeCommand)?.pollPenState(engine: engine)
     }
 
+    // MARK: - Split-Pane Coordinates
+
+    /// Absolute window coords → focused-leaf-local coords. Identity unless
+    /// the main window is split (then CAD input is leaf-local while ImGui
+    /// keeps absolute coords from the unmodified event).
+    private func paneLocal(x: Float, y: Float, isMain: Bool) -> (x: Float, y: Float) {
+        // Pane offsets exist only in the main window; float-window coords
+        // must pass through untouched even while main is split.
+        guard isMain, let leaf = focusedPaneLeaf() else { return (x, y) }
+        return (x - leaf.rect.x, y - leaf.rect.y)
+    }
+
+    /// Focused leaf dims for metrics borrow (nil when single-pane).
+    private func splitPaneDims() -> (w: Int32, h: Int32)? {
+        guard let leaf = focusedPaneLeaf() else { return nil }
+        return (Int32(leaf.rect.w), Int32(leaf.rect.h))
+    }
+
+    private func focusedPaneLeaf() -> (id: UUID, tabID: UUID?, rect: PaneRect)? {
+        guard engine.mainPanes.isSplit,
+              let canvasF = engine.ui.drawingViewportRect else { return nil }
+        let canvas = PaneRect(x: canvasF.x, y: canvasF.y, w: canvasF.w, h: canvasF.h)
+        let leaves = engine.mainPanes.leafRects(canvas: canvas)
+        return leaves.first(where: { $0.id == engine.mainPanes.focusedLeafID })
+    }
+
     // MARK: - Event Polling
+
+    /// Set `ZEPHYR_DEBUG_INPUT=1` to log the input gates (showsActive /
+    /// handledByImGui) for focus and CAD-relevant mouse events. Diagnostic
+    /// for "float window receives no CAD input" reports.
+    private static let debugInputGates =
+        ProcessInfo.processInfo.environment["ZEPHYR_DEBUG_INPUT"] != nil
+
+    private static func logGateState(
+        type: UInt32, target: EngineManagedWindow,
+        showsActive: Bool, handledByImGui: Bool, engine: PhrostEngine
+    ) {
+        let name: String
+        switch type {
+        case UInt32(SDL_EVENT_WINDOW_FOCUS_GAINED.rawValue): name = "FOCUS_GAINED"
+        case UInt32(SDL_EVENT_WINDOW_FOCUS_LOST.rawValue): name = "FOCUS_LOST"
+        case UInt32(SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue): name = "MOUSE_DOWN"
+        case UInt32(SDL_EVENT_MOUSE_BUTTON_UP.rawValue): name = "MOUSE_UP"
+        case UInt32(SDL_EVENT_MOUSE_WHEEL.rawValue): name = "WHEEL"
+        case UInt32(SDL_EVENT_KEY_DOWN.rawValue): name = "KEY_DOWN"
+        default: return
+        }
+        // Focus events are interesting for every window; the rest only for
+        // float windows — plus main-window events while floats exist, so a
+        // float click that was misrouted to main shows up positively
+        // instead of as a suspicious absence of lines.
+        let isFocus = name.hasPrefix("FOCUS")
+        guard isFocus || !target.isMain || !engine.windowManager.auxWindows.isEmpty else { return }
+        let activeID = engine.tabManager.activeTab?.id
+        let focusedID = engine.windowManager.focusedWindow?.id
+        print("[InputGate] \(name) win=\(target.id) main=\(target.isMain) "
+            + "focusedWin=\(focusedID == target.id) isFocused=\(target.isFocused) "
+            + "hosted==active=\(target.hostedTabID != nil && target.hostedTabID == activeID) "
+            + "showsActive=\(showsActive) handledByImGui=\(handledByImGui) "
+            + "wantCaptureMouse=\(target.wantCaptureMouse)")
+    }
+
+    /// Resolve the window an event belongs to via its `windowID`.
+    /// Events without one (quit, clipboard) fall back to the main window.
+    /// Events for a destroyed (unregistered) window return nil so the caller
+    /// can drop them instead of misrouting them to the main window.
+    private func targetWindow(for e: SDL_Event) -> EngineManagedWindow? {
+        let main = engine.windowManager.mainWindow
+        let id: SDL_WindowID?
+        switch e.type {
+        case UInt32(SDL_EVENT_WINDOW_CLOSE_REQUESTED.rawValue),
+             UInt32(SDL_EVENT_WINDOW_RESIZED.rawValue),
+             UInt32(SDL_EVENT_WINDOW_FOCUS_LOST.rawValue),
+             UInt32(SDL_EVENT_WINDOW_FOCUS_GAINED.rawValue),
+             UInt32(SDL_EVENT_WINDOW_MINIMIZED.rawValue),
+             UInt32(SDL_EVENT_WINDOW_MAXIMIZED.rawValue),
+             UInt32(SDL_EVENT_WINDOW_RESTORED.rawValue),
+             UInt32(SDL_EVENT_WINDOW_MOUSE_ENTER.rawValue),
+             UInt32(SDL_EVENT_WINDOW_MOUSE_LEAVE.rawValue),
+             UInt32(SDL_EVENT_WINDOW_DISPLAY_CHANGED.rawValue):
+            id = e.window.windowID
+        case UInt32(SDL_EVENT_KEY_DOWN.rawValue),
+             UInt32(SDL_EVENT_KEY_UP.rawValue):
+            id = e.key.windowID
+        case UInt32(SDL_EVENT_TEXT_INPUT.rawValue):
+            id = e.text.windowID
+        case UInt32(SDL_EVENT_MOUSE_MOTION.rawValue):
+            id = e.motion.windowID
+        case UInt32(SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue),
+             UInt32(SDL_EVENT_MOUSE_BUTTON_UP.rawValue):
+            id = e.button.windowID
+        case UInt32(SDL_EVENT_MOUSE_WHEEL.rawValue):
+            id = e.wheel.windowID
+        case UInt32(SDL_EVENT_PEN_PROXIMITY_IN.rawValue),
+             UInt32(SDL_EVENT_PEN_PROXIMITY_OUT.rawValue):
+            id = e.pproximity.windowID
+        case UInt32(SDL_EVENT_PEN_DOWN.rawValue),
+             UInt32(SDL_EVENT_PEN_UP.rawValue):
+            id = e.ptouch.windowID
+        case UInt32(SDL_EVENT_PEN_AXIS.rawValue):
+            id = e.paxis.windowID
+        case UInt32(SDL_EVENT_PEN_MOTION.rawValue):
+            id = e.pmotion.windowID
+        case UInt32(SDL_EVENT_FINGER_DOWN.rawValue),
+             UInt32(SDL_EVENT_FINGER_UP.rawValue),
+             UInt32(SDL_EVENT_FINGER_MOTION.rawValue):
+            id = e.tfinger.windowID
+        case UInt32(SDL_EVENT_DROP_FILE.rawValue):
+            id = e.drop.windowID
+        default:
+            id = nil
+        }
+        if let id, id != 0 {
+            // A nonzero ID that no longer resolves is a destroyed window.
+            let resolved = engine.windowManager.window(for: id)
+            if resolved == nil && Self.debugInputGates {
+                print("[InputGate] DROPPED type=\(e.type) windowID=\(id) (no registered window)")
+            }
+            return resolved
+        }
+        if Self.debugInputGates, e.type == UInt32(SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue)
+            || e.type == UInt32(SDL_EVENT_MOUSE_WHEEL.rawValue)
+            || e.type == UInt32(SDL_EVENT_WINDOW_FOCUS_GAINED.rawValue)
+            || e.type == UInt32(SDL_EVENT_KEY_DOWN.rawValue) {
+            print("[InputGate] NO-WINDOWID type=\(e.type) -> routed to main")
+        }
+        return main
+    }
 
     /// Polls all pending SDL events and dispatches them to the appropriate
     /// handler. Returns the number of events processed so the main loop
@@ -47,19 +179,96 @@ internal final class EngineInputHandler {
         let SDL_BUTTON_MIDDLE = 2
 
         while SDL_PollEvent(&e) {
+            guard let target = targetWindow(for: e) else { continue }
             eventCount += 1
-            let handledByImGui = engine.ui.processImGuiInput(event: &e)
+            // Poll-side io reads (focus handlers, modifier sync, key state)
+            // must hit the target window's own ImGui context.
+            engine.activateImGuiContext(for: target)
+            let isMain = target.isMain
+            var showsActive = engine.windowShowsActiveTab(target)
+            let handledByImGui = engine.ui.enqueueImGuiInput(event: &e, for: target)
+
+            // Direct interaction activates the window's tab even if its
+            // focus event never landed (lost/misrouted/bounced focus would
+            // otherwise leave the window permanently inert: every canvas
+            // event below is gated on showsActive). Motion alone does not
+            // activate — hover must not steal the active tab.
+            if !showsActive {
+                switch e.type {
+                case UInt32(SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue),
+                     UInt32(SDL_EVENT_MOUSE_WHEEL.rawValue),
+                     UInt32(SDL_EVENT_PEN_DOWN.rawValue),
+                     UInt32(SDL_EVENT_FINGER_DOWN.rawValue),
+                     UInt32(SDL_EVENT_KEY_DOWN.rawValue):
+                    engine.activateTabForInteraction(in: target)
+                    showsActive = engine.windowShowsActiveTab(target)
+                case UInt32(SDL_EVENT_MOUSE_MOTION.rawValue),
+                     UInt32(SDL_EVENT_MOUSE_BUTTON_UP.rawValue),
+                     UInt32(SDL_EVENT_PEN_MOTION.rawValue),
+                     UInt32(SDL_EVENT_PEN_UP.rawValue):
+                    // Mid-gesture continuation: if activation was bounced
+                    // back after the gesture started, re-activate rather
+                    // than dropping the rest of the gesture (which would
+                    // also strand panActive/relative-mouse-mode on).
+                    let it = engine.interaction
+                    if it.panActive || it.dragActive || it.gripActive
+                        || it.rectSelectActive || it.penState.penDrawing {
+                        engine.activateTabForInteraction(in: target)
+                        showsActive = engine.windowShowsActiveTab(target)
+                    }
+                default:
+                    break
+                }
+            }
+
+            // Float windows showing the active tab borrow the engine metrics
+            // so all downstream screen math uses their dimensions.
+            let borrowsMetrics = !isMain && showsActive
+            // Split main window: CAD input works in focused-leaf-local coords.
+            let paneDims: (w: Int32, h: Int32)? =
+                (isMain && showsActive) ? splitPaneDims() : nil
+            let savedMetrics = (borrowsMetrics || paneDims != nil) ? engine.snapshotMetrics() : nil
+            if borrowsMetrics {
+                engine.borrowMetrics(from: target)
+            } else if let paneDims {
+                engine.borrowPaneDims(width: paneDims.w, height: paneDims.h)
+            }
+            // NOTE: no `defer` here — inside the poll loop it would only run
+            // at function exit, leaking borrowed metrics into later events
+            // of the same batch. Metrics are restored explicitly at the end
+            // of each iteration (and before the early returns below).
+
+            if Self.debugInputGates {
+                Self.logGateState(
+                    type: e.type, target: target, showsActive: showsActive,
+                    handledByImGui: handledByImGui, engine: engine)
+            }
 
             switch e.type {
-            case UInt32(SDL_EVENT_QUIT.rawValue),
-                 UInt32(SDL_EVENT_WINDOW_CLOSE_REQUESTED.rawValue):
+            case UInt32(SDL_EVENT_QUIT.rawValue):
                 engine.requestStop()
+                if let savedMetrics { engine.restoreMetrics(savedMetrics) }
                 return eventCount
+
+            case UInt32(SDL_EVENT_WINDOW_CLOSE_REQUESTED.rawValue):
+                if isMain {
+                    engine.requestStop()
+                    if let savedMetrics { engine.restoreMetrics(savedMetrics) }
+                    return eventCount
+                }
+                // A float window's close box docks its tab back — never loses work.
+                if let hostedID = target.hostedTabID {
+                    engine.dockTab(id: hostedID)
+                } else {
+                    engine.closeAuxWindow(id: target.id)
+                }
 
             case UInt32(SDL_EVENT_WINDOW_RESIZED.rawValue):
                 break
 
             case UInt32(SDL_EVENT_WINDOW_FOCUS_LOST.rawValue):
+                target.isFocused = false
+                guard showsActive else { break }
                 // Reset ImGui held buttons/keys so they don't stay "pressed"
                 // when the window regains focus.
                 if let io = engine.io {
@@ -76,12 +285,26 @@ internal final class EngineInputHandler {
                 engine.interaction.touchFingersDown = 0
                 engine.interaction.forceHideOSCursor = false
                 // Release relative mouse mode and show the system cursor.
-                _ = SDL_SetWindowRelativeMouseMode(engine.window, false)
+                _ = SDL_SetWindowRelativeMouseMode(target.handle, false)
                 _ = SDL_ShowCursor()
                 break
 
             case UInt32(SDL_EVENT_WINDOW_FOCUS_GAINED.rawValue):
-                SDL_StartTextInput(engine.window)
+                target.isFocused = true
+                SDL_StartTextInput(target.handle)
+                // Focusing a window activates its tab (camera save/restore and
+                // regen supersede ride along via the tab switch).
+                if target.isMain {
+                    if let shownID = engine.mainShownTabID,
+                       shownID != engine.tabManager.activeTab?.id,
+                       let idx = engine.tabManager.indexOfTab(id: shownID) {
+                        engine.tabManager.switchToTab(at: idx)
+                    }
+                } else if let hostedID = target.hostedTabID,
+                          let idx = engine.tabManager.indexOfTab(id: hostedID) {
+                    engine.tabManager.switchToTab(at: idx)
+                }
+                guard engine.windowShowsActiveTab(target) else { break }
                 // Inform ImGui that the window is now focused so it can
                 // correctly track mouse/key state going forward.
                 if let io = engine.io {
@@ -100,42 +323,66 @@ internal final class EngineInputHandler {
                 break
 
             case UInt32(SDL_EVENT_KEY_DOWN.rawValue):
-                handleKeyDown(event: e, handledByImGui: handledByImGui)
+                if isMain || showsActive {
+                    handleKeyDown(event: e, handledByImGui: handledByImGui)
+                }
 
             case UInt32(SDL_EVENT_KEY_UP.rawValue):
                 handleKeyUp(event: e)
 
             case UInt32(SDL_EVENT_MOUSE_MOTION.rawValue):
-                engine.interaction.lastMouseX = e.motion.x
-                engine.interaction.lastMouseY = e.motion.y
+                guard showsActive else { break }
+                let motionLocal = paneLocal(x: e.motion.x, y: e.motion.y, isMain: isMain)
+                engine.interaction.lastMouseX = motionLocal.x
+                engine.interaction.lastMouseY = motionLocal.y
                 if !handledByImGui {
-                    handleMouseMotion(x: e.motion.x, y: e.motion.y, xrel: e.motion.xrel, yrel: e.motion.yrel)
+                    handleMouseMotion(x: motionLocal.x, y: motionLocal.y, xrel: e.motion.xrel, yrel: e.motion.yrel)
                 }
 
             case UInt32(SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue):
+                // Click-to-raise: some window managers focus a clicked
+                // window without raising it, leaving a clicked float window
+                // buried under the main window (syncWindowsToActiveTab
+                // deliberately doesn't raise already-focused windows). A
+                // click is explicit intent — bring that window forward.
+                SDL_RaiseWindow(target.handle)
+                guard showsActive else { break }
                 if Int(e.button.button) == SDL_BUTTON_LEFT && !handledByImGui {
-                    handleMouseDown(x: e.button.x, y: e.button.y)
+                    if isMain && engine.mainPanes.isSplit
+                        && engine.focusSplitPane(at: (e.button.x, e.button.y)) {
+                        swallowNextMouseUp = true
+                        break
+                    }
+                    let downLocal = paneLocal(x: e.button.x, y: e.button.y, isMain: isMain)
+                    handleMouseDown(x: downLocal.x, y: downLocal.y)
                 } else if Int(e.button.button) == SDL_BUTTON_MIDDLE && !handledByImGui {
                     engine.interaction.panActive = true
                     engine.interaction.forceHideOSCursor = true
-                    _ = SDL_SetWindowRelativeMouseMode(engine.window, true)
+                    _ = SDL_SetWindowRelativeMouseMode(target.handle, true)
                 }
 
             case UInt32(SDL_EVENT_MOUSE_BUTTON_UP.rawValue):
+                guard showsActive else { break }
                 if Int(e.button.button) == SDL_BUTTON_LEFT {
+                    if swallowNextMouseUp {
+                        swallowNextMouseUp = false
+                        break
+                    }
                     if engine.interaction.panActive {
                         engine.interaction.panActive = false
                         engine.interaction.forceHideOSCursor = false
-                        _ = SDL_SetWindowRelativeMouseMode(engine.window, false)
+                        _ = SDL_SetWindowRelativeMouseMode(target.handle, false)
                     }
-                    handleMouseUp(x: e.button.x, y: e.button.y)
+                    let upLocal = paneLocal(x: e.button.x, y: e.button.y, isMain: isMain)
+                    handleMouseUp(x: upLocal.x, y: upLocal.y)
                 } else if Int(e.button.button) == SDL_BUTTON_MIDDLE {
                     engine.interaction.panActive = false
                     engine.interaction.forceHideOSCursor = false
-                    _ = SDL_SetWindowRelativeMouseMode(engine.window, false)
+                    _ = SDL_SetWindowRelativeMouseMode(target.handle, false)
                 }
 
             case UInt32(SDL_EVENT_MOUSE_WHEEL.rawValue):
+                guard showsActive else { break }
                 if !handledByImGui {
                     let wy = e.wheel.y
                     let dir = e.wheel.direction.rawValue == SDL_MouseWheelDirection.flipped.rawValue
@@ -155,11 +402,14 @@ internal final class EngineInputHandler {
                 engine.interaction.penState.pressure = 0.0
 
             case UInt32(SDL_EVENT_PEN_DOWN.rawValue):
+                SDL_RaiseWindow(target.handle) // click-to-raise, as above
+                guard showsActive else { break }
+                let penLocal = paneLocal(x: e.ptouch.x, y: e.ptouch.y, isMain: isMain)
                 engine.interaction.penState.penActive = true
                 engine.interaction.penState.penDrawing = true
                 engine.interaction.penState.isEraser = e.ptouch.eraser
                 let (wx, wy) = EngineCameraManager.screenToWorld(
-                    screenX: e.ptouch.x, screenY: e.ptouch.y,
+                    screenX: penLocal.x, screenY: penLocal.y,
                     cam: engine.camera.currentTransform(windowWidth: engine.windowWidth, windowHeight: engine.windowHeight))
                 engine.interaction.penState.worldX = wx
                 engine.interaction.penState.worldY = wy
@@ -167,12 +417,14 @@ internal final class EngineInputHandler {
                 // Forward pen down as a left-click to the standard mouse handler
                 // so the active feature command receives it without special routing.
                 if !handledByImGui {
-                    handleMouseDown(x: e.ptouch.x, y: e.ptouch.y)
+                    handleMouseDown(x: penLocal.x, y: penLocal.y)
                 }
 
             case UInt32(SDL_EVENT_PEN_UP.rawValue):
+                guard showsActive else { break }
+                let penLocal = paneLocal(x: e.ptouch.x, y: e.ptouch.y, isMain: isMain)
                 let (wx, wy) = EngineCameraManager.screenToWorld(
-                    screenX: e.ptouch.x, screenY: e.ptouch.y,
+                    screenX: penLocal.x, screenY: penLocal.y,
                     cam: engine.camera.currentTransform(windowWidth: engine.windowWidth, windowHeight: engine.windowHeight))
                 engine.interaction.penState.worldX = wx
                 engine.interaction.penState.worldY = wy
@@ -180,10 +432,11 @@ internal final class EngineInputHandler {
                 engine.interaction.penState.penDrawing = false
                 sampleActivePenStroke()
                 if !handledByImGui {
-                    handleMouseUp(x: e.ptouch.x, y: e.ptouch.y)
+                    handleMouseUp(x: penLocal.x, y: penLocal.y)
                 }
 
             case UInt32(SDL_EVENT_PEN_AXIS.rawValue):
+                guard showsActive else { break }
                 engine.interaction.penState.penActive = true
                 // Accumulate axis values unconditionally — the active command
                 // decides whether to use them based on penDrawing state.
@@ -201,32 +454,36 @@ internal final class EngineInputHandler {
                     break
                 }
                 // Update world-space pen position from the axis event's screen coords.
+                let penLocal = paneLocal(x: e.paxis.x, y: e.paxis.y, isMain: isMain)
                 let (wx, wy) = EngineCameraManager.screenToWorld(
-                    screenX: e.paxis.x, screenY: e.paxis.y,
+                    screenX: penLocal.x, screenY: penLocal.y,
                     cam: engine.camera.currentTransform(windowWidth: engine.windowWidth, windowHeight: engine.windowHeight))
                 engine.interaction.penState.worldX = wx
                 engine.interaction.penState.worldY = wy
                 sampleActivePenStroke()
                 // Also forward pen axis as mouse motion for cursor update.
                 if !handledByImGui {
-                    handleMouseMotion(x: e.paxis.x, y: e.paxis.y, xrel: 0, yrel: 0)
+                    handleMouseMotion(x: penLocal.x, y: penLocal.y, xrel: 0, yrel: 0)
                 }
 
             case UInt32(SDL_EVENT_PEN_MOTION.rawValue):
+                guard showsActive else { break }
                 engine.interaction.penState.penActive = true
                 // Pen moved while touching the surface.
+                let penLocal = paneLocal(x: e.pmotion.x, y: e.pmotion.y, isMain: isMain)
                 let (wx, wy) = EngineCameraManager.screenToWorld(
-                    screenX: e.pmotion.x, screenY: e.pmotion.y,
+                    screenX: penLocal.x, screenY: penLocal.y,
                     cam: engine.camera.currentTransform(windowWidth: engine.windowWidth, windowHeight: engine.windowHeight))
                 engine.interaction.penState.worldX = wx
                 engine.interaction.penState.worldY = wy
                 sampleActivePenStroke()
                 if !handledByImGui {
-                    handleMouseMotion(x: e.pmotion.x, y: e.pmotion.y, xrel: 0, yrel: 0)
+                    handleMouseMotion(x: penLocal.x, y: penLocal.y, xrel: 0, yrel: 0)
                 }
 
             // MARK: Two-finger trackpad pan
             case UInt32(SDL_EVENT_FINGER_DOWN.rawValue):
+                guard showsActive else { break }
                 engine.interaction.touchFingersDown += 1
                 if engine.interaction.touchFingersDown >= 2 && !engine.interaction.dragActive && !engine.interaction.gripActive && !engine.interaction.rectSelectActive {
                     engine.interaction.lastTouchAvgX = e.tfinger.x
@@ -235,12 +492,14 @@ internal final class EngineInputHandler {
                 }
 
             case UInt32(SDL_EVENT_FINGER_UP.rawValue):
+                guard showsActive else { break }
                 engine.interaction.touchFingersDown = max(0, engine.interaction.touchFingersDown - 1)
                 if engine.interaction.touchFingersDown < 2 {
                     engine.interaction.touchPanActive = false
                 }
 
             case UInt32(SDL_EVENT_FINGER_MOTION.rawValue):
+                guard showsActive else { break }
                 if engine.interaction.touchFingersDown >= 2 {
                     let curX = e.tfinger.x
                     let curY = e.tfinger.y
@@ -260,10 +519,15 @@ internal final class EngineInputHandler {
                 }
 
             case UInt32(SDL_EVENT_DROP_FILE.rawValue):
+                guard showsActive else { break }
                 handleDropFile(event: e)
 
             default:
                 break
+            }
+
+            if let savedMetrics {
+                engine.restoreMetrics(savedMetrics)
             }
         }
         return eventCount
@@ -337,6 +601,17 @@ internal final class EngineInputHandler {
                 || (keyMod & SDL_KMOD_CTRL) != 0
             #endif
 
+            // ── Ctrl+Tab cycles drawing tabs (AutoCAD parity) ──
+            // Physical Ctrl counts on every platform: on macOS Cmd+Tab is
+            // reserved by the OS, so Ctrl+Tab / Ctrl+Shift+Tab fill the gap.
+            if e.key.scancode == SDL_SCANCODE_TAB
+                && (ctrlHeld || (keyMod & SDL_KMOD_CTRL) != 0) {
+                let shiftHeld = (engine.io != nil && engine.io.pointee.KeyShift)
+                    || (keyMod & SDL_KMOD_SHIFT) != 0
+                _ = engine.tabManager.cycleTab(direction: shiftHeld ? -1 : 1)
+                return
+            }
+
             // ── Ctrl/Cmd + key shortcuts (don't open command line) ──
             if ctrlHeld {
                 switch e.key.scancode {
@@ -348,7 +623,7 @@ internal final class EngineInputHandler {
                     engine.selectAll()
                 case SDL_SCANCODE_O:
                     NativeFileDialog.showOpenDialog(
-                        window: engine.window,
+                        window: engine.dialogParentWindow,
                         filters: [
                             NativeFileDialog.Filter(label: "Drawings", extensions: ["dxf", "dwg", "eab"])
                         ],
@@ -638,7 +913,7 @@ internal final class EngineInputHandler {
         let defaultName = engine.tabManager.activeTab?.displayName ?? "untitled"
         let dxfVersion = engine.tabManager.activeTab?.dxfVersion ?? .r2018
         NativeFileDialog.showSaveDialog(
-            window: engine.window,
+            window: engine.dialogParentWindow,
             filters: [
                 NativeFileDialog.Filter(label: "DXF Drawing", extensions: ["dxf"]),
                 NativeFileDialog.Filter(label: "Zephyr Drawing", extensions: ["eab"]),

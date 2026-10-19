@@ -13,6 +13,163 @@ import ImGui
 //   - UI state visibility (toolbars, layers, block panels)
 //   - Applying themes to both the UI and Viewport background
 // =========================================================================
+/// Document panels need a window target. Layers are document-local, so a
+/// window may render them for the tab it actually shows. Blocks and Data
+/// Tables still drive the shared active selection/command state, so they
+/// render only where the active tab is shown.
+public enum DocumentPanelUIPolicy {
+    public static func shouldRenderLayers(
+        isVisible: Bool,
+        hasShownTab: Bool
+    ) -> Bool {
+        isVisible && hasShownTab
+    }
+
+    public static func shouldRenderActiveDocumentPanel(
+        isVisible: Bool,
+        showsActiveTab: Bool
+    ) -> Bool {
+        isVisible && showsActiveTab
+    }
+}
+
+/// Selection-context editors (hatch/array/table ribbons and the properties
+/// inspector) all read the one shared active selection/document. Render
+/// them only in the window showing the active tab; otherwise every open
+/// OS window shows — and can mutate through — the same editor.
+public enum SelectionContextUIPolicy {
+    public static func shouldRender(showsActiveTab: Bool) -> Bool {
+        showsActiveTab
+    }
+
+    public static func shouldRenderHatchEditor(
+        showsActiveTab: Bool,
+        hasActiveFeatureCommand: Bool,
+        selectedCount: Int,
+        hasLastSelectedHandle: Bool
+    ) -> Bool {
+        shouldRender(showsActiveTab: showsActiveTab)
+            && !hasActiveFeatureCommand
+            && selectedCount == 1
+            && hasLastSelectedHandle
+    }
+}
+
+/// Drawing-view tabs belong to the tab shown in each OS window/pane, not
+/// to the one global active tab. A window may display another tab's view
+/// list, but switching still runs through the active-tab path after input
+/// activation has made that window's tab active.
+public enum DrawingViewTabBarPolicy {
+    public static func shouldRender(
+        shownTabViewCount: Int,
+        isEditingBlock: Bool
+    ) -> Bool {
+        shownTabViewCount > 1 && !isEditingBlock
+    }
+
+    public static func clampedViewIndex(_ index: Int, viewCount: Int) -> Int {
+        guard viewCount > 0 else { return 0 }
+        return min(max(index, 0), viewCount - 1)
+    }
+
+    public static func shouldSwitch(
+        showsActiveTab: Bool,
+        selectedViewIndex: Int,
+        clickedViewIndex: Int
+    ) -> Bool {
+        showsActiveTab && selectedViewIndex != clickedViewIndex
+    }
+}
+
+/// Left-side status values for one OS window/pane: the drawing that
+/// window actually shows, not the one global active tab.
+public struct StatusBarShownInfo: Equatable {
+    public var tabName: String
+    public var isDirty: Bool
+    public var viewName: String
+    public var layerName: String
+    public var entityCount: Int
+
+    public init(
+        tabName: String, isDirty: Bool, viewName: String,
+        layerName: String, entityCount: Int
+    ) {
+        self.tabName = tabName
+        self.isDirty = isDirty
+        self.viewName = viewName
+        self.layerName = layerName
+        self.entityCount = entityCount
+    }
+}
+
+/// The status bar is rendered once per OS window, so its filename, view,
+/// layer, and entity count must come from that window's shown tab/view.
+/// Reading the active tab (and one shared text cache) made every window
+/// report the active drawing.
+public enum StatusBarUIPolicy {
+    public static func shownInfo(tab: DocumentTab?, viewIndex: Int) -> StatusBarShownInfo {
+        guard let tab, !tab.drawingViews.isEmpty else {
+            return StatusBarShownInfo(
+                tabName: "Untitled", isDirty: false, viewName: "Model",
+                layerName: "none", entityCount: 0)
+        }
+        let clamped = DrawingViewTabBarPolicy.clampedViewIndex(
+            viewIndex, viewCount: tab.drawingViews.count)
+        let view = tab.drawingViews[clamped]
+        let document = view.document
+        let layerName: String
+        if let layerID = document.activeLayerID, let layer = document.layer(for: layerID) {
+            layerName = layer.name
+        } else {
+            layerName = "none"
+        }
+        return StatusBarShownInfo(
+            tabName: tab.displayName,
+            isDirty: tab.hasUnsavedChanges,
+            viewName: view.name,
+            layerName: layerName,
+            entityCount: document.entityCount)
+    }
+
+    public static func leftText(info: StatusBarShownInfo, trackingSuffix: String) -> String {
+        let dirtyMark = info.isDirty ? " *" : ""
+        return "\(info.tabName)\(dirtyMark)  ·  View: \(info.viewName)  ·  Layer: \(info.layerName)  ·  Entities: \(info.entityCount)\(trackingSuffix)"
+    }
+}
+
+/// The radial nav captures the mouse (relative mode) and warps it back on
+/// release. Both SDL calls must target the OS window the nav is rendered
+/// in: targeting the main window from a float frame teleports the cursor
+/// into the main window at the float-local coordinates.
+@MainActor
+public enum RadialNavWindowPolicy {
+    public static func targetWindow(
+        frameRole: EngineUIManager.UIFrameRole,
+        windowManager: EngineWindowManager,
+        floatWindowIDs: [UUID: SDL_WindowID]
+    ) -> EngineManagedWindow? {
+        switch frameRole {
+        case .mainWindow:
+            return windowManager.mainWindow
+        case .floatWindow(let hostedTabID):
+            if let hostedTabID {
+                if let windowID = floatWindowIDs[hostedTabID],
+                   let window = windowManager.window(for: windowID) {
+                    return window
+                }
+                if let window = windowManager.auxWindows
+                    .first(where: { $0.hostedTabID == hostedTabID }) {
+                    return window
+                }
+            }
+            if let focused = windowManager.focusedWindow, !focused.isMain {
+                return focused
+            }
+            return windowManager.mainWindow
+        }
+    }
+}
+
 @MainActor
 public final class EngineUIManager {
     
@@ -40,6 +197,9 @@ public final class EngineUIManager {
 
     /// Whether the Layers panel is visible (toggled via "LA"/"LAYER" command). Default true.
     public var layersPanelVisible: Bool = false
+
+    /// Whether the file tab bar is visible (toggled via "FILETAB"/"FILETABCLOSE").
+    public var fileTabsVisible: Bool = true
     public var fpsCacheFrame: Int = 15
 
     /// When true, the block editor close-confirmation popup is shown.
@@ -57,6 +217,21 @@ public final class EngineUIManager {
     public var layerMoveMatches: [Layer] = []
     
     public var topChromeExcludeRect: SDL_Rect? = nil
+
+    /// Which OS window the in-progress UI frame belongs to. The renderer
+    /// sets it before each window's uiBuilder runs; AppUI uses it to skip
+    /// main-only chrome (file tab bar, top chrome, app-global dialogs) in
+    /// float windows, which otherwise render the full interface.
+    public enum UIFrameRole: Equatable {
+        case mainWindow
+        case floatWindow(hostedTabID: UUID?)
+    }
+    public var frameRole: UIFrameRole = .mainWindow
+    public var isFloatFrame: Bool {
+        if case .floatWindow = frameRole { return true }
+        return false
+    }
+
     public private(set) var drawingViewportRect: SDL_FRect? = nil
     private var drawingViewportBaseRect: SDL_FRect? = nil
     private var dockedPanelRects: [SDL_FRect] = []
@@ -99,10 +274,28 @@ public final class EngineUIManager {
         }
     }
 
+    /// Effective background for an arbitrary tab's drawing view: the view's own
+    /// background when set, else the shared model-space color. Mirrors
+    /// `backgroundColor` without touching the active tab's override.
+    public func backgroundColor(forViewBackground viewBackground: ColorRGBA?) -> SDL_FColor {
+        if let viewBackground {
+            return SDL_FColor(
+                r: Float(viewBackground.r) / 255.0,
+                g: Float(viewBackground.g) / 255.0,
+                b: Float(viewBackground.b) / 255.0,
+                a: Float(viewBackground.a) / 255.0)
+        }
+        return baseBackgroundColor
+    }
+
     /// Whether the effective drawing background needs the light-background CAD palette.
     /// This intentionally follows the viewport override rather than the surrounding UI theme.
     public var isViewportBackgroundLight: Bool {
-        let color = backgroundColor
+        Self.isLightBackground(backgroundColor)
+    }
+
+    /// Luminance test for an arbitrary viewport background (secondary views).
+    public static func isLightBackground(_ color: SDL_FColor) -> Bool {
         let luminance = 0.2126 * Double(color.r)
             + 0.7152 * Double(color.g)
             + 0.0722 * Double(color.b)
@@ -127,6 +320,18 @@ public final class EngineUIManager {
         drawingViewportBaseRect = rect
         dockedPanelRects.removeAll(keepingCapacity: true)
         drawingViewportRect = rect
+    }
+
+    /// Snapshot the drawing-viewport rects so a float-window frame can
+    /// restore them afterwards. The main window recomputes them every frame,
+    /// but poll-time readers (zoom-to-fit) must see main-window values.
+    internal func snapshotDrawingViewport() -> (base: SDL_FRect?, current: SDL_FRect?) {
+        (drawingViewportBaseRect, drawingViewportRect)
+    }
+
+    internal func restoreDrawingViewport(base: SDL_FRect?, current: SDL_FRect?) {
+        drawingViewportBaseRect = base
+        drawingViewportRect = current
     }
 
     public func excludeDockedPanelRect(
@@ -386,14 +591,23 @@ public final class EngineUIManager {
 
     // MARK: - ImGui Input Processing
 
-    internal func processImGuiInput(event: inout SDL_Event) -> Bool {
-        guard let io = ImGuiGetIO() else { return false }
-
+    /// Capture one SDL event into a window's ImGui input queue. The queue is
+    /// replayed into the shared context immediately before that window's
+    /// `NewFrame` (see `replayQueuedInput`), so every sequential frame
+    /// consumes only its own window's input.
+    ///
+    /// - Returns: Whether ImGui wants the event, read from the target
+    ///   window's *last rendered frame* — never live `io` state, which
+    ///   belongs to whichever window framed last.
+    internal func enqueueImGuiInput(event: inout SDL_Event, for target: EngineManagedWindow) -> Bool {
         switch event.type {
 
         case UInt32(SDL_EVENT_MOUSE_MOTION.rawValue):
-            ImGuiIO_AddMousePosEvent(io, event.motion.x, event.motion.y)
-            return io.pointee.WantCaptureMouse
+            target.mouseX = event.motion.x
+            target.mouseY = event.motion.y
+            target.hasMousePos = true
+            target.inputQueue.append(.mousePos(x: event.motion.x, y: event.motion.y))
+            return target.wantCaptureMouse
 
         case UInt32(SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue),
             UInt32(SDL_EVENT_MOUSE_BUTTON_UP.rawValue):
@@ -410,8 +624,8 @@ public final class EngineUIManager {
             case Int32(SDL_BUTTON_MIDDLE): imGuiButton = 2
             default: return false
             }
-            ImGuiIO_AddMouseButtonEvent(io, imGuiButton, isDown)
-            return io.pointee.WantCaptureMouse
+            target.inputQueue.append(.mouseButton(index: imGuiButton, down: isDown))
+            return target.wantCaptureMouse
 
         case UInt32(SDL_EVENT_MOUSE_WHEEL.rawValue):
             var wheelX = event.wheel.x
@@ -420,14 +634,14 @@ public final class EngineUIManager {
                 wheelX *= -1
                 wheelY *= -1
             }
-            ImGuiIO_AddMouseWheelEvent(io, wheelX, wheelY)
-            return io.pointee.WantCaptureMouse
+            target.inputQueue.append(.mouseWheel(x: wheelX, y: wheelY))
+            return target.wantCaptureMouse
 
         case UInt32(SDL_EVENT_TEXT_INPUT.rawValue):
             if let textPtr = event.text.text {
-                ImGuiIO_AddInputCharactersUTF8(io, textPtr)
+                target.inputQueue.append(.text(String(cString: textPtr)))
             }
-            return io.pointee.WantCaptureKeyboard
+            return target.wantCaptureKeyboard
 
         case UInt32(SDL_EVENT_KEY_DOWN.rawValue),
             UInt32(SDL_EVENT_KEY_UP.rawValue):
@@ -435,25 +649,95 @@ public final class EngineUIManager {
             let imKey = Self.mapSDLKeyToImGuiKey(event.key.key)
 
             if imKey != ImGuiKey_None {
-                ImGuiIO_AddKeyEvent(io, imKey, isDown)
+                target.inputQueue.append(.key(key: imKey, down: isDown))
             }
 
             if event.key.scancode == SDL_SCANCODE_LCTRL || event.key.scancode == SDL_SCANCODE_RCTRL {
-                ImGuiIO_AddKeyEvent(io, ImGuiMod_Ctrl, isDown)
+                target.inputQueue.append(.key(key: ImGuiMod_Ctrl, down: isDown))
             }
             if event.key.scancode == SDL_SCANCODE_LSHIFT || event.key.scancode == SDL_SCANCODE_RSHIFT {
-                ImGuiIO_AddKeyEvent(io, ImGuiMod_Shift, isDown)
+                target.inputQueue.append(.key(key: ImGuiMod_Shift, down: isDown))
             }
             if event.key.scancode == SDL_SCANCODE_LALT || event.key.scancode == SDL_SCANCODE_RALT {
-                ImGuiIO_AddKeyEvent(io, ImGuiMod_Alt, isDown)
+                target.inputQueue.append(.key(key: ImGuiMod_Alt, down: isDown))
             }
             if event.key.scancode == SDL_SCANCODE_LGUI || event.key.scancode == SDL_SCANCODE_RGUI {
-                ImGuiIO_AddKeyEvent(io, ImGuiMod_Super, isDown)
+                target.inputQueue.append(.key(key: ImGuiMod_Super, down: isDown))
             }
-            return io.pointee.WantCaptureKeyboard
+            return target.wantCaptureKeyboard
+
+        case UInt32(SDL_EVENT_WINDOW_FOCUS_GAINED.rawValue):
+            target.inputQueue.append(.focus(gained: true))
+            return false
+
+        case UInt32(SDL_EVENT_WINDOW_FOCUS_LOST.rawValue):
+            // Mirror the stock-backend behavior: a window that loses focus
+            // releases everything it held so no button stays stuck down.
+            target.inputQueue.append(.focus(gained: false))
+            for button in 0..<5 {
+                target.inputQueue.append(.mouseButton(index: Int32(button), down: false))
+            }
+            return false
+
+        case UInt32(SDL_EVENT_WINDOW_MOUSE_LEAVE.rawValue):
+            target.hasMousePos = false
+            return false
 
         default:
             return false
+        }
+    }
+
+    /// Drain a window's queued input into the shared ImGui context. Must run
+    /// immediately before that window's `NewFrame`, after its `DisplaySize`
+    /// is set. Always re-seeds the window's last known mouse position first:
+    /// `io.MousePos` still holds whichever window framed last.
+    private static let debugInputGates =
+        ProcessInfo.processInfo.environment["ZEPHYR_DEBUG_INPUT"] != nil
+
+    internal func replayQueuedInput(for target: EngineManagedWindow, appFocused: Bool) {
+        defer { target.inputQueue.removeAll(keepingCapacity: true) }
+        guard let io = ImGuiGetIO() else { return }
+        if Self.debugInputGates && !target.isMain && !target.inputQueue.isEmpty {
+            let kinds = target.inputQueue.map { queued -> String in
+                switch queued {
+                case .mousePos: return "pos"
+                case .mouseButton(let index, let down): return "btn\(index)\(down ? "+" : "-")"
+                case .mouseWheel: return "wheel"
+                case .key(_, let down): return down ? "key+" : "key-"
+                case .text: return "text"
+                case .focus(let gained): return gained ? "foc+" : "foc-"
+                }
+            }.joined(separator: ",")
+            print("[InputGate] REPLAY win=\(target.id) queued=[\(kinds)] "
+                + "hasMousePos=\(target.hasMousePos) mouse=(\(target.mouseX),\(target.mouseY)) "
+                + "appFocused=\(appFocused)")
+        }
+
+        if target.hasMousePos {
+            ImGuiIO_AddMousePosEvent(io, target.mouseX, target.mouseY)
+        } else {
+            ImGuiIO_AddMousePosEvent(io, -256000.0, -256000.0)
+        }
+        for queued in target.inputQueue {
+            switch queued {
+            case .mousePos(let x, let y):
+                ImGuiIO_AddMousePosEvent(io, x, y)
+            case .mouseButton(let index, let down):
+                ImGuiIO_AddMouseButtonEvent(io, index, down)
+            case .mouseWheel(let x, let y):
+                ImGuiIO_AddMouseWheelEvent(io, x, y)
+            case .key(let key, let down):
+                ImGuiIO_AddKeyEvent(io, key, down)
+            case .text(let string):
+                string.withCString { ImGuiIO_AddInputCharactersUTF8(io, $0) }
+            case .focus(let gained):
+                // ImGui app focus is global, but the queued events are
+                // per-window: one window losing focus to a sibling is not
+                // an app-focus loss (which would clear keys/active state
+                // mid-typing). Only report loss when nothing is focused.
+                ImGuiIO_AddFocusEvent(io, gained || appFocused)
+            }
         }
     }
 

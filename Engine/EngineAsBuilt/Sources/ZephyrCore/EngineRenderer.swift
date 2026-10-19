@@ -31,6 +31,77 @@ struct CameraUniformData {
 public final class EngineRenderer {
     public unowned let engine: PhrostEngine
 
+    /// The original render context, bound to the engine's initial stores.
+    /// Adopted into `secondaryCtxs` by the first tab that renders through
+    /// `tabCtx(for:)`; afterwards it is simply that tab's pooled context.
+    public let primaryCtx: WindowRenderContext
+    /// Tab that adopted `primaryCtx` into the per-tab pool, if any.
+    internal var primaryCtxAdoptedTabID: UUID? = nil
+    /// Per-tab render contexts, keyed by tab ID. Contexts are bound to
+    /// TABS, never to activity: switching the active tab never wipes or
+    /// rebuilds another tab's geometry — the incoming tab's warm context
+    /// is simply the one that gets primary (overlay/pick) treatment.
+    /// Entries exist only while their tab is shown in some window.
+    public var secondaryCtxs: [UUID: WindowRenderContext] = [:]
+
+    /// The pooled render context for a tab, creating it on first use.
+    public func tabCtx(for tabID: UUID) -> WindowRenderContext {
+        if let existing = secondaryCtxs[tabID] { return existing }
+        if primaryCtxAdoptedTabID == nil {
+            primaryCtxAdoptedTabID = tabID
+            primaryCtx.builtTabID = tabID
+            secondaryCtxs[tabID] = primaryCtx
+            return primaryCtx
+        }
+        let ctx = WindowRenderContext(
+            geometry: GeometryManager(),
+            sprites: SpriteManager(),
+            bridge: CADRendererBridge())
+        ctx.builtTabID = tabID
+        secondaryCtxs[tabID] = ctx
+        return ctx
+    }
+
+    /// A drawing-view switch must supersede a tab context's built state
+    /// explicitly (edit revisions can coincide across view documents).
+    internal func supersedeCtxIfViewChanged(_ ctx: WindowRenderContext, tab: DocumentTab) {
+        if ctx.builtTabID != tab.id || ctx.builtViewIndex != tab.activeViewIndex {
+            ctx.builtTabID = tab.id
+            ctx.builtViewIndex = tab.activeViewIndex
+            ctx.regenTask?.cancel()
+            ctx.regenTask = nil
+            ctx.regenInFlight = nil
+            ctx.bridge.cancelPending()
+            ctx.regenGeneration &+= 1
+            ctx.appliedGeneration = -1
+            ctx.builtRevision = nil
+            ctx.pendingRevision = nil
+            ctx.invalidateBuiltState(device: engine.gpuDevice)
+        }
+    }
+
+    /// Bump every pooled context's generation (global render-parameter
+    /// changes such as tessellation/simplify toggles).
+    public func bumpAllContextGenerations() {
+        primaryCtx.regenGeneration &+= 1
+        for ctx in secondaryCtxs.values where ctx !== primaryCtx {
+            ctx.regenGeneration &+= 1
+        }
+        for ctx in paneCtxs.values {
+            ctx.regenGeneration &+= 1
+        }
+    }
+    /// Render state for non-focused split panes, keyed by leaf ID. Each
+    /// pane keeps its own tab, drawing view, and camera, so sharing the
+    /// primary context's view-culled buffers is impossible.
+    /// Entries exist only while their leaf is a non-focused pane with a tab.
+    public var paneCtxs: [UUID: WindowRenderContext] = [:]
+    /// GPU vertex buffer holding one background quad per split pane (world
+    /// space, drawn through the triangle pipeline). Recreated when the pane
+    /// count changes; re-uploaded every split frame (camera-dependent).
+    internal var paneBgVertexBuffer: OpaquePointer? = nil
+    internal var paneBgVertexCapacity: Int = 0
+
 
 
     // MARK: GPU Shaders & Pipelines
@@ -48,11 +119,6 @@ public final class EngineRenderer {
     internal var imguiPipeline: OpaquePointer?
 
     internal var fontSampler: OpaquePointer?
-
-    // MARK: CAD GPU Buffer
-    internal var cadVertexBuffer: OpaquePointer?
-    internal var cadVertexCount: Int = 0
-    internal var cadDrawBatches: [CADDrawBatch] = []
 
     // MARK: ID-Buffer (GPU Entity Picking)
     internal var cadIDVertShader: OpaquePointer?
@@ -95,55 +161,21 @@ public final class EngineRenderer {
     /// Anti-aliased line rendering toggle.
     public var antiAliasLines: Bool = false {
         didSet {
-            if let buf = cadVertexBuffer {
-                SDL_ReleaseGPUBuffer(engine.gpuDevice, buf)
-                cadVertexBuffer = nil
+            primaryCtx.invalidateBuiltState(device: engine.gpuDevice)
+            for ctx in secondaryCtxs.values {
+                ctx.invalidateBuiltState(device: engine.gpuDevice)
             }
-            cadVertexCount = 0
-            cadDrawBatches.removeAll()
-            engine._lastCameraZoom = -1.0
-            engine._cachedMutationGen = -1  // force cold-start sync rebuild next frame
-            engine._cachedDisplayPaletteGen = -1
         }
     }
 
     /// Last color set via SDL_SetRenderDrawColor. Tracked to skip redundant calls.
     internal var _lastDrawColor: UInt32 = 0xFFFF_FFFF  // sentinel: never matches
 
-    /// The **buffered (over-scanned) world region** the CAD vertex buffer was last built for.
-    /// The render cache is a hit as long as the current viewport stays inside this region —
-    /// vertices are world-space, so panning within it is a pure camera-matrix change and needs
-    /// no rebuild. Written by `rebuildCadVertexBuffer()`.
-    internal var _cachedViewportMinX: Double = 0
-    internal var _cachedViewportMinY: Double = 0
-    internal var _cachedViewportMaxX: Double = 0
-    internal var _cachedViewportMaxY: Double = 0
-    /// Zoom at which the buffered region was built. Screen-constant primitives (point quads,
-    /// thick/AA line widths) are sized for this zoom, so a large zoom change forces a rebuild.
-    internal var _bufferedZoom: Double = -1.0
     /// Overscan added on each side when building the CAD vertex buffer, as a fraction of the
     /// viewport. Pans that keep the viewport inside this margin reuse the buffer (no CPU
     /// re-tessellation). 0.5 ⇒ buffered region ≈ 2× the viewport per axis. Tune upward for
     /// fewer rebuilds at the cost of a larger buffer.
     internal var cadCullMargin: Double = 0.5
-
-    // MARK: - Async Vertex-Buffer Build State (mirrors _regeneration* pattern)
-
-    /// Builder that owns the pure tessellator + lock-guarded pending slot.
-    internal let vbBuilder = CADVertexBufferBuilder()
-
-    /// Monotonic token; incremented on each async launch.
-    internal var _vbBuildToken: Int = 0
-    /// Token of the build currently computing (nil = none in flight).
-    internal var _vbInFlightToken: Int? = nil
-    /// Background task for the in-flight build.
-    internal var _vbBuildTask: Task<Void, Never>? = nil
-
-    /// Descriptor the in-flight build targets — used for dedup to avoid 60 Hz thrashing.
-    internal var _vbInFlightRegion: (minX: Double, minY: Double, maxX: Double, maxY: Double)? = nil
-    internal var _vbInFlightZoom: Double = -1.0
-    internal var _vbInFlightMutationGen: Int = -1
-    internal var _vbInFlightPaletteGen: Int = -1
 
     /// Prefetch seam: fraction of the buffered half-extent at which a *proactive* rebuild
     /// fires. 1.0 = reactive (rebuild only when viewport actually exits the buffer) = today's
@@ -162,55 +194,264 @@ public final class EngineRenderer {
 
     public init(engine: PhrostEngine) {
         self.engine = engine
+        self.primaryCtx = WindowRenderContext(
+            geometry: engine.geometryManager,
+            sprites: engine.spriteManager,
+            bridge: engine.cadBridge)
     }
 
 
 
     // MARK: - Rendering
 
-    internal func rebuildCadVertexBuffer() {
+    internal func rebuildCadVertexBuffer(
+        ctx: WindowRenderContext,
+        camera: EngineCameraManager,
+        viewportWidth: Int32,
+        viewportHeight: Int32,
+        pixelScale: Float,
+        geometry: GeometryManager,
+        paletteGen: Int,
+        useLightDisplayPalette: Bool,
+        viewportBackground: (UInt8, UInt8, UInt8, UInt8)
+    ) {
         // Cancel any in-flight async build — this sync rebuild supersedes it.
-        _vbBuildTask?.cancel()
-        _vbBuildTask = nil
-        _vbInFlightToken = nil
-        _vbInFlightRegion = nil
-        vbBuilder.cancelPending()
+        ctx.vbTask?.cancel()
+        ctx.vbTask = nil
+        ctx.vbInFlightToken = nil
+        ctx.vbInFlightRegion = nil
+        ctx.vbBuilder.cancelPending()
 
-        let vp = engine.camera.worldViewportRect(windowWidth: engine.windowWidth, windowHeight: engine.windowHeight)
+        let vp = camera.worldViewportRect(windowWidth: viewportWidth, windowHeight: viewportHeight)
         let marginX = (vp.maxX - vp.minX) * cadCullMargin
         let marginY = (vp.maxY - vp.minY) * cadCullMargin
         let cullMinX = vp.minX - marginX, cullMaxX = vp.maxX + marginX
         let cullMinY = vp.minY - marginY, cullMaxY = vp.maxY + marginY
 
         let region = (minX: cullMinX, minY: cullMinY, maxX: cullMaxX, maxY: cullMaxY)
-        let inputs = gatherTessInputs(region: region)
-        let paletteGen = engine.ui.displayPaletteGeneration
+        let inputs = gatherTessInputs(
+            region: region, from: geometry, into: ctx,
+            useLightDisplayPalette: useLightDisplayPalette,
+            viewportBackground: viewportBackground)
 
         // Let tessellate handle empty inputs cleanly — returns empty VertexBuildResult
         // so applyVertexBuild writes metadata atomically and cache hits next frame.
         guard let result = CADVertexBufferBuilder.tessellate(
             inputs,
-            cameraZoom: engine.camera.zoom,
-            pixelScale: lineWidthPixelScale,
+            cameraZoom: camera.zoom,
+            pixelScale: pixelScale,
             antiAliasLines: antiAliasLines,
             hairlineQuads: usesTriangleHairlines,
             region: region,
-            mutationGen: engine.geometryManager.mutationGeneration
+            mutationGen: geometry.mutationGeneration
         ) else {
             return  // cancelled
         }
 
-        applyVertexBuild(result, paletteGen: paletteGen)
+        applyVertexBuild(result, paletteGen: paletteGen, ctx: ctx)
     }
 
     private func makeImCol32(r: UInt8, g: UInt8, b: UInt8, a: UInt8) -> UInt32 {
         return (UInt32(a) << 24) | (UInt32(b) << 16) | (UInt32(g) << 8) | UInt32(r)
     }
 
+    // MARK: - Context Regen + Vertex Prep (shared primary/secondary)
+
+    /// World-origin quantum for a document's render space.
+    internal func renderOrigin(for doc: CADDocument) -> CADRenderOrigin {
+        guard let bounds = doc.renderableWorldBoundingBox(visibleLayersOnly: false) else {
+            return .zero
+        }
+        let centerX = (bounds.min.x + bounds.max.x) * 0.5
+        let centerY = (bounds.min.y + bounds.max.y) * 0.5
+        guard centerX.isFinite, centerY.isFinite else { return .zero }
+        let quantum = 1024.0
+        return CADRenderOrigin(
+            x: (centerX / quantum).rounded() * quantum,
+            y: (centerY / quantum).rounded() * quantum)
+    }
+
+    /// 8-bit viewport-background tuple for "background-colored" primitives.
+    internal func bgTuple(_ color: SDL_FColor) -> (UInt8, UInt8, UInt8, UInt8) {
+        func channel(_ value: Float) -> UInt8 {
+            UInt8(max(0.0, min(255.0, value * 255.0)).rounded())
+        }
+        return (channel(color.r), channel(color.g), channel(color.b), channel(color.a))
+    }
+
+    /// Run one context's background regen. The context is re-resolved by ID at
+    /// task start so a tab closed mid-flight safely no-ops instead of writing
+    /// into a destroyed context. `ctxID` nil addresses the primary context;
+    /// non-nil IDs resolve through the tab-keyed secondary contexts first,
+    /// then the leaf-keyed dual-view pane contexts.
+    private func runContextRegen(
+        ctxID: UUID?,
+        snapshot: CADDocumentSnapshot,
+        generation: Int,
+        simplify: Bool,
+        renderOrigin: CADRenderOrigin,
+        tessDiv: Double
+    ) async {
+        let ctx: WindowRenderContext
+        if let ctxID {
+            guard let secondary = secondaryCtxs[ctxID] ?? paneCtxs[ctxID] else { return }
+            ctx = secondary
+        } else {
+            ctx = primaryCtx
+        }
+        await ctx.bridge.regenerate(
+            fromSnapshot: snapshot,
+            generation: generation,
+            simplifyComplexBlocks: simplify,
+            into: ctx.geometry,
+            renderOrigin: renderOrigin,
+            splineTessellationDivisor: tessDiv
+        )
+    }
+
+    /// Ensure a context's geometry reflects `doc`: fold edits, launch a
+    /// background regen when stale, and apply ready results.
+    /// - Returns: Whether fresh specs were applied this frame.
+    @discardableResult
+    internal func ensureContextRegenerated(
+        ctxID: UUID?,
+        ctx: WindowRenderContext,
+        doc: CADDocument,
+        simplifyComplexBlocks: Bool,
+        splineTessellationDivisor: Double,
+        background: SDL_FColor,
+        isPrimary: Bool
+    ) -> Bool {
+        // A document-object swap under the same tab/view (entering or
+        // exiting the block editor) must supersede this context even when
+        // the incoming document's revision coincides with the outgoing one
+        // or another context already consumed its regeneration flag.
+        if ctx.supersedeIfDocumentChanged(to: doc) {
+            ctx.invalidateBuiltState(device: engine.gpuDevice)
+        }
+        // Fold in-tab edits into the generation so they supersede any in-flight
+        // task exactly the way a tab switch does.
+        if doc.needsRegeneration {
+            doc.needsRegeneration = false
+            ctx.regenGeneration &+= 1
+        }
+        // A secondary context goes stale when its tab was edited while active
+        // (activation always re-arms the primary path, so clearing the flag
+        // above is safe). The pending guard makes this bump-once per revision
+        // instead of once per frame while the build is in flight.
+        if !isPrimary, ctx.builtRevision != doc.editRevision,
+           ctx.pendingRevision != doc.editRevision {
+            ctx.regenGeneration &+= 1
+        }
+        let wantGen = ctx.regenGeneration
+
+        // Launch (or relaunch) a background regeneration for the current generation
+        // when the displayed geometry is stale and no task is already computing it.
+        // The snapshot is a value-typed copy, so the task never touches the live doc.
+        if wantGen != ctx.appliedGeneration && ctx.regenInFlight != wantGen {
+            print("[Loop] regen needed for generation \(wantGen), launching task")
+            ctx.regenTask?.cancel()
+            let docSnapshot = doc.snapshot()
+            let origin = renderOrigin(for: doc)
+            ctx.regenInFlight = wantGen
+            ctx.pendingRevision = doc.editRevision
+            let simplify = simplifyComplexBlocks
+            let tessDiv = splineTessellationDivisor
+            ctx.regenTask = Task.detached { [weak self] in
+                guard let self else { return }
+                await self.runContextRegen(
+                    ctxID: ctxID, snapshot: docSnapshot, generation: wantGen,
+                    simplify: simplify, renderOrigin: origin, tessDiv: tessDiv)
+            }
+        }
+
+        // Apply results only if they match the generation we currently want to
+        // show. Results from a superseded tab/edit are dropped, never displayed.
+        let pendingApplied = ctx.bridge.applyPendingIfNeeded(
+            forGeneration: wantGen, into: ctx.geometry,
+            spriteManager: ctx.sprites, imageStore: doc.imageStore,
+            viewportBackground: bgTuple(background), engine: engine)
+
+        if pendingApplied {
+            ctx.appliedGeneration = wantGen
+            ctx.regenInFlight = nil
+            ctx.regenTask = nil
+            ctx.pendingRevision = nil
+            ctx.builtRevision = doc.editRevision
+            if isPrimary {
+                engine.interaction.pendingPreviewHandles.removeAll()
+                // Rebuild entity spatial grid after geometry has been regenerated.
+                if !doc.entityGridBuilt {
+                    doc.rebuildEntityGrid()
+                }
+            }
+        }
+        return pendingApplied
+    }
+
+    /// Route one context's vertex-buffer work for this frame: sync rebuild on
+    /// cold start, async launch when the cache misses, always apply if ready.
+    internal func routeContextVertexBuild(
+        ctx: WindowRenderContext,
+        camera: EngineCameraManager,
+        viewportWidth: Int32,
+        viewportHeight: Int32,
+        pixelScale: Float,
+        background: SDL_FColor,
+        useLightDisplayPalette: Bool,
+        pendingApplied: Bool,
+        interactive: Bool
+    ) {
+        let mutationGen = ctx.geometry.mutationGeneration
+        let vp = camera.worldViewportRect(windowWidth: viewportWidth, windowHeight: viewportHeight)
+
+        let insideBuffer =
+            vp.minX >= ctx.cachedViewportMinX && vp.maxX <= ctx.cachedViewportMaxX &&
+            vp.minY >= ctx.cachedViewportMinY && vp.maxY <= ctx.cachedViewportMaxY
+        let lineZoom = camera.zoom * Double(pixelScale)
+        let zoomStable = isLineWidthZoomStable(lineZoom, ctx.bufferedZoom)
+
+        let renderCacheHit = !pendingApplied && interactive && insideBuffer
+            && zoomStable
+            && ctx.cachedMutationGen == mutationGen
+            && ctx.cachedPaletteGen == engine.ui.displayPaletteGeneration
+
+        // Sync for cold-start, async for pan/zoom. applyPendingVertexBuildIfReady
+        // acquires+submits its own command buffer, so it MUST run before the
+        // render pass acquires its command buffer below.
+        if ctx.cachedMutationGen == -1 {
+            rebuildCadVertexBuffer(
+                ctx: ctx, camera: camera,
+                viewportWidth: viewportWidth, viewportHeight: viewportHeight,
+                pixelScale: pixelScale, geometry: ctx.geometry,
+                paletteGen: engine.ui.displayPaletteGeneration,
+                useLightDisplayPalette: useLightDisplayPalette,
+                viewportBackground: bgTuple(background))
+        } else if !renderCacheHit && interactive {
+            launchAsyncVertexBuildIfNeeded(
+                ctx: ctx, camera: camera,
+                viewportWidth: viewportWidth, viewportHeight: viewportHeight,
+                pixelScale: pixelScale, geometry: ctx.geometry,
+                paletteGen: engine.ui.displayPaletteGeneration,
+                useLightDisplayPalette: useLightDisplayPalette,
+                viewportBackground: bgTuple(background))
+        }
+        applyPendingVertexBuildIfReady(ctx: ctx, currentLineZoom: lineZoom)
+    }
+
     internal func render(deltaSec: Double) {
+        // Each OS window frames on its own ImGui context; start from main's
+        // so prologue io reads are deterministic. (The minimized early-out
+        // below skips aux frames too — pre-existing behavior, unchanged.)
+        if let main = engine.windowManager.mainWindow {
+            engine.activateImGuiContext(for: main)
+        }
         let windowFlags = SDL_GetWindowFlags(engine.window)
         let isMinimized = (windowFlags & 0x0000_0000_0000_0040) != 0
         if isMinimized {
+            // A minimized window receives no meaningful input; drop anything
+            // queued so it can't replay stale after restore.
+            engine.windowManager.mainWindow?.inputQueue.removeAll()
             return
         }
 
@@ -246,6 +487,7 @@ public final class EngineRenderer {
 
         let newDpiScale = SDL_GetWindowDisplayScale(engine.window)
         engine.updateScale(dpiScale: newDpiScale, fbScale: newScaleX)
+        refreshMainWindowTitle()
 
         // Phase 2: Ring-buffer readback from a previous frame's pick pass.
         // Read from pickRingBuffer[(pickRingIndex - 2) % 3] — 2 frames old.
@@ -283,142 +525,149 @@ public final class EngineRenderer {
             }
         }
 
-        let t0 = SDL_GetTicks()
-        let activeDoc = engine.tabManager.activeDocument
-
-        // Fold in-tab edits into the regeneration generation so they supersede any in-flight
-        // task exactly the way a tab switch does. needsRegeneration is the "needs regen" trigger for
-        // edits/undo; tab switches bump the generation directly (see onActiveTabChanged).
-        if activeDoc.needsRegeneration {
-            activeDoc.needsRegeneration = false
-            engine._regenerationGeneration &+= 1
+        guard let mainWindow = engine.windowManager.mainWindow else { return }
+        let mainUI = { [self] in
+            if let callback = self.engine.imguiFrameCallback { callback() } else { ImGuiShowDemoWindow(nil) }
         }
-
-        let wantGen = engine._regenerationGeneration
-
-        // Launch (or relaunch) a background regeneration for the current generation when the
-        // displayed geometry is stale and no task is already computing THIS generation.
-        // The snapshot is a value-typed copy, so the detached task never touches the live doc.
-        if wantGen != engine._appliedGeneration && engine._regenerationInFlight != wantGen {
-            print("[Loop] regen needed for generation \(wantGen), launching task")
-            engine._regenerationTask?.cancel()
-            let docSnapshot = activeDoc.snapshot()
-            let renderOrigin: CADRenderOrigin = {
-                guard let bounds = activeDoc.renderableWorldBoundingBox(visibleLayersOnly: false) else {
-                    return .zero
-                }
-                let centerX = (bounds.min.x + bounds.max.x) * 0.5
-                let centerY = (bounds.min.y + bounds.max.y) * 0.5
-                guard centerX.isFinite, centerY.isFinite else { return .zero }
-                let quantum = 1024.0
-                return CADRenderOrigin(
-                    x: (centerX / quantum).rounded() * quantum,
-                    y: (centerY / quantum).rounded() * quantum)
-            }()
-            engine._regenerationInFlight = wantGen
+        if engine.mainPanes.isSplit {
+            renderSplitMainWindow(target: mainWindow, deltaSec: deltaSec, uiBuilder: mainUI)
+        } else {
+            let t0 = SDL_GetTicks()
+            let activeDoc = engine.tabManager.activeDocument
             let inBlockEditor = engine.tabManager.activeTab?.editingBlockID != nil
-            let simplify = inBlockEditor ? false : engine.simplifyComplexBlocks
-            let tessDiv = engine.splineTessellationDivisor
-            engine._regenerationTask = Task.detached { [weak self] in
-                guard let self else { return }
-                await engine.cadBridge.regenerate(
-                    fromSnapshot: docSnapshot,
-                    generation: wantGen,
-                    simplifyComplexBlocks: simplify,
-                    into: engine.geometryManager,
-                    renderOrigin: renderOrigin,
-                    splineTessellationDivisor: tessDiv
-                )
+
+            let activeTab = engine.tabManager.activeTab
+            let actx = activeTab.map { tabCtx(for: $0.id) } ?? primaryCtx
+            if let activeTab { supersedeCtxIfViewChanged(actx, tab: activeTab) }
+            let pendingApplied = ensureContextRegenerated(
+                ctxID: activeTab?.id, ctx: actx, doc: activeDoc,
+                simplifyComplexBlocks: inBlockEditor ? false : engine.simplifyComplexBlocks,
+                splineTessellationDivisor: engine.splineTessellationDivisor,
+                background: engine.ui.backgroundColor,
+                isPrimary: true)
+
+            // Render cache: vertices are world-space and the camera matrix is re-uploaded every
+            // frame (see PushGPUVertexUniformData in the draw pass below), so PAN/ROTATE never
+            // require a rebuild. Rebuild only when the viewport leaves the over-scanned buffered
+            // region, when zoom changes enough to break screen-constant primitive sizing, or when
+            // geometry actually mutates.
+            routeContextVertexBuild(
+                ctx: actx, camera: engine.camera,
+                viewportWidth: engine.windowWidth, viewportHeight: engine.windowHeight,
+                pixelScale: lineWidthPixelScale,
+                background: engine.ui.backgroundColor,
+                useLightDisplayPalette: engine.ui.isViewportBackgroundLight,
+                pendingApplied: pendingApplied,
+                interactive: !(engine.interaction.dragActive || engine.interaction.gripActive))
+            // NOTE: ctx.cachedMutationGen is written at swap time inside applyVertexBuild.
+            if engine.mainWindowShowsActiveTab() {
+                renderPrimaryWindow(
+                    target: mainWindow,
+                    deltaSec: deltaSec,
+                    t0: t0,
+                    uiBuilder: mainUI)
+            } else {
+                renderSecondaryWindow(
+                    target: mainWindow,
+                    tab: engine.mainShownTab(),
+                    deltaSec: deltaSec,
+                    uiBuilder: mainUI)
             }
         }
 
-        // Apply results only if they match the generation we currently want to show. Results
-        // from a superseded tab/edit are dropped here and never reach the screen — this is the
-        // fix for the tab-switch race on large files.
-        let pendingApplied = engine.cadBridge.applyPendingIfNeeded(
-            forGeneration: wantGen, into: engine.geometryManager, engine: engine)
 
-        if pendingApplied {
-            engine._appliedGeneration = wantGen
-            engine._regenerationInFlight = nil
-            engine._regenerationTask = nil
-            engine.interaction.pendingPreviewHandles.removeAll()
-            // Rebuild entity spatial grid after geometry has been regenerated, if needed.
-            if !activeDoc.entityGridBuilt {
-                activeDoc.rebuildEntityGrid()
+        // Sequential frames for auxiliary OS windows on the shared context.
+        // NOTE: this array is a snapshot — commands during the main frame may
+        // have docked/closed windows, so every entry is revalidated.
+        for aux in engine.windowManager.auxWindows {
+            guard engine.windowManager.window(for: aux.id) === aux else { continue }
+            if aux.closeRequestedByUI {
+                if let tabID = aux.hostedTabID {
+                    engine.dockTab(id: tabID)
+                } else {
+                    engine.closeAuxWindow(id: aux.id)
+                }
+                continue
+            }
+            guard let hostedID = aux.hostedTabID else {
+                renderAuxWindow(aux, deltaSec: deltaSec)
+                continue
+            }
+            guard let tab = engine.tabManager.tab(for: hostedID) else {
+                engine.closeAuxWindow(id: aux.id)
+                continue
+            }
+            guard refreshAuxMetrics(aux) else { continue }
+            syncAuxWindowTitle(aux)
+            // Float windows render the FULL AppUI (role-gated: no file tab
+            // bar / top chrome / app-global dialogs), same as main.
+            if hostedID == engine.tabManager.activeTab?.id {
+                renderPrimaryWindow(
+                    target: aux, deltaSec: deltaSec, t0: SDL_GetTicks(),
+                    uiBuilder: mainUI)
+            } else {
+                renderSecondaryWindow(
+                    target: aux, tab: tab, deltaSec: deltaSec,
+                    uiBuilder: mainUI)
             }
         }
 
-        // Render cache: vertices are world-space and the camera matrix is re-uploaded every
-        // frame (see PushGPUVertexUniformData in the draw pass below), so PAN/ROTATE never
-        // require a rebuild. Rebuild only when the viewport leaves the over-scanned buffered
-        // region, when zoom changes enough to break screen-constant primitive sizing, or when
-        // geometry actually mutates.
-        let mutationGen = engine.geometryManager.mutationGeneration
-        let vp = engine.camera.worldViewportRect(windowWidth: engine.windowWidth, windowHeight: engine.windowHeight)
-
-        let insideBuffer =
-            vp.minX >= _cachedViewportMinX && vp.maxX <= _cachedViewportMaxX &&
-            vp.minY >= _cachedViewportMinY && vp.maxY <= _cachedViewportMaxY
-        let zoomStable = isLineWidthZoomStable(currentLineWidthZoom, _bufferedZoom)
-
-        // FIX: Removed `&& cadVertexBuffer != nil` — empty spaces cache via engine._cachedMutationGen
-        let renderCacheHit = !pendingApplied && !engine.interaction.dragActive && !engine.interaction.gripActive
-            && insideBuffer
-            && zoomStable
-            && engine._cachedMutationGen == mutationGen
-            && engine._cachedDisplayPaletteGen == engine.ui.displayPaletteGeneration
-
-        // --- Vertex buffer routing (§4): sync for cold-start/drag, async for pan/zoom ---
-        // applyPendingVertexBuildIfReady() acquires+submits its own command buffer,
-        // so it MUST execute before the main render pass acquires its command buffer
-        // (SDL_AcquireGPUCommandBuffer below).
-        if engine._cachedMutationGen == -1 {
-            rebuildCadVertexBuffer()            // cold start: sync
-        } else if !renderCacheHit && !(engine.interaction.dragActive || engine.interaction.gripActive) {
-            launchAsyncVertexBuildIfNeeded()    // pan/zoom/edit: async launch
+        // Prune secondary contexts for tabs no window shows anymore, releasing
+        // their GPU buffers. Contexts of visible tabs are kept even while
+        // active so focus toggles rebind instantly (staleness is caught by
+        // the built-revision check instead of rebuilding blindly).
+        var visibleTabs = Set<UUID>()
+        if let active = engine.tabManager.activeTab {
+            visibleTabs.insert(active.id)
         }
-        applyPendingVertexBuildIfReady()        // always: apply ready results
-        // NOTE: engine._cachedMutationGen is now written at swap time inside applyVertexBuild,
-        // not here.
-        let t1 = SDL_GetTicks()
-
-        let spritesToRender = engine.spriteManager.getSpritesForRendering()
-        var transform = engine.camera.currentTransform(
-            windowWidth: engine.windowWidth,
-            windowHeight: engine.windowHeight)
-
-        engine.io.pointee.DisplaySize = ImVec2(x: Float(engine.windowWidth), y: Float(engine.windowHeight))
-        engine.io.pointee.DisplayFramebufferScale = ImVec2(x: engine.scaleX, y: engine.scaleY)
-        engine.io.pointee.DeltaTime = Float(deltaSec)
-
-        // Apply any deferred UI scale rebuild before NewFrame locks the font atlas.
-        engine.applyPendingUiScaleRebuild()
-
-        ImGuiNewFrame()
-
-        if let wantCapture = ImGuiGetIO()?.pointee.WantCaptureMouse {
-            let isHiddenByImGui = ImGuiGetMouseCursor() == Int32(ImGuiMouseCursor_None.rawValue)
-            
-            if engine.interaction.forceHideOSCursor {
-                ImGuiGetIO()?.pointee.ConfigFlags |= Int32(ImGuiConfigFlags_NoMouseCursorChange.rawValue)
-                if SDL_CursorVisible() { _ = SDL_HideCursor() }
-            } else if wantCapture && !isHiddenByImGui && !SDL_CursorVisible() {
-                ImGuiGetIO()?.pointee.ConfigFlags &= ~Int32(ImGuiConfigFlags_NoMouseCursorChange.rawValue)
-                _ = SDL_ShowCursor()
-            } else if (!wantCapture || isHiddenByImGui) && SDL_CursorVisible() {
-                ImGuiGetIO()?.pointee.ConfigFlags &= ~Int32(ImGuiConfigFlags_NoMouseCursorChange.rawValue)
-                _ = SDL_HideCursor()
+        if let shown = engine.mainShownTab() {
+            visibleTabs.insert(shown.id)
+        }
+        // Every split leaf is visible, including inactive tabs in
+        // non-focused panes; otherwise their contexts are destroyed and
+        // recreated on every frame and can never finish rebuilding.
+        for node in engine.mainPanes.leaves() {
+            if case .leaf(_, let tabID) = node, let tabID {
+                visibleTabs.insert(tabID)
             }
         }
+        for aux in engine.windowManager.auxWindows {
+            if let hosted = aux.hostedTabID {
+                visibleTabs.insert(hosted)
+            }
+        }
+        for id in secondaryCtxs.keys where !visibleTabs.contains(id) {
+            engine.dropSecondaryCtx(for: id)
+        }
 
-        // 1. Draw active command / interaction overlays on ImGui foreground draw list
-        _foregroundVertexEstimate = 0
+        // Split-pane contexts stay warm for every leaf showing a tab —
+        // including the focused one. Pruning the focused leaf's context
+        // forced a cold rebuild (blank, then pop-in) on every focus change,
+        // which read as the panes "swapping" with a blink. A warm context
+        // costs one buffer set per pane and catches up on defocus via the
+        // usual revision checks. Contexts are pruned only when their leaf
+        // disappears or the view unsplits.
+        var livePaneLeaves = Set<UUID>()
+        if engine.mainPanes.isSplit {
+            for node in engine.mainPanes.leaves() {
+                if case .leaf(let id, let shown) = node, shown != nil {
+                    livePaneLeaves.insert(id)
+                }
+            }
+        }
+        for id in paneCtxs.keys where !livePaneLeaves.contains(id) {
+            if let ctx = paneCtxs.removeValue(forKey: id) {
+                ctx.destroy(device: engine.gpuDevice)
+            }
+        }
+    }
+    /// Recompute cached grips when camera/selection/regeneration changed.
+    private func refreshGripCache(transform: CameraTransform) {
         // Only recompute grips when camera, selection, grip drag, or document
         // regeneration (e.g. layer visibility) changes.
         if engine.interaction.cachedGripGeneration != engine.camera.renderGeneration
             || engine._cachedSelectionGen != engine.cadSelection._selectionGeneration
-            || engine._cachedApplyGen != engine._appliedGeneration
+            || engine._cachedApplyGen != (engine.tabManager.activeTab.map { tabCtx(for: $0.id) } ?? primaryCtx).appliedGeneration
             || engine.interaction.gripActive
             || engine.interaction.dragActive
         {
@@ -437,12 +686,23 @@ public final class EngineRenderer {
                 selectedLeaderContentHandle: engine.cadSelection.selectedLeaderContentHandle)
             engine.interaction.cachedGripGeneration = engine.camera.renderGeneration
             engine._cachedSelectionGen = engine.cadSelection._selectionGeneration
-            engine._cachedApplyGen = engine._appliedGeneration
+            engine._cachedApplyGen = (engine.tabManager.activeTab.map { tabCtx(for: $0.id) } ?? primaryCtx).appliedGeneration
         }
-        renderCrosshairCursor(cam: transform)
+    }
+
+    /// Vector overlays for the primary (active-tab) view. Split panes call
+    /// this for the focused leaf with a leaf-adjusted transform and clip rect.
+    private func renderPrimaryVectorOverlays(
+        transform: CameraTransform,
+        origin: (x: Float, y: Float) = (0, 0),
+        includeCrosshair: Bool = true
+    ) {
+        if includeCrosshair {
+            renderCrosshairCursor(cam: transform, origin: origin)
+        }
         renderGrid(cam: transform)
         renderSnapIndicator(cam: transform)
-        
+
         // --> Call the new subtle, background-adaptive tracking lines <--
         let drawList = igGetBackgroundDrawList(nil)
         renderTrackingOverlays(drawList: drawList, cam: transform)
@@ -451,10 +711,13 @@ public final class EngineRenderer {
         renderCadHoverHighlight(cam: transform)
         renderRectSelectPreview(cam: transform)
         renderCadGrips(cam: transform)
-        renderRectSelectBox()
+        renderRectSelectBox(origin: origin)
         renderMoveGhostPreview(cam: transform)
         renderInteractivePreview(cam: transform)
+    }
 
+    /// Feature-command overlay plus text-editor dismissal checks (once per frame).
+    private func renderFeatureOverlay(transform: CameraTransform) {
         // Feature command overlay (e.g. selection rectangle preview)
         if let featureCmd = engine.commandProcessor.activeFeatureCommand {
             featureCmd.renderOverlay(cam: transform, engine: engine)
@@ -470,10 +733,993 @@ public final class EngineRenderer {
                 }
             }
         }
+    }
+
+    /// Sprites for the primary view, drawn late so TTF quads never use a
+    /// pre-pan camera.
+    private func renderPrimarySprites(
+        transform: CameraTransform, deltaSec: Double,
+        viewportWidth: Float? = nil, viewportHeight: Float? = nil,
+        cullOrigin: (x: Float, y: Float) = (0, 0)
+    ) {
+        var backgroundVertexEstimate = 0
+        let backgroundVertexLimit = 60000
+
+        // Suppress image sprites during active manipulation (drag/grip) —
+        // the selection highlight bounding box is shown instead.
+        // On plain selection, the sprite stays visible with grips on top.
+        let isAdjusting = engine.interaction.dragActive || engine.interaction.gripActive
+        let hiddenImageSpriteIDs: Set<SpriteID> = {
+            guard isAdjusting else { return [] }
+            var ids = Set<SpriteID>()
+            for handle in engine.cadSelection.selectedHandles {
+                guard let entity = engine.document.entity(for: handle),
+                      let geometry = entity.localGeometry ?? engine.document.resolvedGeometry(for: entity),
+                      geometry.contains(where: { if case .image = $0 { return true }; return false })
+                else { continue }
+                for sid in engine.cadBridge.entitySpriteMap[handle] ?? [] {
+                    ids.insert(sid)
+                }
+            }
+            return ids
+        }()
+
+        for sprite in engine.spriteManager.getSpritesForRendering() {
+            guard backgroundVertexEstimate < backgroundVertexLimit else { break }
+            if hiddenImageSpriteIDs.contains(sprite.id) { continue }
+            renderSprite(
+                sprite, deltaSec: deltaSec, cam: transform,
+                viewportWidth: viewportWidth, viewportHeight: viewportHeight,
+                cullOrigin: cullOrigin)
+            backgroundVertexEstimate += 4
+        }
+    }
+
+    /// Render the main window with split panes: per-leaf CAD passes through
+    /// leaf viewports, primary overlays clipped to the focused pane,
+    /// secondary grid+sprites in the others, plus divider widgets.
+    private func renderSplitMainWindow(
+        target: EngineManagedWindow,
+        deltaSec: Double,
+        uiBuilder: () -> Void
+    ) {
+        engine.activateImGuiContext(for: target)
+        engine.ui.frameRole = .mainWindow
+        // Layout from last frame's canvas (1-frame lag on resize — invisible).
+        let canvasF = engine.ui.drawingViewportRect
+            ?? SDL_FRect(x: 0, y: 0, w: Float(engine.windowWidth), h: Float(engine.windowHeight))
+        let canvas = PaneRect(
+            x: canvasF.x, y: canvasF.y,
+            w: max(1, canvasF.w), h: max(1, canvasF.h))
+        let leaves = engine.mainPanes.leafRects(canvas: canvas)
+        guard !leaves.isEmpty else { return }
+        let focusedID = engine.mainPanes.focusedLeafID
+        let focusedLeaf = leaves.first(where: { $0.id == focusedID }) ?? leaves[0]
+        let activeID = engine.tabManager.activeTab?.id
+        let focusedShowsActive = focusedLeaf.tabID != nil && focusedLeaf.tabID == activeID
+
+        // --- Prep: primary for the active tab (focused-leaf dims when the
+        // focused pane shows it, else full-window dims for its float window).
+        let t0 = SDL_GetTicks()
+        let activeDoc = engine.tabManager.activeDocument
+        let inBlockEditor = engine.tabManager.activeTab?.editingBlockID != nil
+        let primaryW: Int32 = focusedShowsActive ? Int32(focusedLeaf.rect.w) : engine.windowWidth
+        let primaryH: Int32 = focusedShowsActive ? Int32(focusedLeaf.rect.h) : engine.windowHeight
+        let activeTab = engine.tabManager.activeTab
+        let actx = activeTab.map { tabCtx(for: $0.id) } ?? primaryCtx
+        if let activeTab { supersedeCtxIfViewChanged(actx, tab: activeTab) }
+        let pendingApplied = ensureContextRegenerated(
+            ctxID: activeTab?.id, ctx: actx, doc: activeDoc,
+            simplifyComplexBlocks: inBlockEditor ? false : engine.simplifyComplexBlocks,
+            splineTessellationDivisor: engine.splineTessellationDivisor,
+            background: engine.ui.backgroundColor,
+            isPrimary: true)
+        routeContextVertexBuild(
+            ctx: actx, camera: engine.camera,
+            viewportWidth: primaryW, viewportHeight: primaryH,
+            pixelScale: lineWidthPixelScale,
+            background: engine.ui.backgroundColor,
+            useLightDisplayPalette: engine.ui.isViewportBackgroundLight,
+            pendingApplied: pendingApplied,
+            interactive: !(engine.interaction.dragActive || engine.interaction.gripActive))
+
+        // Non-focused pane prep: every such pane gets its own leaf-keyed
+        // context driven by its remembered entry — which tab, which of the
+        // tab's drawing views (Model, paper layouts, ...), and which camera
+        // (AutoCAD-style independent viewports). A pane without an entry
+        // (never focused since assignment) follows its tab's active drawing
+        // view and camera until it earns an entry of its own.
+        var leafBgs: [UUID: SDL_FColor] = [:]
+        let nonFocusedLeaves = leaves.filter { $0.id != focusedID && $0.tabID != nil }
+        for leaf in nonFocusedLeaves {
+            guard let tabID = leaf.tabID,
+                  let tab = engine.tabManager.tab(for: tabID),
+                  !tab.drawingViews.isEmpty else { continue }
+            let entry = engine.paneViews.entry(leafID: leaf.id, tabID: tabID)
+            let viewIndex = min(
+                max(entry?.viewIndex ?? tab.activeViewIndex, 0),
+                tab.drawingViews.count - 1)
+            let view = tab.drawingViews[viewIndex]
+            let bg = engine.ui.backgroundColor(forViewBackground: view.backgroundColor)
+            leafBgs[leaf.id] = bg
+            let ctx: WindowRenderContext
+            if let existing = paneCtxs[leaf.id] {
+                ctx = existing
+            } else {
+                ctx = WindowRenderContext(
+                    geometry: GeometryManager(),
+                    sprites: SpriteManager(),
+                    bridge: CADRendererBridge())
+                paneCtxs[leaf.id] = ctx
+            }
+            ctx.camera.applyState(entry?.state ?? view.cameraState)
+            // A context retargeted to another tab or drawing view must not
+            // keep the previous document's geometry: edit revisions can
+            // coincide across view documents, so supersede explicitly
+            // (mirrors the primary path's tab-switch handling).
+            if ctx.builtTabID != tabID || ctx.builtViewIndex != viewIndex {
+                ctx.builtTabID = tabID
+                ctx.builtViewIndex = viewIndex
+                ctx.regenTask?.cancel()
+                ctx.regenTask = nil
+                ctx.regenInFlight = nil
+                ctx.bridge.cancelPending()
+                ctx.regenGeneration &+= 1
+                ctx.appliedGeneration = -1
+                ctx.builtRevision = nil
+                ctx.pendingRevision = nil
+                ctx.invalidateBuiltState(device: engine.gpuDevice)
+            }
+            let applied = ensureContextRegenerated(
+                ctxID: leaf.id, ctx: ctx, doc: view.document,
+                simplifyComplexBlocks: tab.editingBlockID != nil ? false : engine.simplifyComplexBlocks,
+                splineTessellationDivisor: engine.splineTessellationDivisor,
+                background: bg, isPrimary: false)
+            routeContextVertexBuild(
+                ctx: ctx, camera: ctx.camera,
+                viewportWidth: Int32(leaf.rect.w), viewportHeight: Int32(leaf.rect.h),
+                pixelScale: lineWidthPixelScale,
+                background: bg, useLightDisplayPalette: EngineUIManager.isLightBackground(bg),
+                pendingApplied: applied, interactive: true)
+        }
+
+        // --- Frame.
+        let t1 = SDL_GetTicks()
+        engine.io.pointee.DisplaySize = ImVec2(x: Float(engine.windowWidth), y: Float(engine.windowHeight))
+        engine.io.pointee.DisplayFramebufferScale = ImVec2(x: engine.scaleX, y: engine.scaleY)
+        engine.io.pointee.DeltaTime = Float(deltaSec)
+        engine.applyPendingUiScaleRebuild()
+        engine.ui.replayQueuedInput(for: target, appFocused: engine.windowManager.focusedWindow != nil)
+        ImGuiNewFrame()
+        updateOSCursorVisibility()
+
+        // Pre-UI: focused-leaf vector overlays (mirrors the primary order).
+        _foregroundVertexEstimate = 0
+        if focusedShowsActive {
+            let saved = engine.snapshotMetrics()
+            engine.borrowPaneDims(width: Int32(focusedLeaf.rect.w), height: Int32(focusedLeaf.rect.h))
+            let ft = engine.camera.transformForSubRect(
+                originX: Double(focusedLeaf.rect.x), originY: Double(focusedLeaf.rect.y),
+                width: Int32(focusedLeaf.rect.w), height: Int32(focusedLeaf.rect.h))
+            pushLeafClip(focusedLeaf.rect)
+            // Overlays (selection/hover highlight, grips, ghosts, crosshair)
+            // draw into the background/foreground lists, whose clip stacks
+            // are independent of the window list clipped above — without
+            // these, highlight geometry spills across the divider.
+            pushBackgroundClip(focusedLeaf.rect)
+            pushForegroundClip(focusedLeaf.rect)
+            refreshGripCache(transform: ft)
+            renderPrimaryVectorOverlays(
+                transform: ft, origin: (focusedLeaf.rect.x, focusedLeaf.rect.y),
+                includeCrosshair: false)
+            renderFeatureOverlay(transform: ft)
+            popForegroundClip()
+            popBackgroundClip()
+            ImGuiPopClipRect()
+            engine.restoreMetrics(saved)
+        }
+        // The cursor is global: it follows the mouse in whichever pane is
+        // hovered (the OS cursor is hidden over the whole canvas) and
+        // mirrors into other panes sharing the same tab + drawing view.
+        renderSplitCrosshairs(leaves: leaves, focusedID: focusedID, activeID: activeID)
+
+        // 2. ImGui user panels/callbacks + divider widgets.
+        uiBuilder()
+        renderPaneDividers(canvas: canvas, focusedID: focusedLeaf.id)
+
+        let currentOffset = engine.camera.offset
+        let cameraMoved: Bool
+        if let previousOffset = _lastRenderedCameraOffset {
+            cameraMoved =
+                abs(currentOffset.x - previousOffset.x) > 1e-12
+                || abs(currentOffset.y - previousOffset.y) > 1e-12
+        } else {
+            cameraMoved = false
+        }
+        _panProxyActiveThisFrame =
+            cameraMoved
+            || engine.interaction.panActive
+            || engine.interaction.touchPanActive
+            || engine.interaction.radialPanActive
+        _lastRenderedCameraOffset = currentOffset
+
+        // Post-UI sprites: focused leaf first, then secondary leaves.
+        if focusedShowsActive {
+            if let interim = interimPaneCtx(
+                leaf: focusedLeaf, focusedID: focusedID, activeID: activeID) {
+                // Primary stores were just cleared by the switch; the
+                // pane's own sprites are the current ones.
+                renderLeafGridAndSprites(
+                    leaf: focusedLeaf, ctx: interim,
+                    bg: engine.ui.backgroundColor, deltaSec: deltaSec,
+                    includeGrid: false, cameraOverride: engine.camera)
+            } else {
+                let saved = engine.snapshotMetrics()
+                engine.borrowPaneDims(width: Int32(focusedLeaf.rect.w), height: Int32(focusedLeaf.rect.h))
+                let ft = engine.camera.transformForSubRect(
+                    originX: Double(focusedLeaf.rect.x), originY: Double(focusedLeaf.rect.y),
+                    width: Int32(focusedLeaf.rect.w), height: Int32(focusedLeaf.rect.h))
+                pushLeafClip(focusedLeaf.rect)
+                pushBackgroundClip(focusedLeaf.rect)
+                renderPrimarySprites(
+                    transform: ft, deltaSec: deltaSec,
+                    viewportWidth: focusedLeaf.rect.w, viewportHeight: focusedLeaf.rect.h,
+                    cullOrigin: (focusedLeaf.rect.x, focusedLeaf.rect.y))
+                popBackgroundClip()
+                ImGuiPopClipRect()
+                engine.restoreMetrics(saved)
+            }
+        }
+        for leaf in nonFocusedLeaves {
+            guard let ctx = paneCtxs[leaf.id] else { continue }
+            let bg = leafBgs[leaf.id] ?? engine.ui.backgroundColor
+            renderLeafGridAndSprites(leaf: leaf, ctx: ctx, bg: bg, deltaSec: deltaSec)
+        }
+
+        // 3. Feature commands UI
+        engine.commandProcessor.activeFeatureCommand?.renderImGui(engine: engine)
+
+        renderObjectPickerPopup()
+        let t2 = SDL_GetTicks()
+        ImGuiRender()
+        target.wantCaptureMouse = engine.io.pointee.WantCaptureMouse
+        target.wantCaptureKeyboard = engine.io.pointee.WantCaptureKeyboard
+
+        let imguiDrawDataReady = uploadImGuiDrawData()
+
+        // Pick pass for the focused pane (pending coords are pane-local).
+        if focusedShowsActive,
+           let pickX = _pendingPickScreenX, let pickY = _pendingPickScreenY,
+           let pickTex = pickTexture, cadIDPipeline != nil, actx.vertexBuffer != nil,
+           actx.vertexCount > 0
+        {
+            _pendingPickScreenX = nil
+            _pendingPickScreenY = nil
+
+            if let pickCmd = SDL_AcquireGPUCommandBuffer(engine.gpuDevice) {
+                var pickColorTarget = SDL_GPUColorTargetInfo()
+                pickColorTarget.texture = pickTex
+                pickColorTarget.mip_level = 0
+                pickColorTarget.layer_or_depth_plane = 0
+                pickColorTarget.clear_color = SDL_FColor(r: 0, g: 0, b: 0, a: 0)
+                pickColorTarget.load_op = SDL_GPU_LOADOP_CLEAR
+                pickColorTarget.store_op = SDL_GPU_STOREOP_STORE
+                pickColorTarget.cycle = false
+
+                if let pickPass = SDL_BeginGPURenderPass(pickCmd, &pickColorTarget, 1, nil) {
+                    SDL_BindGPUGraphicsPipeline(pickPass, cadIDPipeline)
+
+                    var vertexBinding = SDL_GPUBufferBinding(buffer: actx.vertexBuffer!, offset: 0)
+                    SDL_BindGPUVertexBuffers(pickPass, 0, &vertexBinding, 1)
+
+                    var pickMatrix = engine.camera.computePickMatrix(
+                        cursorScreenX: pickX,
+                        cursorScreenY: pickY,
+                        windowWidth: Int32(focusedLeaf.rect.w),
+                        windowHeight: Int32(focusedLeaf.rect.h),
+                        renderOrigin: actx.geometry.renderOrigin)
+                    SDL_PushGPUVertexUniformData(pickCmd, 0, &pickMatrix, UInt32(pickMatrix.count * 4))
+
+                    var lastBoundType: CADPipelineType? = nil
+                    for batch in actx.batches {
+                        if batch.isPanProxy { continue }
+                        let pipe: OpaquePointer?
+                        switch batch.pipelineType {
+                        case .line:       pipe = cadIDLinePipeline
+                        case .point:      pipe = cadIDPointPipeline
+                        case .triangle,
+                             .aaLine:     pipe = cadIDPipeline
+                        }
+                        if lastBoundType != batch.pipelineType {
+                            SDL_BindGPUGraphicsPipeline(pickPass, pipe)
+                            lastBoundType = batch.pipelineType
+                        }
+                        if pipe != nil {
+                            SDL_DrawGPUPrimitives(pickPass, batch.vertexCount, 1, batch.firstVertex, 0)
+                        }
+                    }
+
+                    SDL_EndGPURenderPass(pickPass)
+                }
+
+                let ringIdx = pickRingIndex % 3
+                if let ringBuf = pickRingBuffers[ringIdx] {
+                    let copyPass = SDL_BeginGPUCopyPass(pickCmd)
+                    if copyPass != nil {
+                        var srcRegion = SDL_GPUTextureRegion()
+                        srcRegion.texture = pickTex
+                        srcRegion.mip_level = 0
+                        srcRegion.layer = 0
+                        srcRegion.x = 0
+                        srcRegion.y = 0
+                        srcRegion.z = 0
+                        srcRegion.w = 9
+                        srcRegion.h = 9
+                        srcRegion.d = 1
+
+                        var dstLocation = SDL_GPUTextureTransferInfo()
+                        dstLocation.transfer_buffer = ringBuf
+                        dstLocation.offset = 0
+                        dstLocation.pixels_per_row = 9
+                        dstLocation.rows_per_layer = 9
+
+                        SDL_DownloadFromGPUTexture(copyPass, &srcRegion, &dstLocation)
+                        SDL_EndGPUCopyPass(copyPass)
+                    }
+                }
+                pickRingIndex += 1
+
+                SDL_SubmitGPUCommandBuffer(pickCmd)
+            }
+        }
+
+        // Resolve and upload pane backgrounds before acquiring the swapchain
+        // command buffer. The upload submits its own command buffer; doing
+        // that while a swapchain texture is checked out on another command
+        // buffer is not a safe ordering for the GPU backends used here.
+        let plans = leaves.map {
+            planLeafCADPass(
+                leaf: $0, focusedID: focusedID, activeID: activeID,
+                leafBgs: leafBgs)
+        }
+        uploadPaneBgQuads(leaves: leaves, plans: plans)
+
+        // Swapchain: one CAD pass per leaf, then the ImGui pass.
+        guard let cmd = SDL_AcquireGPUCommandBuffer(engine.gpuDevice) else {
+            print("Failed to acquire GPU command buffer")
+            return
+        }
+
+        var swapchainTexture: OpaquePointer? = nil
+        if !SDL_WaitAndAcquireGPUSwapchainTexture(cmd, target.handle, &swapchainTexture, nil, nil) {
+            print("Failed to acquire swapchain texture. Window may be minimized or occluded.")
+            SDL_CancelGPUCommandBuffer(cmd)
+            return
+        }
+
+        if let swapchainTexture = swapchainTexture {
+            for (index, leaf) in leaves.enumerated() {
+                renderLeafCADPass(
+                    cmd: cmd, swapchainTexture: swapchainTexture, leaf: leaf,
+                    leafIndex: index, isFirst: index == 0, plan: plans[index])
+            }
+
+            var imguiTarget = SDL_GPUColorTargetInfo()
+            imguiTarget.texture = swapchainTexture
+            imguiTarget.mip_level = 0
+            imguiTarget.layer_or_depth_plane = 0
+            imguiTarget.clear_color = engine.ui.backgroundColor
+            imguiTarget.load_op = SDL_GPU_LOADOP_LOAD
+            imguiTarget.store_op = SDL_GPU_STOREOP_STORE
+            imguiTarget.cycle = false
+
+            if let imguiPass = SDL_BeginGPURenderPass(cmd, &imguiTarget, 1, nil) {
+                var fullViewport = SDL_GPUViewport()
+                fullViewport.x = 0
+                fullViewport.y = 0
+                fullViewport.w = Float(engine.pixelWidth)
+                fullViewport.h = Float(engine.pixelHeight)
+                fullViewport.min_depth = 0
+                fullViewport.max_depth = 1
+                SDL_SetGPUViewport(imguiPass, &fullViewport)
+                var fullScissor = SDL_Rect(
+                    x: 0, y: 0, w: engine.pixelWidth, h: engine.pixelHeight)
+                SDL_SetGPUScissor(imguiPass, &fullScissor)
+                if imguiDrawDataReady {
+                    engine.ui.renderImGuiDrawData(cmd: cmd, renderPass: imguiPass, renderer: self, fontTexture: engine.fontTexture)
+                }
+                SDL_EndGPURenderPass(imguiPass)
+            }
+        }
+
+        SDL_SubmitGPUCommandBuffer(cmd)
+
+        let t3 = SDL_GetTicks()
+        let cadMs = Double(t1 - t0)
+        let primMs = Double(t2 - t1)
+        let imguiMs = Double(t3 - t2)
+        engine._frameTimingCadMs += cadMs
+        engine._frameTimingPrimMs += primMs
+        engine._frameTimingImGuiMs += imguiMs
+        engine._frameTimingCount += 1
+        if engine._frameTimingCount >= 60 {
+            let n = Double(engine._frameTimingCount)
+            print(
+                String(
+                    format:
+                        "[FrameTiming] CAD:%.1fms  Prims:%.1fms  ImGui:%.1fms  Total:%.1fms  FPS:%.0f",
+                    engine._frameTimingCadMs / n, engine._frameTimingPrimMs / n,
+                    engine._frameTimingImGuiMs / n,
+                    (engine._frameTimingCadMs + engine._frameTimingPrimMs + engine._frameTimingImGuiMs) / n,
+                    1000.0 / ((engine._frameTimingCadMs + engine._frameTimingPrimMs + engine._frameTimingImGuiMs) / n)))
+            engine._frameTimingCadMs = 0
+            engine._frameTimingPrimMs = 0
+            engine._frameTimingImGuiMs = 0
+            engine._frameTimingCount = 0
+        }
+    }
+
+    /// Grid plus image/text sprites for one non-focused pane, clipped to it.
+    /// `includeGrid` is false for the focused pane's interim rendering,
+    /// whose overlay pass already drew the same grid (drawing it twice
+    /// brightens it until the handover, which reads as a blink).
+    private func renderLeafGridAndSprites(
+        leaf: (id: UUID, tabID: UUID?, rect: PaneRect),
+        ctx: WindowRenderContext,
+        bg: SDL_FColor,
+        deltaSec: Double,
+        includeGrid: Bool = true,
+        cameraOverride: EngineCameraManager? = nil
+    ) {
+        let isLight = EngineUIManager.isLightBackground(bg)
+        // Interim donor rendering positions the donor's sprites with the
+        // focused (live) camera, matching the geometry pass.
+        let st = (cameraOverride ?? ctx.camera).transformForSubRect(
+            originX: Double(leaf.rect.x), originY: Double(leaf.rect.y),
+            width: Int32(leaf.rect.w), height: Int32(leaf.rect.h))
+        pushLeafClip(leaf.rect)
+        pushBackgroundClip(leaf.rect)
+        if includeGrid {
+            let vp = ctx.camera.worldViewportRect(
+                windowWidth: Int32(leaf.rect.w), windowHeight: Int32(leaf.rect.h))
+            renderGrid(
+                cam: st,
+                viewportWidth: leaf.rect.w, viewportHeight: leaf.rect.h,
+                cameraZoom: ctx.camera.zoom, viewport: vp, useLightPalette: isLight)
+        }
+        var spriteEstimate = 0
+        for sprite in ctx.sprites.getSpritesForRendering() {
+            guard spriteEstimate < 60000 else { break }
+            renderSprite(
+                sprite, deltaSec: deltaSec, cam: st,
+                viewportWidth: leaf.rect.w, viewportHeight: leaf.rect.h,
+                useLightPalette: isLight, cullOrigin: (leaf.rect.x, leaf.rect.y))
+            spriteEstimate += 4
+        }
+        popBackgroundClip()
+        ImGuiPopClipRect()
+    }
+
+    /// Push an ImGui clip rect for a leaf (intersected with the current one).
+    private func pushLeafClip(_ rect: PaneRect) {
+        ImGuiPushClipRect(
+            ImVec2(x: rect.x, y: rect.y),
+            ImVec2(x: rect.x + rect.w, y: rect.y + rect.h),
+            true)
+    }
+
+    /// Push the leaf clip onto the BACKGROUND draw list. Sprites (TTF text,
+    /// images) draw there, and draw lists keep independent clip stacks:
+    /// `ImGuiPushClipRect` only affects the current window's list, so
+    /// without this, text quads spill across pane dividers (GPU geometry
+    /// doesn't — it's scissored in its own pass). Pair with
+    /// `popBackgroundClip()`.
+    private func pushBackgroundClip(_ rect: PaneRect) {
+        if let bgDL = igGetBackgroundDrawList(nil) {
+            ImDrawListPushClipRect(
+                bgDL,
+                ImVec2(x: rect.x, y: rect.y),
+                ImVec2(x: rect.x + rect.w, y: rect.y + rect.h),
+                true)
+        }
+    }
+
+    private func popBackgroundClip() {
+        if let bgDL = igGetBackgroundDrawList(nil) {
+            ImDrawListPopClipRect(bgDL)
+        }
+    }
+
+    /// Foreground-list counterpart of `pushBackgroundClip` (crosshair and
+    /// other foreground overlays). Pair with `popForegroundClip()`.
+    private func pushForegroundClip(_ rect: PaneRect) {
+        if let fgDL = igGetForegroundDrawList_ViewportPtr(nil) {
+            ImDrawListPushClipRect(
+                fgDL,
+                ImVec2(x: rect.x, y: rect.y),
+                ImVec2(x: rect.x + rect.w, y: rect.y + rect.h),
+                true)
+        }
+    }
+
+    private func popForegroundClip() {
+        if let fgDL = igGetForegroundDrawList_ViewportPtr(nil) {
+            ImDrawListPopClipRect(fgDL)
+        }
+    }
+
+    /// One leaf's CAD pass: clear to the leaf background, then draw its
+    /// batches through a leaf viewport+scissor (points scaled to pixels).
+    /// One leaf's CAD pass inputs, resolved once per frame and shared by the
+    /// background-quad upload and the pass itself so both agree on the camera.
+    private struct LeafPassPlan {
+        var bg: SDL_FColor
+        var ctx: WindowRenderContext?
+        var camera: EngineCameraManager
+        var renderOrigin: CADRenderOrigin
+        var isPrimaryLeaf: Bool
+    }
+
+    /// A context already built for the focused pane's tab+view, shown while
+    /// the primary pipeline rebuilds after a tab/view switch cleared its
+    /// stores. Prefers the pane's own context (its buffers are culled
+    /// around this pane's camera); falls back to any other pane or
+    /// secondary context built for the same tab+view — e.g. swapping the
+    /// focused pane to the paper layout the other pane already shows.
+    /// Without this, the focused pane sits empty (paper-white) for the
+    /// whole regen: a full-pane flash on every swap. Nil once the primary
+    /// buffers exist again.
+    private func interimPaneCtx(
+        leaf: (id: UUID, tabID: UUID?, rect: PaneRect),
+        focusedID: UUID,
+        activeID: UUID?
+    ) -> WindowRenderContext? {
+        guard leaf.id == focusedID,
+              let tabID = leaf.tabID, tabID == activeID,
+              tabCtx(for: tabID).vertexCount == 0
+        else { return nil }
+        let wantView = engine.tabManager.activeTab?.activeViewIndex ?? -1
+        let wantDocumentID = engine.tabManager.activeTab.map { ObjectIdentifier($0.document) }
+        func ready(_ ctx: WindowRenderContext) -> Bool {
+            ctx.vertexBuffer != nil && ctx.vertexCount > 0
+                && ctx.builtTabID == tabID && ctx.builtViewIndex == wantView
+                && ctx.builtDocumentID == wantDocumentID
+        }
+        if let own = paneCtxs[leaf.id], ready(own) { return own }
+        for ctx in paneCtxs.values where ready(ctx) { return ctx }
+        if let secondary = secondaryCtxs[tabID], ready(secondary) { return secondary }
+        return nil
+    }
+
+    private func planLeafCADPass(
+        leaf: (id: UUID, tabID: UUID?, rect: PaneRect),
+        focusedID: UUID,
+        activeID: UUID?,
+        leafBgs: [UUID: SDL_FColor]
+    ) -> LeafPassPlan {
+        // Only the focused pane showing the active tab is the primary view.
+        // Every other pane uses its leaf-keyed context (own tab, drawing
+        // view, and camera); anything not ready yet paints its background.
+        if leaf.id == focusedID, leaf.tabID != nil, leaf.tabID == activeID {
+            if let interim = interimPaneCtx(
+                leaf: leaf, focusedID: focusedID, activeID: activeID) {
+                return LeafPassPlan(
+                    bg: engine.ui.backgroundColor, ctx: interim,
+                    camera: engine.camera,
+                    renderOrigin: interim.geometry.renderOrigin,
+                    isPrimaryLeaf: true)
+            }
+            let actx = tabCtx(for: activeID!)
+            return LeafPassPlan(
+                bg: engine.ui.backgroundColor, ctx: actx,
+                camera: engine.camera, renderOrigin: actx.geometry.renderOrigin,
+                isPrimaryLeaf: true)
+        }
+        let bg = leafBgs[leaf.id] ?? engine.ui.backgroundColor
+        if let pane = paneCtxs[leaf.id],
+           pane.vertexBuffer != nil, pane.vertexCount > 0 {
+            return LeafPassPlan(
+                bg: bg, ctx: pane,
+                camera: pane.camera, renderOrigin: pane.geometry.renderOrigin,
+                isPrimaryLeaf: false)
+        }
+        if leaf.tabID != nil, leaf.tabID == activeID {
+            // Same-tab pane still building its own context: draw the primary
+            // buffers through this pane's camera meanwhile so the pane shows
+            // geometry immediately. The buffers are culled around the focused
+            // view, which is exact at split time (both panes start on the
+            // same view) and a useful preview while the build catches up.
+            // Only valid when the pane wants the tab's active drawing view —
+            // the primary buffers hold that view's geometry.
+            let entry = leaf.tabID.flatMap {
+                engine.paneViews.entry(leafID: leaf.id, tabID: $0)
+            }
+            let activeView = leaf.tabID.flatMap {
+                engine.tabManager.tab(for: $0)?.activeViewIndex
+            } ?? 0
+            if (entry?.viewIndex ?? activeView) == activeView {
+                let actx = tabCtx(for: activeID!)
+                return LeafPassPlan(
+                    bg: bg, ctx: actx,
+                    camera: paneCtxs[leaf.id]?.camera ?? engine.camera,
+                    renderOrigin: actx.geometry.renderOrigin,
+                    isPrimaryLeaf: false)
+            }
+        }
+        // Empty pane or context not ready: background only. The camera is
+        // arbitrary (the quad is derived from it), so use the live one.
+        return LeafPassPlan(
+            bg: bg, ctx: nil,
+            camera: engine.camera, renderOrigin: .zero,
+            isPrimaryLeaf: false)
+    }
+
+    /// Six world-space background vertices covering a leaf's visible rect
+    /// (1% overscan against edge cracks), colored opaque `bg`.
+    private func paneBgQuad(plan: LeafPassPlan, leafRect: PaneRect) -> [CADVertex] {
+        let w = max(1, Int32(leafRect.w))
+        let h = max(1, Int32(leafRect.h))
+        let vp = plan.camera.worldViewportRect(windowWidth: w, windowHeight: h)
+        let ox = plan.renderOrigin.x
+        let oy = plan.renderOrigin.y
+        let ex = (vp.maxX - vp.minX) * 0.005 + 1e-9
+        let ey = (vp.maxY - vp.minY) * 0.005 + 1e-9
+        let x0 = Float(vp.minX - ex - ox)
+        let x1 = Float(vp.maxX + ex - ox)
+        let y0 = Float(vp.minY - ey - oy)
+        let y1 = Float(vp.maxY + ey - oy)
+        func v(_ x: Float, _ y: Float) -> CADVertex {
+            CADVertex(x: x, y: y, r: plan.bg.r, g: plan.bg.g, b: plan.bg.b, a: 1.0)
+        }
+        return [v(x0, y0), v(x1, y0), v(x0, y1), v(x1, y0), v(x1, y1), v(x0, y1)]
+    }
+
+    /// Upload one background quad per leaf (see `paneBgVertexBuffer`).
+    /// The buffer is recreated when the pane count changes.
+    private func uploadPaneBgQuads(
+        leaves: [(id: UUID, tabID: UUID?, rect: PaneRect)],
+        plans: [LeafPassPlan]
+    ) {
+        var vertices: [CADVertex] = []
+        vertices.reserveCapacity(leaves.count * 6)
+        for (leaf, plan) in zip(leaves, plans) {
+            vertices.append(contentsOf: paneBgQuad(plan: plan, leafRect: leaf.rect))
+        }
+        guard !vertices.isEmpty else { return }
+        if paneBgVertexBuffer == nil || paneBgVertexCapacity != vertices.count {
+            if let old = paneBgVertexBuffer {
+                SDL_ReleaseGPUBuffer(engine.gpuDevice, old)
+                paneBgVertexBuffer = nil
+            }
+            let sizeInBytes = UInt32(vertices.count * MemoryLayout<CADVertex>.stride)
+            var bufferCreateInfo = SDL_GPUBufferCreateInfo(
+                usage: SDL_GPU_BUFFERUSAGE_VERTEX, size: sizeInBytes, props: 0)
+            guard let vb = SDL_CreateGPUBuffer(engine.gpuDevice, &bufferCreateInfo) else {
+                print("Failed to create pane background vertex buffer: \(String(cString: SDL_GetError()))")
+                return
+            }
+            paneBgVertexBuffer = vb
+            paneBgVertexCapacity = vertices.count
+        }
+        guard let bgBuffer = paneBgVertexBuffer else { return }
+        let sizeInBytes = UInt32(vertices.count * MemoryLayout<CADVertex>.stride)
+        var transferInfo = SDL_GPUTransferBufferCreateInfo()
+        transferInfo.usage = SDL_GPUTransferBufferUsage(rawValue: 0)
+        transferInfo.size = sizeInBytes
+        guard let transferBuf = SDL_CreateGPUTransferBuffer(engine.gpuDevice, &transferInfo),
+              let mapped = SDL_MapGPUTransferBuffer(engine.gpuDevice, transferBuf, false)
+        else {
+            print("Failed to map pane background transfer buffer: \(String(cString: SDL_GetError()))")
+            return
+        }
+        _ = vertices.withUnsafeBytes { ptr in
+            memcpy(mapped, ptr.baseAddress!, Int(sizeInBytes))
+        }
+        SDL_UnmapGPUTransferBuffer(engine.gpuDevice, transferBuf)
+        guard let cmd = SDL_AcquireGPUCommandBuffer(engine.gpuDevice),
+              let cp = SDL_BeginGPUCopyPass(cmd)
+        else {
+            print("Failed to acquire command buffer for pane background upload")
+            SDL_ReleaseGPUTransferBuffer(engine.gpuDevice, transferBuf)
+            return
+        }
+        var sourceLocation = SDL_GPUTransferBufferLocation(transfer_buffer: transferBuf, offset: 0)
+        var destLocation = SDL_GPUBufferRegion(
+            buffer: bgBuffer, offset: 0, size: sizeInBytes)
+        SDL_UploadToGPUBuffer(cp, &sourceLocation, &destLocation, false)
+        SDL_EndGPUCopyPass(cp)
+        if !SDL_SubmitGPUCommandBuffer(cmd) {
+            print("Failed to submit command buffer for pane background upload")
+        }
+        SDL_ReleaseGPUTransferBuffer(engine.gpuDevice, transferBuf)
+    }
+
+    private func renderLeafCADPass(
+        cmd: OpaquePointer,
+        swapchainTexture: OpaquePointer,
+        leaf: (id: UUID, tabID: UUID?, rect: PaneRect),
+        leafIndex: Int,
+        isFirst: Bool,
+        plan: LeafPassPlan
+    ) {
+        // Only the first leaf clears (clears cover the whole target, so a
+        // per-leaf clear would wipe previously rendered panes); later panes
+        // load, and every pane repaints its own rect with a background quad
+        // since panes can have different view backgrounds.
+        var colorTarget = SDL_GPUColorTargetInfo()
+        colorTarget.texture = swapchainTexture
+        colorTarget.mip_level = 0
+        colorTarget.layer_or_depth_plane = 0
+        // Clear to THIS pane's background, never the global one: the clear
+        // covers the whole target, so a white paper-space global would
+        // flash every pane white if a background quad ever failed to cover.
+        colorTarget.clear_color = plan.bg
+        colorTarget.load_op = isFirst ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD
+        colorTarget.store_op = SDL_GPU_STOREOP_STORE
+        colorTarget.cycle = false
+
+        guard let renderPass = SDL_BeginGPURenderPass(cmd, &colorTarget, 1, nil) else { return }
+
+        var viewport = SDL_GPUViewport()
+        viewport.x = leaf.rect.x * engine.scaleX
+        viewport.y = leaf.rect.y * engine.scaleY
+        viewport.w = leaf.rect.w * engine.scaleX
+        viewport.h = leaf.rect.h * engine.scaleY
+        viewport.min_depth = 0
+        viewport.max_depth = 1
+        SDL_SetGPUViewport(renderPass, &viewport)
+        var scissor = SDL_Rect(
+            x: Int32((leaf.rect.x * engine.scaleX).rounded()),
+            y: Int32((leaf.rect.y * engine.scaleY).rounded()),
+            w: max(1, Int32((leaf.rect.w * engine.scaleX).rounded())),
+            h: max(1, Int32((leaf.rect.h * engine.scaleY).rounded())))
+        SDL_SetGPUScissor(renderPass, &scissor)
+
+        let matrix = plan.camera.computeMatrix(
+            windowW: Double(leaf.rect.w),
+            windowH: Double(leaf.rect.h),
+            renderOrigin: plan.renderOrigin)
+        pushCADUniforms(cmd: cmd, matrix: matrix, includeHiddenHandles: plan.isPrimaryLeaf)
+
+        var lastBoundPipeline: CADPipelineType? = nil
+        if let bgBuf = paneBgVertexBuffer, cadTrianglePipeline != nil {
+            var bgBinding = SDL_GPUBufferBinding(buffer: bgBuf, offset: 0)
+            SDL_BindGPUVertexBuffers(renderPass, 0, &bgBinding, 1)
+            SDL_BindGPUGraphicsPipeline(renderPass, cadTrianglePipeline)
+            lastBoundPipeline = .triangle
+            SDL_DrawGPUPrimitives(renderPass, 6, 1, UInt32(leafIndex * 6), 0)
+        }
+
+        if let ctx = plan.ctx, let vertexBuf = ctx.vertexBuffer, ctx.vertexCount > 0 {
+            var vertexBinding = SDL_GPUBufferBinding(buffer: vertexBuf, offset: 0)
+            SDL_BindGPUVertexBuffers(renderPass, 0, &vertexBinding, 1)
+
+            for batch in ctx.batches {
+                if batch.isPanProxy && !(plan.isPrimaryLeaf && _panProxyActiveThisFrame) { continue }
+                let pipeline: OpaquePointer?
+                switch batch.pipelineType {
+                case .point:
+                    pipeline = cadPointPipeline
+                case .triangle:
+                    pipeline = cadTrianglePipeline
+                case .line:
+                    pipeline = cadLinePipeline
+                case .aaLine:
+                    pipeline = cadLineAAPipeline
+                }
+
+                if lastBoundPipeline != batch.pipelineType {
+                    SDL_BindGPUGraphicsPipeline(renderPass, pipeline)
+                    lastBoundPipeline = batch.pipelineType
+                }
+
+                SDL_DrawGPUPrimitives(renderPass, batch.vertexCount, 1, batch.firstVertex, 0)
+            }
+        }
+
+        SDL_EndGPURenderPass(renderPass)
+    }
+
+    /// Divider drag handles plus the focused-pane outline.
+    ///
+    /// Each divider's invisible button lives in its own strip-sized window:
+    /// widget calls need a current window (the split frame has none open at
+    /// this point — the buttons used to be orphaned and could never hover
+    /// or activate), and a canvas-sized host window would make
+    /// `WantCaptureMouse` true over the whole canvas, swallowing CAD input.
+    /// A window exactly covering the hit strip captures only there.
+    private func renderPaneDividers(canvas: PaneRect, focusedID: UUID) {
+        for divider in engine.mainPanes.dividers(canvas: canvas) {
+            ImGuiSetNextWindowPos(
+                ImVec2(x: divider.rect.x, y: divider.rect.y),
+                Int32(ImGuiCond_Always.rawValue), ImVec2(x: 0, y: 0))
+            ImGuiSetNextWindowSize(
+                ImVec2(x: divider.rect.w, y: divider.rect.h),
+                Int32(ImGuiCond_Always.rawValue))
+            ImGuiPushStyleVar(Int32(ImGuiStyleVar_WindowPadding.rawValue), ImVec2(x: 0, y: 0))
+            var open = true
+            let stripFlags: Int32 =
+                Int32(ImGuiWindowFlags_NoTitleBar.rawValue)
+                | Int32(ImGuiWindowFlags_NoResize.rawValue)
+                | Int32(ImGuiWindowFlags_NoMove.rawValue)
+                | Int32(ImGuiWindowFlags_NoScrollbar.rawValue)
+                | Int32(ImGuiWindowFlags_NoSavedSettings.rawValue)
+                | Int32(ImGuiWindowFlags_NoBackground.rawValue)
+                | Int32(ImGuiWindowFlags_NoFocusOnAppearing.rawValue)
+                | Int32(ImGuiWindowFlags_NoBringToFrontOnFocus.rawValue)
+                | Int32(ImGuiWindowFlags_NoNavFocus.rawValue)
+            var hovered = false
+            var active = false
+            if igBegin("##panedividerwin_\(divider.id.uuidString)", &open, stripFlags) {
+                _ = ImGuiInvisibleButton("##panedivider", ImVec2(x: divider.rect.w, y: divider.rect.h), 0)
+                hovered = ImGuiIsItemHovered(0)
+                active = ImGuiIsItemActive()
+            }
+            igEnd()
+            ImGuiPopStyleVar(1)
+            if hovered || active {
+                // Background list, not foreground: chrome lines must stay
+                // under popup windows (e.g. command autocomplete).
+                let dl = igGetBackgroundDrawList(nil)
+                let col = active
+                    ? igGetColorU32_Vec4(engine.ui.theme.brandGold)
+                    : igGetColorU32_Vec4(ImVec4(x: 1, y: 1, z: 1, w: 0.35))
+                switch divider.axis {
+                case .sideBySide:
+                    let cx = divider.rect.x + divider.rect.w * 0.5
+                    ImDrawListAddLine(
+                        dl, ImVec2(x: cx, y: divider.rect.y),
+                        ImVec2(x: cx, y: divider.rect.y + divider.rect.h),
+                        col, active ? 3.0 : 2.0)
+                case .stacked:
+                    let cy = divider.rect.y + divider.rect.h * 0.5
+                    ImDrawListAddLine(
+                        dl, ImVec2(x: divider.rect.x, y: cy),
+                        ImVec2(x: divider.rect.x + divider.rect.w, y: cy),
+                        col, active ? 3.0 : 2.0)
+                }
+            }
+            if active, let io = ImGuiGetIO() {
+                let mp = io.pointee.MousePos
+                engine.mainPanes.setRatioFromPoint(
+                    splitID: divider.id, point: (mp.x, mp.y), canvas: canvas)
+            }
+        }
+
+        // Gold outline around the focused pane (background list, like the
+        // divider lines, so it never paints over popup windows).
+        let leaves = engine.mainPanes.leafRects(canvas: canvas)
+        if let focused = leaves.first(where: { $0.id == focusedID }) {
+            let dl = igGetBackgroundDrawList(nil)
+            ImDrawListAddRect(
+                dl,
+                ImVec2(x: focused.rect.x + 1, y: focused.rect.y + 1),
+                ImVec2(x: focused.rect.x + focused.rect.w - 1, y: focused.rect.y + focused.rect.h - 1),
+                igGetColorU32_Vec4(engine.ui.theme.brandGold), 0.0, 2.0, 0)
+        }
+    }
+
+    /// Push a CAD camera matrix (plus drag/grip hidden handles for primary
+    /// views) as vertex uniforms.
+    private func pushCADUniforms(cmd: OpaquePointer, matrix: [Float], includeHiddenHandles: Bool) {
+        var uniformData = CameraUniformData()
+        uniformData.m00 = matrix[0]; uniformData.m01 = matrix[1]; uniformData.m02 = matrix[2]; uniformData.m03 = matrix[3]
+        uniformData.m10 = matrix[4]; uniformData.m11 = matrix[5]; uniformData.m12 = matrix[6]; uniformData.m13 = matrix[7]
+        uniformData.m20 = matrix[8]; uniformData.m21 = matrix[9]; uniformData.m22 = matrix[10]; uniformData.m23 = matrix[11]
+        uniformData.m30 = matrix[12]; uniformData.m31 = matrix[13]; uniformData.m32 = matrix[14]; uniformData.m33 = matrix[15]
+
+        if includeHiddenHandles {
+            let dragOrGrip = engine.interaction.dragActive || engine.interaction.gripActive
+            if dragOrGrip || !engine.interaction.pendingPreviewHandles.isEmpty {
+                var hiddenEntities: [UInt32] = []
+                let handlesToHide = dragOrGrip ? engine.cadSelection.selectedHandles : engine.interaction.pendingPreviewHandles
+                for handle in handlesToHide {
+                    if let idx = engine.geometryManager.handleToEntityIndex[handle] {
+                        hiddenEntities.append(idx)
+                        if hiddenEntities.count >= 16 { break }
+                    }
+                }
+                uniformData.hiddenHandleCount = UInt32(hiddenEntities.count)
+                if hiddenEntities.count > 0 { uniformData.h00 = hiddenEntities[0] }
+                if hiddenEntities.count > 1 { uniformData.h01 = hiddenEntities[1] }
+                if hiddenEntities.count > 2 { uniformData.h02 = hiddenEntities[2] }
+                if hiddenEntities.count > 3 { uniformData.h03 = hiddenEntities[3] }
+                if hiddenEntities.count > 4 { uniformData.h10 = hiddenEntities[4] }
+                if hiddenEntities.count > 5 { uniformData.h11 = hiddenEntities[5] }
+                if hiddenEntities.count > 6 { uniformData.h12 = hiddenEntities[6] }
+                if hiddenEntities.count > 7 { uniformData.h13 = hiddenEntities[7] }
+                if hiddenEntities.count > 8 { uniformData.h20 = hiddenEntities[8] }
+                if hiddenEntities.count > 9 { uniformData.h21 = hiddenEntities[9] }
+                if hiddenEntities.count > 10 { uniformData.h22 = hiddenEntities[10] }
+                if hiddenEntities.count > 11 { uniformData.h23 = hiddenEntities[11] }
+                if hiddenEntities.count > 12 { uniformData.h30 = hiddenEntities[12] }
+                if hiddenEntities.count > 13 { uniformData.h31 = hiddenEntities[13] }
+                if hiddenEntities.count > 14 { uniformData.h32 = hiddenEntities[14] }
+                if hiddenEntities.count > 15 { uniformData.h33 = hiddenEntities[15] }
+            }
+        }
+
+        SDL_PushGPUVertexUniformData(cmd, 0, &uniformData, UInt32(MemoryLayout<CameraUniformData>.size))
+    }
+
+    /// Show or hide the OS cursor based on ImGui capture state.
+    private func updateOSCursorVisibility() {
+        if let wantCapture = ImGuiGetIO()?.pointee.WantCaptureMouse {
+            let isHiddenByImGui = ImGuiGetMouseCursor() == Int32(ImGuiMouseCursor_None.rawValue)
+
+            if engine.interaction.forceHideOSCursor {
+                ImGuiGetIO()?.pointee.ConfigFlags |= Int32(ImGuiConfigFlags_NoMouseCursorChange.rawValue)
+                if SDL_CursorVisible() { _ = SDL_HideCursor() }
+            } else if wantCapture && !isHiddenByImGui && !SDL_CursorVisible() {
+                ImGuiGetIO()?.pointee.ConfigFlags &= ~Int32(ImGuiConfigFlags_NoMouseCursorChange.rawValue)
+                _ = SDL_ShowCursor()
+            } else if (!wantCapture || isHiddenByImGui) && SDL_CursorVisible() {
+                ImGuiGetIO()?.pointee.ConfigFlags &= ~Int32(ImGuiConfigFlags_NoMouseCursorChange.rawValue)
+                _ = SDL_HideCursor()
+            }
+        }
+    }
+
+    /// Render the active tab into a window: overlays, UI, CAD, and pick passes.
+    /// `target` is usually the main window; a float window showing the active tab
+    /// renders through the same path with borrowed engine metrics.
+    private func renderPrimaryWindow(
+        target: EngineManagedWindow,
+        deltaSec: Double,
+        t0: UInt64,
+        uiBuilder: () -> Void
+    ) {
+        engine.activateImGuiContext(for: target)
+        engine.ui.frameRole = target.isMain ? .mainWindow : .floatWindow(hostedTabID: target.hostedTabID)
+        let actx = engine.tabManager.activeTab.map { tabCtx(for: $0.id) } ?? primaryCtx
+        // Float windows borrow the engine-global metrics slots so the whole
+        // primary pipeline (transforms, overlays, passes) just works.
+        let savedMetrics = target.isMain ? nil : engine.snapshotMetrics()
+        let savedViewport = target.isMain ? nil : engine.ui.snapshotDrawingViewport()
+        if !target.isMain {
+            engine.windowWidth = target.width
+            engine.windowHeight = target.height
+            engine.pixelWidth = target.pixelWidth
+            engine.pixelHeight = target.pixelHeight
+            engine.scaleX = target.scaleX
+            engine.scaleY = target.scaleY
+        }
+        defer {
+            if let savedMetrics, let savedViewport {
+                engine.restoreMetrics(savedMetrics)
+                engine.ui.restoreDrawingViewport(base: savedViewport.base, current: savedViewport.current)
+            }
+        }
+
+        let t1 = SDL_GetTicks()
+
+        var transform = engine.camera.currentTransform(
+            windowWidth: engine.windowWidth,
+            windowHeight: engine.windowHeight)
+
+        engine.io.pointee.DisplaySize = ImVec2(x: Float(engine.windowWidth), y: Float(engine.windowHeight))
+        engine.io.pointee.DisplayFramebufferScale = ImVec2(x: engine.scaleX, y: engine.scaleY)
+        engine.io.pointee.DeltaTime = Float(deltaSec)
+
+        // Apply any deferred UI scale rebuild before NewFrame locks the font atlas.
+        engine.applyPendingUiScaleRebuild()
+
+        // Replay this window's captured input before its frame starts.
+        engine.ui.replayQueuedInput(for: target, appFocused: engine.windowManager.focusedWindow != nil)
+
+        ImGuiNewFrame()
+
+        updateOSCursorVisibility()
+
+        // 1. Draw active command / interaction overlays on ImGui foreground draw list
+        _foregroundVertexEstimate = 0
+        refreshGripCache(transform: transform)
+        renderPrimaryVectorOverlays(transform: transform)
+        renderFeatureOverlay(transform: transform)
 
         // 2. ImGui user panels/callbacks. Some controls (notably radial Pan)
         // mutate the camera here, so sprite transforms must be calculated after it.
-        if let callback = engine.imguiFrameCallback { callback() } else { ImGuiShowDemoWindow(nil) }
+        uiBuilder()
 
         let currentOffset = engine.camera.offset
         let cameraMoved: Bool
@@ -497,42 +1743,618 @@ public final class EngineRenderer {
             windowHeight: engine.windowHeight)
 
         // Draw sprites late in the frame so TTF quads never use a pre-pan camera.
-        var backgroundVertexEstimate = 0
-        let backgroundVertexLimit = 60000
-
-        // Suppress image sprites during active manipulation (drag/grip) —
-        // the selection highlight bounding box is shown instead.
-        // On plain selection, the sprite stays visible with grips on top.
-        let isAdjusting = engine.interaction.dragActive || engine.interaction.gripActive
-        let hiddenImageSpriteIDs: Set<SpriteID> = {
-            guard isAdjusting else { return [] }
-            var ids = Set<SpriteID>()
-            for handle in engine.cadSelection.selectedHandles {
-                guard let entity = engine.document.entity(for: handle),
-                      let geometry = entity.localGeometry ?? engine.document.resolvedGeometry(for: entity),
-                      geometry.contains(where: { if case .image = $0 { return true }; return false })
-                else { continue }
-                for sid in engine.cadBridge.entitySpriteMap[handle] ?? [] {
-                    ids.insert(sid)
-                }
-            }
-            return ids
-        }()
-
-        for sprite in spritesToRender {
-            guard backgroundVertexEstimate < backgroundVertexLimit else { break }
-            if hiddenImageSpriteIDs.contains(sprite.id) { continue }
-            renderSprite(sprite, deltaSec: deltaSec, cam: transform)
-            backgroundVertexEstimate += 4
-        }
+        renderPrimarySprites(transform: transform, deltaSec: deltaSec)
         
         // 3. Feature commands UI
         engine.commandProcessor.activeFeatureCommand?.renderImGui(engine: engine)
         
         renderObjectPickerPopup()
         ImGuiRender()
+        target.wantCaptureMouse = engine.io.pointee.WantCaptureMouse
+        target.wantCaptureKeyboard = engine.io.pointee.WantCaptureKeyboard
 
-        guard let drawData = ImGuiGetDrawData() else { return }
+        let imguiDrawDataReady = uploadImGuiDrawData()
+
+        // --- Phase 2: GPU ID-buffer pick pass ---
+        if let pickX = _pendingPickScreenX, let pickY = _pendingPickScreenY,
+           let pickTex = pickTexture, cadIDPipeline != nil, actx.vertexBuffer != nil,
+           actx.vertexCount > 0
+        {
+            _pendingPickScreenX = nil
+            _pendingPickScreenY = nil
+
+            if let pickCmd = SDL_AcquireGPUCommandBuffer(engine.gpuDevice) {
+                // Render the pick pass into the 9×9 texture
+                var pickColorTarget = SDL_GPUColorTargetInfo()
+                pickColorTarget.texture = pickTex
+                pickColorTarget.mip_level = 0
+                pickColorTarget.layer_or_depth_plane = 0
+                pickColorTarget.clear_color = SDL_FColor(r: 0, g: 0, b: 0, a: 0)
+                pickColorTarget.load_op = SDL_GPU_LOADOP_CLEAR
+                pickColorTarget.store_op = SDL_GPU_STOREOP_STORE
+                pickColorTarget.cycle = false
+
+                if let pickPass = SDL_BeginGPURenderPass(pickCmd, &pickColorTarget, 1, nil) {
+                    SDL_BindGPUGraphicsPipeline(pickPass, cadIDPipeline)
+
+                    var vertexBinding = SDL_GPUBufferBinding(buffer: actx.vertexBuffer!, offset: 0)
+                    SDL_BindGPUVertexBuffers(pickPass, 0, &vertexBinding, 1)
+
+                    // Upload pick matrix (9×9 viewport centered on cursor)
+                    var pickMatrix = engine.camera.computePickMatrix(
+                        cursorScreenX: pickX,
+                        cursorScreenY: pickY,
+                        windowWidth: engine.windowWidth,
+                        windowHeight: engine.windowHeight,
+                        renderOrigin: engine.geometryManager.renderOrigin)
+                    SDL_PushGPUVertexUniformData(pickCmd, 0, &pickMatrix, UInt32(pickMatrix.count * 4))
+
+                    // Draw all batches with appropriate ID pipeline per primitive type
+                    var lastBoundType: CADPipelineType? = nil
+                    for batch in actx.batches {
+                        if batch.isPanProxy { continue }
+                        let pipe: OpaquePointer?
+                        switch batch.pipelineType {
+                        case .line:       pipe = cadIDLinePipeline
+                        case .point:      pipe = cadIDPointPipeline
+                        case .triangle,
+                             .aaLine:     pipe = cadIDPipeline
+                        }
+                        if lastBoundType != batch.pipelineType {
+                            SDL_BindGPUGraphicsPipeline(pickPass, pipe)
+                            lastBoundType = batch.pipelineType
+                        }
+                        if pipe != nil {
+                            SDL_DrawGPUPrimitives(pickPass, batch.vertexCount, 1, batch.firstVertex, 0)
+                        }
+                    }
+
+                    SDL_EndGPURenderPass(pickPass)
+                }
+
+                // Copy pick texture to ring buffer for async readback
+                let ringIdx = pickRingIndex % 3
+                if let ringBuf = pickRingBuffers[ringIdx] {
+                    let copyPass = SDL_BeginGPUCopyPass(pickCmd)
+                    if copyPass != nil {
+                        var srcRegion = SDL_GPUTextureRegion()
+                        srcRegion.texture = pickTex
+                        srcRegion.mip_level = 0
+                        srcRegion.layer = 0
+                        srcRegion.x = 0
+                        srcRegion.y = 0
+                        srcRegion.z = 0
+                        srcRegion.w = 9
+                        srcRegion.h = 9
+                        srcRegion.d = 1
+
+                        var dstLocation = SDL_GPUTextureTransferInfo()
+                        dstLocation.transfer_buffer = ringBuf
+                        dstLocation.offset = 0
+                        dstLocation.pixels_per_row = 9
+                        dstLocation.rows_per_layer = 9
+
+                        SDL_DownloadFromGPUTexture(copyPass, &srcRegion, &dstLocation)
+                        SDL_EndGPUCopyPass(copyPass)
+                    }
+                }
+                pickRingIndex += 1
+
+                if !SDL_SubmitGPUCommandBuffer(pickCmd) {
+                    print("Warning: Failed to submit pick command buffer")
+                }
+            }
+        }
+
+        guard let cmd = SDL_AcquireGPUCommandBuffer(engine.gpuDevice) else {
+            print("Failed to acquire GPU command buffer")
+            return
+        }
+
+        var swapchainTexture: OpaquePointer? = nil
+        if !SDL_WaitAndAcquireGPUSwapchainTexture(cmd, target.handle, &swapchainTexture, nil, nil) {
+            print("Failed to acquire swapchain texture")
+            SDL_CancelGPUCommandBuffer(cmd)
+            return
+        }
+
+        let t2 = SDL_GetTicks()
+
+        if let swapchainTexture = swapchainTexture {
+            var colorTarget = SDL_GPUColorTargetInfo()
+            colorTarget.texture = swapchainTexture
+            colorTarget.mip_level = 0
+            colorTarget.layer_or_depth_plane = 0
+            colorTarget.clear_color = engine.ui.backgroundColor
+            colorTarget.load_op = SDL_GPU_LOADOP_CLEAR
+            colorTarget.store_op = SDL_GPU_STOREOP_STORE
+            colorTarget.cycle = true
+
+            let renderPass = SDL_BeginGPURenderPass(cmd, &colorTarget, 1, nil)
+            if renderPass != nil {
+                if let vertexBuf = actx.vertexBuffer, actx.vertexCount > 0 {
+                    var lastBoundPipeline: CADPipelineType? = nil
+                    var vertexBinding = SDL_GPUBufferBinding(buffer: vertexBuf, offset: 0)
+                    SDL_BindGPUVertexBuffers(renderPass, 0, &vertexBinding, 1)
+
+                    let cameraMatrix = engine.camera.computeMatrix(
+                        windowW: Double(engine.windowWidth),
+                        windowH: Double(engine.windowHeight),
+                        renderOrigin: engine.geometryManager.renderOrigin)
+                    
+                    pushCADUniforms(cmd: cmd, matrix: cameraMatrix, includeHiddenHandles: true)
+
+                    let isPanning = _panProxyActiveThisFrame
+                    for batch in actx.batches {
+                        if batch.isPanProxy && !isPanning { continue }
+                        let pipeline: OpaquePointer?
+                        switch batch.pipelineType {
+                        case .point:
+                            pipeline = cadPointPipeline
+                        case .triangle:
+                            pipeline = cadTrianglePipeline
+                        case .line:
+                            pipeline = cadLinePipeline
+                        case .aaLine:
+                            pipeline = cadLineAAPipeline
+                        }
+
+                        if lastBoundPipeline != batch.pipelineType {
+                            SDL_BindGPUGraphicsPipeline(renderPass, pipeline)
+                            lastBoundPipeline = batch.pipelineType
+                        }
+
+                        SDL_DrawGPUPrimitives(renderPass, batch.vertexCount, 1, batch.firstVertex, 0)
+                    }
+                }
+
+                if imguiDrawDataReady {
+                    engine.ui.renderImGuiDrawData(cmd: cmd, renderPass: renderPass!, renderer: self, fontTexture: engine.fontTexture)
+                }
+
+                SDL_EndGPURenderPass(renderPass)
+            }
+        }
+
+        let t3 = SDL_GetTicks()
+
+        SDL_SubmitGPUCommandBuffer(cmd)
+
+        let cadMs = Double(t1 - t0)
+        let primMs = Double(t2 - t1)
+        let imguiMs = Double(t3 - t2)
+        engine._frameTimingCadMs += cadMs
+        engine._frameTimingPrimMs += primMs
+        engine._frameTimingImGuiMs += imguiMs
+        engine._frameTimingCount += 1
+        if engine._frameTimingCount >= 60 {
+            let n = Double(engine._frameTimingCount)
+            print(
+                String(
+                    format:
+                        "[FrameTiming] CAD:%.1fms  Prims:%.1fms  ImGui:%.1fms  Total:%.1fms  FPS:%.0f",
+                    engine._frameTimingCadMs / n, engine._frameTimingPrimMs / n,
+                    engine._frameTimingImGuiMs / n,
+                    (engine._frameTimingCadMs + engine._frameTimingPrimMs + engine._frameTimingImGuiMs) / n,
+                    1000.0 / ((engine._frameTimingCadMs + engine._frameTimingPrimMs + engine._frameTimingImGuiMs) / n)))
+            engine._frameTimingCadMs = 0
+            engine._frameTimingPrimMs = 0
+            engine._frameTimingImGuiMs = 0
+            engine._frameTimingCount = 0
+        }
+    }
+
+    /// Render a visible-but-inactive tab from its own context: grid, sprites,
+    /// and CAD geometry with the tab's saved camera. Interaction overlays
+    /// (selection, grips, crosshair, snap) stay exclusive to the primary
+    /// window. A nil tab renders UI only (main window with every tab floated).
+    private func renderSecondaryWindow(
+        target: EngineManagedWindow,
+        tab: DocumentTab?,
+        deltaSec: Double,
+        uiBuilder: () -> Void
+    ) {
+        engine.activateImGuiContext(for: target)
+        engine.ui.frameRole = target.isMain ? .mainWindow : .floatWindow(hostedTabID: target.hostedTabID)
+        let dims: (w: Int32, h: Int32, sx: Float, sy: Float) = target.isMain
+            ? (engine.windowWidth, engine.windowHeight, engine.scaleX, engine.scaleY)
+            : (target.width, target.height, target.scaleX, target.scaleY)
+        guard dims.w > 0, dims.h > 0 else { return }
+
+        // Float frames must not clobber the main window's viewport rect.
+        let savedViewport = target.isMain ? nil : engine.ui.snapshotDrawingViewport()
+        defer {
+            if let savedViewport {
+                engine.ui.restoreDrawingViewport(base: savedViewport.base, current: savedViewport.current)
+            }
+        }
+
+        var ctx: WindowRenderContext? = nil
+        var bg = engine.ui.backgroundColor
+        if let tab {
+            let view = tab.drawingViews[tab.activeViewIndex]
+            bg = engine.ui.backgroundColor(forViewBackground: view.backgroundColor)
+            let isLight = EngineUIManager.isLightBackground(bg)
+            let c = tabCtx(for: tab.id)
+            ctx = c
+            c.camera.applyState(tab.cameraState)
+            // Same stale-geometry guard as split panes: a drawing-view
+            // switch must supersede explicitly (revisions can coincide).
+            if c.builtTabID != tab.id || c.builtViewIndex != tab.activeViewIndex {
+                c.builtTabID = tab.id
+                c.builtViewIndex = tab.activeViewIndex
+                c.regenTask?.cancel()
+                c.regenTask = nil
+                c.regenInFlight = nil
+                c.bridge.cancelPending()
+                c.regenGeneration &+= 1
+                c.appliedGeneration = -1
+                c.builtRevision = nil
+                c.pendingRevision = nil
+                c.invalidateBuiltState(device: engine.gpuDevice)
+            }
+            let doc = tab.document
+            let pendingApplied = ensureContextRegenerated(
+                ctxID: tab.id, ctx: c, doc: doc,
+                simplifyComplexBlocks: tab.editingBlockID != nil ? false : engine.simplifyComplexBlocks,
+                splineTessellationDivisor: engine.splineTessellationDivisor,
+                background: bg, isPrimary: false)
+            routeContextVertexBuild(
+                ctx: c, camera: c.camera,
+                viewportWidth: dims.w, viewportHeight: dims.h,
+                pixelScale: max(1.0, max(dims.sx, dims.sy)),
+                background: bg, useLightDisplayPalette: isLight,
+                pendingApplied: pendingApplied, interactive: true)
+        }
+
+        engine.io.pointee.DisplaySize = ImVec2(x: Float(dims.w), y: Float(dims.h))
+        engine.io.pointee.DisplayFramebufferScale = ImVec2(x: dims.sx, y: dims.sy)
+        engine.io.pointee.DeltaTime = Float(deltaSec)
+
+        engine.ui.replayQueuedInput(for: target, appFocused: engine.windowManager.focusedWindow != nil)
+
+        ImGuiNewFrame()
+
+        uiBuilder()
+
+        if let ctx {
+            let transform = ctx.camera.currentTransform(windowWidth: dims.w, windowHeight: dims.h)
+            let vp = ctx.camera.worldViewportRect(windowWidth: dims.w, windowHeight: dims.h)
+            let isLight = EngineUIManager.isLightBackground(bg)
+            renderGrid(
+                cam: transform,
+                viewportWidth: Float(dims.w), viewportHeight: Float(dims.h),
+                cameraZoom: ctx.camera.zoom, viewport: vp, useLightPalette: isLight)
+            var spriteEstimate = 0
+            for sprite in ctx.sprites.getSpritesForRendering() {
+                guard spriteEstimate < 60000 else { break }
+                renderSprite(
+                    sprite, deltaSec: deltaSec, cam: transform,
+                    viewportWidth: Float(dims.w), viewportHeight: Float(dims.h),
+                    useLightPalette: isLight)
+                spriteEstimate += 4
+            }
+            if let tab {
+                renderSecondaryOverlays(target: target, tab: tab, ctx: ctx, transform: transform)
+            }
+        }
+
+        ImGuiRender()
+        target.wantCaptureMouse = engine.io.pointee.WantCaptureMouse
+        target.wantCaptureKeyboard = engine.io.pointee.WantCaptureKeyboard
+
+        let imguiDrawDataReady = uploadImGuiDrawData()
+
+        guard let cmd = SDL_AcquireGPUCommandBuffer(engine.gpuDevice) else {
+            print("Failed to acquire GPU command buffer (secondary window)")
+            return
+        }
+
+        var swapchainTexture: OpaquePointer? = nil
+        if !SDL_WaitAndAcquireGPUSwapchainTexture(cmd, target.handle, &swapchainTexture, nil, nil) {
+            print("Failed to acquire swapchain texture (secondary window)")
+            SDL_CancelGPUCommandBuffer(cmd)
+            return
+        }
+
+        if let swapchainTexture = swapchainTexture {
+            var colorTarget = SDL_GPUColorTargetInfo()
+            colorTarget.texture = swapchainTexture
+            colorTarget.mip_level = 0
+            colorTarget.layer_or_depth_plane = 0
+            colorTarget.clear_color = bg
+            colorTarget.load_op = SDL_GPU_LOADOP_CLEAR
+            colorTarget.store_op = SDL_GPU_STOREOP_STORE
+            colorTarget.cycle = true
+
+            if let renderPass = SDL_BeginGPURenderPass(cmd, &colorTarget, 1, nil) {
+                if let ctx, let vertexBuf = ctx.vertexBuffer, ctx.vertexCount > 0 {
+                    var lastBoundPipeline: CADPipelineType? = nil
+                    var vertexBinding = SDL_GPUBufferBinding(buffer: vertexBuf, offset: 0)
+                    SDL_BindGPUVertexBuffers(renderPass, 0, &vertexBinding, 1)
+
+                    let cameraMatrix = ctx.camera.computeMatrix(
+                        windowW: Double(dims.w),
+                        windowH: Double(dims.h),
+                        renderOrigin: ctx.geometry.renderOrigin)
+
+                    var uniformData = CameraUniformData()
+                    uniformData.m00 = cameraMatrix[0]; uniformData.m01 = cameraMatrix[1]; uniformData.m02 = cameraMatrix[2]; uniformData.m03 = cameraMatrix[3]
+                    uniformData.m10 = cameraMatrix[4]; uniformData.m11 = cameraMatrix[5]; uniformData.m12 = cameraMatrix[6]; uniformData.m13 = cameraMatrix[7]
+                    uniformData.m20 = cameraMatrix[8]; uniformData.m21 = cameraMatrix[9]; uniformData.m22 = cameraMatrix[10]; uniformData.m23 = cameraMatrix[11]
+                    uniformData.m30 = cameraMatrix[12]; uniformData.m31 = cameraMatrix[13]; uniformData.m32 = cameraMatrix[14]; uniformData.m33 = cameraMatrix[15]
+
+                    SDL_PushGPUVertexUniformData(cmd, 0, &uniformData, UInt32(MemoryLayout<CameraUniformData>.size))
+
+                    for batch in ctx.batches {
+                        if batch.isPanProxy { continue }
+                        let pipeline: OpaquePointer?
+                        switch batch.pipelineType {
+                        case .point:
+                            pipeline = cadPointPipeline
+                        case .triangle:
+                            pipeline = cadTrianglePipeline
+                        case .line:
+                            pipeline = cadLinePipeline
+                        case .aaLine:
+                            pipeline = cadLineAAPipeline
+                        }
+
+                        if lastBoundPipeline != batch.pipelineType {
+                            SDL_BindGPUGraphicsPipeline(renderPass, pipeline)
+                            lastBoundPipeline = batch.pipelineType
+                        }
+
+                        SDL_DrawGPUPrimitives(renderPass, batch.vertexCount, 1, batch.firstVertex, 0)
+                    }
+                }
+
+                if imguiDrawDataReady {
+                    engine.ui.renderImGuiDrawData(cmd: cmd, renderPass: renderPass, renderer: self, fontTexture: engine.fontTexture)
+                }
+
+                SDL_EndGPURenderPass(renderPass)
+            }
+        }
+
+        SDL_SubmitGPUCommandBuffer(cmd)
+    }
+
+    /// Refresh the main window's OS title from the tab its canvas shows
+    /// (focused pane's tab when split), with a dirty dot for unsaved
+    /// changes. Cached so SDL is only touched on change. (macOS hides the
+    /// main titlebar; the title still feeds Expose and screen readers.)
+    private func refreshMainWindowTitle() {
+        guard let main = engine.windowManager.mainWindow else { return }
+        let title: String
+        if let shown = engine.mainShownTab() {
+            title = "Zephyr CAD — \(shown.displayName)" + (shown.hasUnsavedChanges ? " ●" : "")
+        } else {
+            title = "Zephyr CAD"
+        }
+        if main.lastTitle != title {
+            if ProcessInfo.processInfo.environment["ZEPHYR_DEBUG_INPUT"] != nil {
+                print("[Diag] main title: \(main.lastTitle ?? "nil") -> \(title)")
+            }
+            main.lastTitle = title
+            SDL_SetWindowTitle(main.handle, title)
+        }
+    }
+
+    /// Keep a float window's OS title in sync with its hosted tab
+    /// (name + dirty dot). The window's chrome is the full AppUI rendered
+    /// in float role; docking is via TABDOCK or the OS close box.
+    private func syncAuxWindowTitle(_ aux: EngineManagedWindow) {
+        guard let tabID = aux.hostedTabID,
+              let tab = engine.tabManager.tab(for: tabID) else { return }
+        let title = tab.displayName + (tab.hasUnsavedChanges ? " ●" : "")
+        if aux.lastTitle != title {
+            aux.lastTitle = title
+            SDL_SetWindowTitle(aux.handle, title)
+        }
+    }
+
+    /// Passive feedback for a secondary (non-active-tab) view: crosshair at
+    /// this window's own mouse position, hover highlight via a
+    /// document-scoped CPU hit test, and this document's persisted
+    /// selection (bounding boxes + grip squares). Mirrors the primary
+    /// overlay colors, minus drag/edit state, which belongs to the
+    /// window showing the active tab.
+    private func renderSecondaryOverlays(
+        target: EngineManagedWindow, tab: DocumentTab,
+        ctx: WindowRenderContext, transform: CameraTransform
+    ) {
+        guard let vpF = engine.ui.drawingViewportRect else { return }
+        let vp = PaneRect(x: vpF.x, y: vpF.y, w: vpF.w, h: vpF.h)
+        let doc = tab.document
+        let handles = tab.selectionState.selectedHandles
+        let mouseInCanvas = target.hasMousePos
+            && target.mouseX >= vp.x && target.mouseX <= vp.x + vp.w
+            && target.mouseY >= vp.y && target.mouseY <= vp.y + vp.h
+
+        if !handles.isEmpty || mouseInCanvas {
+            pushBackgroundClip(vp)
+            let drawList = igGetBackgroundDrawList(nil)
+            let selColor = igGetColorU32_Vec4(engine.ui.theme.brandGold)
+            for handle in handles {
+                guard let entity = doc.entity(for: handle),
+                      let layer = doc.layer(for: entity.layerID), layer.isVisible,
+                      let wbb = entity.worldBoundingBox else { continue }
+                let s0 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: transform)
+                let s1 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: transform)
+                let s2 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: transform)
+                let s3 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: transform)
+                ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), selColor, 2.0)
+                ImDrawListAddLine(drawList, ImVec2(x: s1.x, y: s1.y), ImVec2(x: s2.x, y: s2.y), selColor, 2.0)
+                ImDrawListAddLine(drawList, ImVec2(x: s2.x, y: s2.y), ImVec2(x: s3.x, y: s3.y), selColor, 2.0)
+                ImDrawListAddLine(drawList, ImVec2(x: s3.x, y: s3.y), ImVec2(x: s0.x, y: s0.y), selColor, 2.0)
+            }
+            if handles.count <= engine.gripObjectMax {
+                let grips = CADGripSystem.getAllGrips(
+                    document: doc, cam: transform, simplifyComplexBlocks: true,
+                    selectedHandles: handles,
+                    selectedLeaderContentHandle: tab.selectionState.selectedLeaderContentHandle)
+                var drawn = 0
+                for grip in grips {
+                    if drawn >= engine.gripMax { break }
+                    let half: Float = 4.0
+                    let pMin = ImVec2(x: grip.screenPos.x - half, y: grip.screenPos.y - half)
+                    let pMax = ImVec2(x: grip.screenPos.x + half, y: grip.screenPos.y + half)
+                    ImDrawListAddRectFilled(
+                        drawList, pMin, pMax,
+                        makeImCol32(r: 0, g: 100, b: 255, a: 255), 0.0, 0)
+                    ImDrawListAddRect(
+                        drawList, pMin, pMax,
+                        makeImCol32(r: 255, g: 255, b: 255, a: 255), 0.0, 1.0, 0)
+                    drawn += 1
+                }
+            }
+
+            // Hover highlight for this window's own document (CPU hit
+            // test; the GPU pick pass belongs to the primary view).
+            if mouseInCanvas, !engine.io.pointee.WantCaptureMouse {
+                let (wx, wy) = EngineCameraManager.screenToWorld(
+                    screenX: target.mouseX, screenY: target.mouseY, cam: transform)
+                let threshold = 6.0 / ctx.camera.zoom
+                if let hover = CADHitTesting.hitTest(
+                        worldX: wx, worldY: wy, document: doc,
+                        threshold: threshold,
+                        simplifyComplexBlocks: engine.simplifyComplexBlocks),
+                   !handles.contains(hover),
+                   let entity = doc.entity(for: hover),
+                   let layer = doc.layer(for: entity.layerID), layer.isVisible {
+                    let hc = makeImCol32(r: 64, g: 224, b: 208, a: 180)
+                    let geomCount = doc.resolvedGeometry(for: entity)?.count ?? 0
+                    if engine.simplifyComplexBlocks && geomCount > 50 {
+                        if let wbb = entity.worldBoundingBox {
+                            let s0 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: transform)
+                            let s1 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: transform)
+                            let s2 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: transform)
+                            let s3 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: transform)
+                            ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), hc, 2.0)
+                            ImDrawListAddLine(drawList, ImVec2(x: s1.x, y: s1.y), ImVec2(x: s2.x, y: s2.y), hc, 2.0)
+                            ImDrawListAddLine(drawList, ImVec2(x: s2.x, y: s2.y), ImVec2(x: s3.x, y: s3.y), hc, 2.0)
+                            ImDrawListAddLine(drawList, ImVec2(x: s3.x, y: s3.y), ImVec2(x: s0.x, y: s0.y), hc, 2.0)
+                        }
+                    } else {
+                        _ = engine.cadBridge.vertexEditor.forEachWorldSegment(
+                            handle: hover, in: ctx.geometry, maxSegments: 4096
+                        ) { x1, y1, x2, y2 in
+                            let s0 = EngineCameraManager.worldToScreen(worldX: x1, worldY: y1, cam: transform)
+                            let s1 = EngineCameraManager.worldToScreen(worldX: x2, worldY: y2, cam: transform)
+                            ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), hc, 2.0)
+                        }
+                    }
+                }
+            }
+            popBackgroundClip()
+        }
+
+        if target.hasMousePos, !engine.io.pointee.WantCaptureMouse {
+            let mx = target.mouseX
+            let my = target.mouseY
+            if mx >= vp.x, mx <= vp.x + vp.w, my >= vp.y, my <= vp.y + vp.h {
+                drawCrosshairArms(
+                    center: ImVec2(x: mx, y: my),
+                    drawList: igGetForegroundDrawList_ViewportPtr(nil))
+            }
+        }
+    }
+
+    /// Refresh an aux window's cached metrics.
+    /// - Returns: False when minimized or unmeasurable (caller skips the frame).
+    private func refreshAuxMetrics(_ aux: EngineManagedWindow) -> Bool {
+        let windowFlags = SDL_GetWindowFlags(aux.handle)
+        if (windowFlags & 0x0000_0000_0000_0040) != 0 {
+            aux.isMinimized = true
+            aux.inputQueue.removeAll()
+            return false
+        }
+        aux.isMinimized = false
+
+        var windowWidth: Int32 = 0
+        var windowHeight: Int32 = 0
+        var pixelWidth: Int32 = 0
+        var pixelHeight: Int32 = 0
+        guard SDL_GetWindowSize(aux.handle, &windowWidth, &windowHeight),
+              SDL_GetWindowSizeInPixels(aux.handle, &pixelWidth, &pixelHeight),
+              windowWidth > 0, windowHeight > 0, pixelWidth > 0, pixelHeight > 0
+        else {
+            return false
+        }
+        aux.width = windowWidth
+        aux.height = windowHeight
+        aux.pixelWidth = pixelWidth
+        aux.pixelHeight = pixelHeight
+        aux.scaleX = Float(pixelWidth) / Float(windowWidth)
+        aux.scaleY = Float(pixelHeight) / Float(windowHeight)
+        aux.dpiScale = SDL_GetWindowDisplayScale(aux.handle)
+        return true
+    }
+
+    /// Render one auxiliary OS window with no hosted tab: metrics, input, an
+    /// empty ImGui frame, and present. Float windows always host a tab, so
+    /// this is only a safe fallback for a stray aux window.
+    private func renderAuxWindow(_ aux: EngineManagedWindow, deltaSec: Double) {
+        engine.activateImGuiContext(for: aux)
+        engine.ui.frameRole = .floatWindow(hostedTabID: aux.hostedTabID)
+        guard refreshAuxMetrics(aux) else { return }
+        let windowWidth = aux.width
+        let windowHeight = aux.height
+
+        engine.io.pointee.DisplaySize = ImVec2(x: Float(windowWidth), y: Float(windowHeight))
+        engine.io.pointee.DisplayFramebufferScale = ImVec2(x: aux.scaleX, y: aux.scaleY)
+        engine.io.pointee.DeltaTime = Float(deltaSec)
+
+        engine.ui.replayQueuedInput(for: aux, appFocused: engine.windowManager.focusedWindow != nil)
+
+        ImGuiNewFrame()
+
+        ImGuiRender()
+        aux.wantCaptureMouse = engine.io.pointee.WantCaptureMouse
+        aux.wantCaptureKeyboard = engine.io.pointee.WantCaptureKeyboard
+
+        let imguiDrawDataReady = uploadImGuiDrawData()
+
+        guard let cmd = SDL_AcquireGPUCommandBuffer(engine.gpuDevice) else {
+            print("Failed to acquire GPU command buffer (aux window)")
+            return
+        }
+
+        var swapchainTexture: OpaquePointer? = nil
+        if !SDL_WaitAndAcquireGPUSwapchainTexture(cmd, aux.handle, &swapchainTexture, nil, nil) {
+            print("Failed to acquire swapchain texture (aux window)")
+            SDL_CancelGPUCommandBuffer(cmd)
+            return
+        }
+
+        if let swapchainTexture = swapchainTexture {
+            var colorTarget = SDL_GPUColorTargetInfo()
+            colorTarget.texture = swapchainTexture
+            colorTarget.mip_level = 0
+            colorTarget.layer_or_depth_plane = 0
+            colorTarget.clear_color = engine.ui.backgroundColor
+            colorTarget.load_op = SDL_GPU_LOADOP_CLEAR
+            colorTarget.store_op = SDL_GPU_STOREOP_STORE
+            colorTarget.cycle = true
+
+            if let renderPass = SDL_BeginGPURenderPass(cmd, &colorTarget, 1, nil) {
+                if imguiDrawDataReady {
+                    engine.ui.renderImGuiDrawData(cmd: cmd, renderPass: renderPass, renderer: self, fontTexture: engine.fontTexture)
+                }
+                SDL_EndGPURenderPass(renderPass)
+            }
+        }
+
+        SDL_SubmitGPUCommandBuffer(cmd)
+    }
+
+    /// Upload the latest ImGui draw data to the shared GPU vertex/index buffers.
+    /// Called once per window frame, immediately after `ImGuiRender` and before
+    /// that window's render pass consumes the buffers.
+    /// - Returns: Whether fresh draw data is ready to render.
+    private func uploadImGuiDrawData() -> Bool {
+        guard let drawData = ImGuiGetDrawData() else { return false }
         var totalVtxCount = 0
         var totalIdxCount = 0
         for n in 0..<Int(drawData.pointee.CmdListsCount) {
@@ -660,230 +2482,9 @@ public final class EngineRenderer {
                 }
             }
         }
-
-        // --- Phase 2: GPU ID-buffer pick pass ---
-        if let pickX = _pendingPickScreenX, let pickY = _pendingPickScreenY,
-           let pickTex = pickTexture, cadIDPipeline != nil, cadVertexBuffer != nil,
-           cadVertexCount > 0
-        {
-            _pendingPickScreenX = nil
-            _pendingPickScreenY = nil
-
-            if let pickCmd = SDL_AcquireGPUCommandBuffer(engine.gpuDevice) {
-                // Render the pick pass into the 9×9 texture
-                var pickColorTarget = SDL_GPUColorTargetInfo()
-                pickColorTarget.texture = pickTex
-                pickColorTarget.mip_level = 0
-                pickColorTarget.layer_or_depth_plane = 0
-                pickColorTarget.clear_color = SDL_FColor(r: 0, g: 0, b: 0, a: 0)
-                pickColorTarget.load_op = SDL_GPU_LOADOP_CLEAR
-                pickColorTarget.store_op = SDL_GPU_STOREOP_STORE
-                pickColorTarget.cycle = false
-
-                if let pickPass = SDL_BeginGPURenderPass(pickCmd, &pickColorTarget, 1, nil) {
-                    SDL_BindGPUGraphicsPipeline(pickPass, cadIDPipeline)
-
-                    var vertexBinding = SDL_GPUBufferBinding(buffer: cadVertexBuffer!, offset: 0)
-                    SDL_BindGPUVertexBuffers(pickPass, 0, &vertexBinding, 1)
-
-                    // Upload pick matrix (9×9 viewport centered on cursor)
-                    var pickMatrix = engine.camera.computePickMatrix(
-                        cursorScreenX: pickX,
-                        cursorScreenY: pickY,
-                        windowWidth: engine.windowWidth,
-                        windowHeight: engine.windowHeight,
-                        renderOrigin: engine.geometryManager.renderOrigin)
-                    SDL_PushGPUVertexUniformData(pickCmd, 0, &pickMatrix, UInt32(pickMatrix.count * 4))
-
-                    // Draw all batches with appropriate ID pipeline per primitive type
-                    var lastBoundType: CADPipelineType? = nil
-                    for batch in cadDrawBatches {
-                        if batch.isPanProxy { continue }
-                        let pipe: OpaquePointer?
-                        switch batch.pipelineType {
-                        case .line:       pipe = cadIDLinePipeline
-                        case .point:      pipe = cadIDPointPipeline
-                        case .triangle,
-                             .aaLine:     pipe = cadIDPipeline
-                        }
-                        if lastBoundType != batch.pipelineType {
-                            SDL_BindGPUGraphicsPipeline(pickPass, pipe)
-                            lastBoundType = batch.pipelineType
-                        }
-                        if pipe != nil {
-                            SDL_DrawGPUPrimitives(pickPass, batch.vertexCount, 1, batch.firstVertex, 0)
-                        }
-                    }
-
-                    SDL_EndGPURenderPass(pickPass)
-                }
-
-                // Copy pick texture to ring buffer for async readback
-                let ringIdx = pickRingIndex % 3
-                if let ringBuf = pickRingBuffers[ringIdx] {
-                    let copyPass = SDL_BeginGPUCopyPass(pickCmd)
-                    if copyPass != nil {
-                        var srcRegion = SDL_GPUTextureRegion()
-                        srcRegion.texture = pickTex
-                        srcRegion.mip_level = 0
-                        srcRegion.layer = 0
-                        srcRegion.x = 0
-                        srcRegion.y = 0
-                        srcRegion.z = 0
-                        srcRegion.w = 9
-                        srcRegion.h = 9
-                        srcRegion.d = 1
-
-                        var dstLocation = SDL_GPUTextureTransferInfo()
-                        dstLocation.transfer_buffer = ringBuf
-                        dstLocation.offset = 0
-                        dstLocation.pixels_per_row = 9
-                        dstLocation.rows_per_layer = 9
-
-                        SDL_DownloadFromGPUTexture(copyPass, &srcRegion, &dstLocation)
-                        SDL_EndGPUCopyPass(copyPass)
-                    }
-                }
-                pickRingIndex += 1
-
-                if !SDL_SubmitGPUCommandBuffer(pickCmd) {
-                    print("Warning: Failed to submit pick command buffer")
-                }
-            }
-        }
-
-        guard let cmd = SDL_AcquireGPUCommandBuffer(engine.gpuDevice) else {
-            print("Failed to acquire GPU command buffer")
-            return
-        }
-
-        var swapchainTexture: OpaquePointer? = nil
-        if !SDL_WaitAndAcquireGPUSwapchainTexture(cmd, engine.window, &swapchainTexture, nil, nil) {
-            print("Failed to acquire swapchain texture")
-            SDL_CancelGPUCommandBuffer(cmd)
-            return
-        }
-
-        let t2 = SDL_GetTicks()
-
-        if let swapchainTexture = swapchainTexture {
-            var colorTarget = SDL_GPUColorTargetInfo()
-            colorTarget.texture = swapchainTexture
-            colorTarget.mip_level = 0
-            colorTarget.layer_or_depth_plane = 0
-            colorTarget.clear_color = engine.ui.backgroundColor
-            colorTarget.load_op = SDL_GPU_LOADOP_CLEAR
-            colorTarget.store_op = SDL_GPU_STOREOP_STORE
-            colorTarget.cycle = true
-
-            let renderPass = SDL_BeginGPURenderPass(cmd, &colorTarget, 1, nil)
-            if renderPass != nil {
-                if let vertexBuf = cadVertexBuffer, cadVertexCount > 0 {
-                    var lastBoundPipeline: CADPipelineType? = nil
-                    var vertexBinding = SDL_GPUBufferBinding(buffer: vertexBuf, offset: 0)
-                    SDL_BindGPUVertexBuffers(renderPass, 0, &vertexBinding, 1)
-
-                    let cameraMatrix = engine.camera.computeMatrix(
-                        windowW: Double(engine.windowWidth),
-                        windowH: Double(engine.windowHeight),
-                        renderOrigin: engine.geometryManager.renderOrigin)
-                    
-                    var uniformData = CameraUniformData()
-                    uniformData.m00 = cameraMatrix[0]; uniformData.m01 = cameraMatrix[1]; uniformData.m02 = cameraMatrix[2]; uniformData.m03 = cameraMatrix[3]
-                    uniformData.m10 = cameraMatrix[4]; uniformData.m11 = cameraMatrix[5]; uniformData.m12 = cameraMatrix[6]; uniformData.m13 = cameraMatrix[7]
-                    uniformData.m20 = cameraMatrix[8]; uniformData.m21 = cameraMatrix[9]; uniformData.m22 = cameraMatrix[10]; uniformData.m23 = cameraMatrix[11]
-                    uniformData.m30 = cameraMatrix[12]; uniformData.m31 = cameraMatrix[13]; uniformData.m32 = cameraMatrix[14]; uniformData.m33 = cameraMatrix[15]
-                    
-                    let dragOrGrip = engine.interaction.dragActive || engine.interaction.gripActive
-                    if dragOrGrip || !engine.interaction.pendingPreviewHandles.isEmpty {
-                        var hiddenEntities: [UInt32] = []
-                        let handlesToHide = dragOrGrip ? engine.cadSelection.selectedHandles : engine.interaction.pendingPreviewHandles
-                        for handle in handlesToHide {
-                            if let idx = engine.geometryManager.handleToEntityIndex[handle] {
-                                hiddenEntities.append(idx)
-                                if hiddenEntities.count >= 16 { break }
-                            }
-                        }
-                        uniformData.hiddenHandleCount = UInt32(hiddenEntities.count)
-                        if hiddenEntities.count > 0 { uniformData.h00 = hiddenEntities[0] }
-                        if hiddenEntities.count > 1 { uniformData.h01 = hiddenEntities[1] }
-                        if hiddenEntities.count > 2 { uniformData.h02 = hiddenEntities[2] }
-                        if hiddenEntities.count > 3 { uniformData.h03 = hiddenEntities[3] }
-                        if hiddenEntities.count > 4 { uniformData.h10 = hiddenEntities[4] }
-                        if hiddenEntities.count > 5 { uniformData.h11 = hiddenEntities[5] }
-                        if hiddenEntities.count > 6 { uniformData.h12 = hiddenEntities[6] }
-                        if hiddenEntities.count > 7 { uniformData.h13 = hiddenEntities[7] }
-                        if hiddenEntities.count > 8 { uniformData.h20 = hiddenEntities[8] }
-                        if hiddenEntities.count > 9 { uniformData.h21 = hiddenEntities[9] }
-                        if hiddenEntities.count > 10 { uniformData.h22 = hiddenEntities[10] }
-                        if hiddenEntities.count > 11 { uniformData.h23 = hiddenEntities[11] }
-                        if hiddenEntities.count > 12 { uniformData.h30 = hiddenEntities[12] }
-                        if hiddenEntities.count > 13 { uniformData.h31 = hiddenEntities[13] }
-                        if hiddenEntities.count > 14 { uniformData.h32 = hiddenEntities[14] }
-                        if hiddenEntities.count > 15 { uniformData.h33 = hiddenEntities[15] }
-                    }
-                    
-                    SDL_PushGPUVertexUniformData(cmd, 0, &uniformData, UInt32(MemoryLayout<CameraUniformData>.size))
-
-                    let isPanning = _panProxyActiveThisFrame
-                    for batch in cadDrawBatches {
-                        if batch.isPanProxy && !isPanning { continue }
-                        let pipeline: OpaquePointer?
-                        switch batch.pipelineType {
-                        case .point:
-                            pipeline = cadPointPipeline
-                        case .triangle:
-                            pipeline = cadTrianglePipeline
-                        case .line:
-                            pipeline = cadLinePipeline
-                        case .aaLine:
-                            pipeline = cadLineAAPipeline
-                        }
-
-                        if lastBoundPipeline != batch.pipelineType {
-                            SDL_BindGPUGraphicsPipeline(renderPass, pipeline)
-                            lastBoundPipeline = batch.pipelineType
-                        }
-
-                        SDL_DrawGPUPrimitives(renderPass, batch.vertexCount, 1, batch.firstVertex, 0)
-                    }
-                }
-
-                if imguiDrawDataReady {
-                    engine.ui.renderImGuiDrawData(cmd: cmd, renderPass: renderPass!, renderer: self, fontTexture: engine.fontTexture)
-                }
-
-                SDL_EndGPURenderPass(renderPass)
-            }
-        }
-
-        let t3 = SDL_GetTicks()
-
-        SDL_SubmitGPUCommandBuffer(cmd)
-
-        let cadMs = Double(t1 - t0)
-        let primMs = Double(t2 - t1)
-        let imguiMs = Double(t3 - t2)
-        engine._frameTimingCadMs += cadMs
-        engine._frameTimingPrimMs += primMs
-        engine._frameTimingImGuiMs += imguiMs
-        engine._frameTimingCount += 1
-        if engine._frameTimingCount >= 60 {
-            let n = Double(engine._frameTimingCount)
-            print(
-                String(
-                    format:
-                        "[FrameTiming] CAD:%.1fms  Prims:%.1fms  ImGui:%.1fms  Total:%.1fms  FPS:%.0f",
-                    engine._frameTimingCadMs / n, engine._frameTimingPrimMs / n,
-                    engine._frameTimingImGuiMs / n,
-                    (engine._frameTimingCadMs + engine._frameTimingPrimMs + engine._frameTimingImGuiMs) / n,
-                    1000.0 / ((engine._frameTimingCadMs + engine._frameTimingPrimMs + engine._frameTimingImGuiMs) / n)))
-            engine._frameTimingCadMs = 0
-            engine._frameTimingPrimMs = 0
-            engine._frameTimingImGuiMs = 0
-            engine._frameTimingCount = 0
-        }
+        return imguiDrawDataReady
     }
+
 
     private func renderCadSelectionHighlight(cam: CameraTransform) {
         // Selection highlight: for image entities and block references, redraw
@@ -913,10 +2514,10 @@ public final class EngineRenderer {
                 let primitiveCount = geom?.count ?? 0
                 if isImage || primitiveCount > 50 || segmentsDrawn >= maxSegments {
                     guard let wbb = entity.worldBoundingBox else { continue }
-                    let s0 = engine.camera.transformWorldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: cam)
-                    let s1 = engine.camera.transformWorldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: cam)
-                    let s2 = engine.camera.transformWorldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: cam)
-                    let s3 = engine.camera.transformWorldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: cam)
+                    let s0 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: cam)
+                    let s1 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: cam)
+                    let s2 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: cam)
+                    let s3 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: cam)
                     ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), selColor, lineWidth)
                     ImDrawListAddLine(drawList, ImVec2(x: s1.x, y: s1.y), ImVec2(x: s2.x, y: s2.y), selColor, lineWidth)
                     ImDrawListAddLine(drawList, ImVec2(x: s2.x, y: s2.y), ImVec2(x: s3.x, y: s3.y), selColor, lineWidth)
@@ -927,8 +2528,8 @@ public final class EngineRenderer {
                     // selection highlight matches the geometry shape (same as hover).
                     engine.cadBridge.vertexEditor.forEachWorldSegment(handle: handle, in: engine.geometryManager) { x1, y1, x2, y2 in
                         guard segmentsDrawn < maxSegments else { return }
-                        let s0 = engine.camera.transformWorldToScreen(worldX: x1, worldY: y1, cam: cam)
-                        let s1 = engine.camera.transformWorldToScreen(worldX: x2, worldY: y2, cam: cam)
+                        let s0 = EngineCameraManager.worldToScreen(worldX: x1, worldY: y1, cam: cam)
+                        let s1 = EngineCameraManager.worldToScreen(worldX: x2, worldY: y2, cam: cam)
                         ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), selColor, lineWidth)
                         segmentsDrawn += 1
                     }
@@ -940,10 +2541,10 @@ public final class EngineRenderer {
                 // so users can still see what is selected.
                 guard let wbb = entity.worldBoundingBox else { continue }
                 let drawList = igGetBackgroundDrawList(nil)
-                let s0 = engine.camera.transformWorldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: cam)
-                let s1 = engine.camera.transformWorldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: cam)
-                let s2 = engine.camera.transformWorldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: cam)
-                let s3 = engine.camera.transformWorldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: cam)
+                let s0 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: cam)
+                let s1 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: cam)
+                let s2 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: cam)
+                let s3 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: cam)
                 ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), selColor, lineWidth)
                 ImDrawListAddLine(drawList, ImVec2(x: s1.x, y: s1.y), ImVec2(x: s2.x, y: s2.y), selColor, lineWidth)
                 ImDrawListAddLine(drawList, ImVec2(x: s2.x, y: s2.y), ImVec2(x: s3.x, y: s3.y), selColor, lineWidth)
@@ -968,10 +2569,10 @@ public final class EngineRenderer {
             if let wbb = entity.worldBoundingBox {
                 let hc = makeImCol32(r: 64, g: 224, b: 208, a: 180)
                 let lineWidth: Float = 2.0
-                let s0 = engine.camera.transformWorldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: cam)
-                let s1 = engine.camera.transformWorldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: cam)
-                let s2 = engine.camera.transformWorldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: cam)
-                let s3 = engine.camera.transformWorldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: cam)
+                let s0 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: cam)
+                let s1 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: cam)
+                let s2 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: cam)
+                let s3 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: cam)
                 let drawList = igGetBackgroundDrawList(nil)
                 ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), hc, lineWidth)
                 ImDrawListAddLine(drawList, ImVec2(x: s1.x, y: s1.y), ImVec2(x: s2.x, y: s2.y), hc, lineWidth)
@@ -987,10 +2588,10 @@ public final class EngineRenderer {
 
         if engine.simplifyComplexBlocks && geometry.count > 50 {
             if let wbb = entity.worldBoundingBox {
-                let s0 = engine.camera.transformWorldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: cam)
-                let s1 = engine.camera.transformWorldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: cam)
-                let s2 = engine.camera.transformWorldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: cam)
-                let s3 = engine.camera.transformWorldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: cam)
+                let s0 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: cam)
+                let s1 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: cam)
+                let s2 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: cam)
+                let s3 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: cam)
                 let drawList = igGetBackgroundDrawList(nil)
                 ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), hc, lineWidth)
                 ImDrawListAddLine(drawList, ImVec2(x: s1.x, y: s1.y), ImVec2(x: s2.x, y: s2.y), hc, lineWidth)
@@ -1013,8 +2614,8 @@ public final class EngineRenderer {
             in: engine.geometryManager,
             maxSegments: maxSegments
         ) { x1, y1, x2, y2 in
-            let s0 = engine.camera.transformWorldToScreen(worldX: x1, worldY: y1, cam: cam)
-            let s1 = engine.camera.transformWorldToScreen(worldX: x2, worldY: y2, cam: cam)
+            let s0 = EngineCameraManager.worldToScreen(worldX: x1, worldY: y1, cam: cam)
+            let s1 = EngineCameraManager.worldToScreen(worldX: x2, worldY: y2, cam: cam)
             ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), hc, lineWidth)
         }
         _foregroundVertexEstimate += segmentsDrawn * 8
@@ -1047,10 +2648,10 @@ public final class EngineRenderer {
             let drawList = igGetBackgroundDrawList(nil)
             if engine.simplifyComplexBlocks && geometry.count > 50 {
                 if let wbb = entity.worldBoundingBox {
-                    let s0 = engine.camera.transformWorldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: cam)
-                    let s1 = engine.camera.transformWorldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: cam)
-                    let s2 = engine.camera.transformWorldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: cam)
-                    let s3 = engine.camera.transformWorldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: cam)
+                    let s0 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: cam)
+                    let s1 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: cam)
+                    let s2 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.max.y, cam: cam)
+                    let s3 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.max.y, cam: cam)
                     ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), color, lineWidth)
                     ImDrawListAddLine(drawList, ImVec2(x: s1.x, y: s1.y), ImVec2(x: s2.x, y: s2.y), color, lineWidth)
                     ImDrawListAddLine(drawList, ImVec2(x: s2.x, y: s2.y), ImVec2(x: s3.x, y: s3.y), color, lineWidth)
@@ -1062,8 +2663,8 @@ public final class EngineRenderer {
 
             engine.cadBridge.vertexEditor.forEachWorldSegment(handle: handle, in: engine.geometryManager) { x1, y1, x2, y2 in
                 guard segmentsDrawn < maxSegments else { return }
-                let s0 = engine.camera.transformWorldToScreen(worldX: x1, worldY: y1, cam: cam)
-                let s1 = engine.camera.transformWorldToScreen(worldX: x2, worldY: y2, cam: cam)
+                let s0 = EngineCameraManager.worldToScreen(worldX: x1, worldY: y1, cam: cam)
+                let s1 = EngineCameraManager.worldToScreen(worldX: x2, worldY: y2, cam: cam)
                 ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), color, lineWidth)
                 segmentsDrawn += 1
             }
@@ -1088,13 +2689,17 @@ public final class EngineRenderer {
             if drawnGrips >= maxGripsToDraw { break }
 
             let screenPos: SDL_FPoint = engine.interaction.gripActive
-                ? engine.camera.transformWorldToScreen(
+                ? EngineCameraManager.worldToScreen(
                     worldX: grip.worldPos.x, worldY: grip.worldPos.y, cam: cam)
                 : grip.screenPos
 
             let margin: Float = 10.0
-            if screenPos.x < -margin || screenPos.x > Float(engine.windowWidth) + margin
-                || screenPos.y < -margin || screenPos.y > Float(engine.windowHeight) + margin {
+            // Cull against the full window: screenPos is absolute even when a
+            // split pane borrows smaller metrics.
+            let fullW = ImGuiGetIO()?.pointee.DisplaySize.x ?? Float(engine.windowWidth)
+            let fullH = ImGuiGetIO()?.pointee.DisplaySize.y ?? Float(engine.windowHeight)
+            if screenPos.x < -margin || screenPos.x > fullW + margin
+                || screenPos.y < -margin || screenPos.y > fullH + margin {
                 continue
             }
 
@@ -1219,7 +2824,7 @@ public final class EngineRenderer {
         return true
     }
 
-    private func renderCrosshairCursor(cam: CameraTransform) {
+    private func renderCrosshairCursor(cam: CameraTransform, origin: (x: Float, y: Float) = (0, 0)) {
         let io = ImGuiGetIO()
         if let wantCapture = io?.pointee.WantCaptureMouse, wantCapture {
             return
@@ -1229,14 +2834,24 @@ public final class EngineRenderer {
         // the user needs to see the cursor to pick points.
 
         let drawList = igGetForegroundDrawList_ViewportPtr(nil)
+        drawCrosshairArms(
+            center: ImVec2(
+                x: engine.interaction.lastMouseX + origin.x,
+                y: engine.interaction.lastMouseY + origin.y),
+            drawList: drawList)
+    }
+
+    /// The crosshair glyph at a screen point (shared by the primary cursor
+    /// and the mirrored split-pane cursors).
+    private func drawCrosshairArms(center: ImVec2, drawList: UnsafeMutablePointer<ImDrawList>?) {
         let crosshair = engine.ui.isViewportBackgroundLight ? (20, 38, 52, 120) : (255, 255, 255, 120)
         let col = makeImCol32(
             r: UInt8(crosshair.0),
             g: UInt8(crosshair.1),
             b: UInt8(crosshair.2),
             a: UInt8(crosshair.3))
-        let cx = engine.interaction.lastMouseX
-        let cy = engine.interaction.lastMouseY
+        let cx = center.x
+        let cy = center.y
         let armLen: Float = 56  // pixels from center in each direction
         let gap: Float = 0      // small gap around center so the intersection is visible
 
@@ -1271,6 +2886,83 @@ public final class EngineRenderer {
         _foregroundVertexEstimate += 24  // 4 thick lines ≈ 6 verts each
     }
 
+    /// Global cursor for split panes: the crosshair follows the physical
+    /// mouse in whichever pane it hovers (focused or not — the OS cursor is
+    /// hidden over the whole canvas), and mirrors at the same world point
+    /// into every other pane sharing that tab + drawing view (same
+    /// coordinate space). Display only; CAD input stays focused-pane-local.
+    private func renderSplitCrosshairs(
+        leaves: [(id: UUID, tabID: UUID?, rect: PaneRect)],
+        focusedID: UUID,
+        activeID: UUID?
+    ) {
+        let io = ImGuiGetIO()
+        if let wantCapture = io?.pointee.WantCaptureMouse, wantCapture {
+            return
+        }
+        guard !engine.interaction.dragActive && !engine.interaction.gripActive && !engine.interaction.panActive,
+              let io else { return }
+        let mouse = io.pointee.MousePos
+        func containsMouse(_ rect: PaneRect) -> Bool {
+            mouse.x >= rect.x && mouse.x < rect.x + rect.w
+                && mouse.y >= rect.y && mouse.y < rect.y + rect.h
+        }
+        guard let hover = leaves.first(where: { containsMouse($0.rect) }),
+              let drawList = igGetForegroundDrawList_ViewportPtr(nil) else { return }
+
+        /// The (tab, drawing view) coordinate space a leaf shows.
+        func space(of leaf: (id: UUID, tabID: UUID?, rect: PaneRect)) -> (UUID, Int)? {
+            guard let tabID = leaf.tabID,
+                  let tab = engine.tabManager.tab(for: tabID) else { return nil }
+            if leaf.id == focusedID && tabID == activeID {
+                return (tabID, tab.activeViewIndex)
+            }
+            let entry = engine.paneViews.entry(leafID: leaf.id, tabID: tabID)
+            let idx = min(
+                max(entry?.viewIndex ?? tab.activeViewIndex, 0),
+                max(tab.drawingViews.count - 1, 0))
+            return (tabID, idx)
+        }
+        func transform(of leaf: (id: UUID, tabID: UUID?, rect: PaneRect)) -> CameraTransform? {
+            let camera: EngineCameraManager?
+            if leaf.id == focusedID && leaf.tabID == activeID {
+                camera = engine.camera
+            } else {
+                camera = paneCtxs[leaf.id]?.camera
+            }
+            return camera?.transformForSubRect(
+                originX: Double(leaf.rect.x), originY: Double(leaf.rect.y),
+                width: Int32(leaf.rect.w), height: Int32(leaf.rect.h))
+        }
+
+        let hoverSpace = space(of: hover)
+        let world: (Double, Double)? = transform(of: hover).map {
+            EngineCameraManager.screenToWorld(screenX: mouse.x, screenY: mouse.y, cam: $0)
+        }
+
+        for leaf in leaves {
+            let center: ImVec2?
+            if leaf.id == hover.id {
+                center = mouse
+            } else if let world, let hoverSpace,
+                      let leafSpace = space(of: leaf),
+                      leafSpace.0 == hoverSpace.0 && leafSpace.1 == hoverSpace.1,
+                      let t = transform(of: leaf) {
+                let p = EngineCameraManager.worldToScreen(
+                    worldX: world.0, worldY: world.1, cam: t)
+                let inside = p.x >= leaf.rect.x && p.x < leaf.rect.x + leaf.rect.w
+                    && p.y >= leaf.rect.y && p.y < leaf.rect.y + leaf.rect.h
+                center = inside ? ImVec2(x: p.x, y: p.y) : nil
+            } else {
+                center = nil
+            }
+            guard let center else { continue }
+            pushForegroundClip(leaf.rect)
+            drawCrosshairArms(center: center, drawList: drawList)
+            popForegroundClip()
+        }
+    }
+
     // MARK: - Grid
 
     /// Draw the background grid when `engine.snap.gridVisible` is true.
@@ -1278,14 +2970,25 @@ public final class EngineRenderer {
     /// making them non-selectable (not part of the CAD vertex buffer or ID-buffer pick pass).
     /// The visual spacing adapts to the current zoom level so a consistent density
     /// of lines is visible at all zoom levels.
-    private func renderGrid(cam: CameraTransform) {
+    private func renderGrid(
+        cam: CameraTransform,
+        viewportWidth: Float? = nil,
+        viewportHeight: Float? = nil,
+        cameraZoom: Double? = nil,
+        viewport: (minX: Double, minY: Double, maxX: Double, maxY: Double)? = nil,
+        useLightPalette: Bool? = nil
+    ) {
         guard engine.snap.gridVisible else { return }
 
-        let spacing = engine.snap.effectiveGridSpacing(windowWidth: engine.windowWidth, cameraZoom: engine.camera.zoom)
+        let gridW = viewportWidth ?? Float(engine.windowWidth)
+        let gridH = viewportHeight ?? Float(engine.windowHeight)
+        let zoom = cameraZoom ?? engine.camera.zoom
+        let spacing = engine.snap.effectiveGridSpacing(windowWidth: Int32(gridW), cameraZoom: zoom)
         let ox = engine.snap.gridOriginX
         let oy = engine.snap.gridOriginY
 
-        let vp = engine.camera.worldViewportRect(windowWidth: engine.windowWidth, windowHeight: engine.windowHeight)
+        let vp = viewport ?? engine.camera.worldViewportRect(
+            windowWidth: Int32(gridW), windowHeight: Int32(gridH))
         // Expand viewport slightly so lines don't pop in/out at edges
         let margin = spacing
         let vpMinX = vp.minX - margin
@@ -1295,14 +2998,14 @@ public final class EngineRenderer {
 
         let drawList = igGetBackgroundDrawList(nil)
         // Subtle gray, semi-transparent, selected from the effective viewport background.
-        let gridCol = engine.ui.isViewportBackgroundLight
+        let gridCol = (useLightPalette ?? engine.ui.isViewportBackgroundLight)
             ? makeImCol32(r: 180, g: 180, b: 180, a: 60)
             : makeImCol32(r: 80, g: 80, b: 80, a: 50)
         let lineThickness: Float = 1.0
 
         // Helper: world coordinate to screen point
         func worldToScreen(_ wx: Double, _ wy: Double) -> SDL_FPoint {
-            engine.camera.transformWorldToScreen(worldX: wx, worldY: wy, cam: cam)
+            EngineCameraManager.worldToScreen(worldX: wx, worldY: wy, cam: cam)
         }
 
         // Determine first/last grid line indices
@@ -1353,7 +3056,7 @@ public final class EngineRenderer {
         guard toolActive else { return }
 
         let drawList = igGetBackgroundDrawList(nil)
-        let sp = engine.camera.transformWorldToScreen(worldX: snap.worldPos.x, worldY: snap.worldPos.y, cam: cam)
+        let sp = EngineCameraManager.worldToScreen(worldX: snap.worldPos.x, worldY: snap.worldPos.y, cam: cam)
         let size: Float = 6
         let half: Float = size / 2
 
@@ -1434,19 +3137,19 @@ public final class EngineRenderer {
             z: 0
         )
 
-        let startSp = engine.camera.transformWorldToScreen(
+        let startSp = EngineCameraManager.worldToScreen(
             worldX: p1.x,
             worldY: p1.y,
             cam: cam
         )
 
-        let endSp = engine.camera.transformWorldToScreen(
+        let endSp = EngineCameraManager.worldToScreen(
             worldX: p2.x,
             worldY: p2.y,
             cam: cam
         )
 
-        let snapSp = engine.camera.transformWorldToScreen(
+        let snapSp = EngineCameraManager.worldToScreen(
             worldX: polar.worldPos.x,
             worldY: polar.worldPos.y,
             cam: cam
@@ -1481,7 +3184,7 @@ public final class EngineRenderer {
         let crossSize: Float = 5
 
         for tp in points {
-            let sp = engine.camera.transformWorldToScreen(
+            let sp = EngineCameraManager.worldToScreen(
                 worldX: tp.worldPos.x, worldY: tp.worldPos.y, cam: cam)
 
             // `+` marker at tracking point.
@@ -1534,8 +3237,8 @@ public final class EngineRenderer {
 
         if let vp = nearestVertexPos {
             // MUST use transformWorldToScreen and pass cam
-            let vsp = engine.camera.transformWorldToScreen(worldX: vp.x, worldY: vp.y, cam: cam)
-            let ssp = engine.camera.transformWorldToScreen(worldX: snap.worldPos.x, worldY: snap.worldPos.y, cam: cam)
+            let vsp = EngineCameraManager.worldToScreen(worldX: vp.x, worldY: vp.y, cam: cam)
+            let ssp = EngineCameraManager.worldToScreen(worldX: snap.worldPos.x, worldY: snap.worldPos.y, cam: cam)
             let drawList = igGetBackgroundDrawList(nil)
             
             // Calculate Perceived Luminance for a subtle line
@@ -1574,13 +3277,15 @@ public final class EngineRenderer {
         }
     }
 
-    private func renderRectSelectBox() {
+    private func renderRectSelectBox(origin: (x: Float, y: Float) = (0, 0)) {
         guard engine.interaction.rectSelectActive else { return }
         let cam = engine.camera.currentTransform(windowWidth: engine.windowWidth, windowHeight: engine.windowHeight)
-        let p1 = engine.camera.transformWorldToScreen(
+        let q1 = EngineCameraManager.worldToScreen(
             worldX: engine.interaction.rectSelectStartX, worldY: engine.interaction.rectSelectStartY, cam: cam)
-        let p3 = engine.camera.transformWorldToScreen(
+        let q3 = EngineCameraManager.worldToScreen(
             worldX: engine.interaction.rectSelectCurrentX, worldY: engine.interaction.rectSelectCurrentY, cam: cam)
+        let p1 = SDL_FPoint(x: q1.x + origin.x, y: q1.y + origin.y)
+        let p3 = SDL_FPoint(x: q3.x + origin.x, y: q3.y + origin.y)
         let p2 = SDL_FPoint(x: p3.x, y: p1.y)
         let p4 = SDL_FPoint(x: p1.x, y: p3.y)
         let style: CADSelectionManager.RectSelectStyle =
@@ -1620,8 +3325,8 @@ public final class EngineRenderer {
         let dx = ghostX - base.0
         let dy = ghostY - base.1
 
-        let _ = engine.camera.transformWorldToScreen(worldX: base.0, worldY: base.1, cam: cam)
-        let _ = engine.camera.transformWorldToScreen(worldX: ghostX, worldY: ghostY, cam: cam)
+        let _ = EngineCameraManager.worldToScreen(worldX: base.0, worldY: base.1, cam: cam)
+        let _ = EngineCameraManager.worldToScreen(worldX: ghostX, worldY: ghostY, cam: cam)
 
         let drawList = igGetBackgroundDrawList(nil)
         let color = makeImCol32(r: 255, g: 200, b: 64, a: 190)
@@ -1698,8 +3403,8 @@ public final class EngineRenderer {
                 guard remainingSegments > 0 else { return }
                 let a = movedWorld(points[i])
                 let b = movedWorld(points[(i + 1) % points.count])
-                let s0 = engine.camera.transformWorldToScreen(worldX: a.x, worldY: a.y, cam: cam)
-                let s1 = engine.camera.transformWorldToScreen(worldX: b.x, worldY: b.y, cam: cam)
+                let s0 = EngineCameraManager.worldToScreen(worldX: a.x, worldY: a.y, cam: cam)
+                let s1 = EngineCameraManager.worldToScreen(worldX: b.x, worldY: b.y, cam: cam)
                 ImDrawListAddLine(
                     drawList,
                     ImVec2(x: s0.x, y: s0.y),
@@ -1751,7 +3456,7 @@ public final class EngineRenderer {
         case .table: break
         case .point(let position, _):
             let p = movedWorld(position)
-            let sp = engine.camera.transformWorldToScreen(worldX: p.x, worldY: p.y, cam: cam)
+            let sp = EngineCameraManager.worldToScreen(worldX: p.x, worldY: p.y, cam: cam)
             ImDrawListAddLine(drawList, ImVec2(x: sp.x - 4, y: sp.y), ImVec2(x: sp.x + 4, y: sp.y), color, lineWidth)
             ImDrawListAddLine(drawList, ImVec2(x: sp.x, y: sp.y - 4), ImVec2(x: sp.x, y: sp.y + 4), color, lineWidth)
             remainingSegments -= 2
@@ -1879,18 +3584,18 @@ public final class EngineRenderer {
             }
 
             engine.cadBridge.vertexEditor.forEachWorldSegment(handle: handle, in: engine.geometryManager) { x1, y1, x2, y2 in
-                let s0 = engine.camera.transformWorldToScreen(worldX: x1 + dragOffsetX, worldY: y1 + dragOffsetY, cam: cam)
-                let s1 = engine.camera.transformWorldToScreen(worldX: x2 + dragOffsetX, worldY: y2 + dragOffsetY, cam: cam)
+                let s0 = EngineCameraManager.worldToScreen(worldX: x1 + dragOffsetX, worldY: y1 + dragOffsetY, cam: cam)
+                let s1 = EngineCameraManager.worldToScreen(worldX: x2 + dragOffsetX, worldY: y2 + dragOffsetY, cam: cam)
                 ImDrawListAddLine(drawList, ImVec2(x: s0.x, y: s0.y), ImVec2(x: s1.x, y: s1.y), color, lw)
             }
 
             if let entity = engine.document.entity(for: handle),
                entity.xdata["dxf.text"] != nil,
                let box = entity.worldBoundingBox {
-                let p0 = engine.camera.transformWorldToScreen(worldX: box.min.x, worldY: box.min.y, cam: cam)
-                let p1 = engine.camera.transformWorldToScreen(worldX: box.max.x, worldY: box.min.y, cam: cam)
-                let p2 = engine.camera.transformWorldToScreen(worldX: box.max.x, worldY: box.max.y, cam: cam)
-                let p3 = engine.camera.transformWorldToScreen(worldX: box.min.x, worldY: box.max.y, cam: cam)
+                let p0 = EngineCameraManager.worldToScreen(worldX: box.min.x, worldY: box.min.y, cam: cam)
+                let p1 = EngineCameraManager.worldToScreen(worldX: box.max.x, worldY: box.min.y, cam: cam)
+                let p2 = EngineCameraManager.worldToScreen(worldX: box.max.x, worldY: box.max.y, cam: cam)
+                let p3 = EngineCameraManager.worldToScreen(worldX: box.min.x, worldY: box.max.y, cam: cam)
                 ImDrawListAddLine(drawList, ImVec2(x: p0.x, y: p0.y), ImVec2(x: p1.x, y: p1.y), color, lw)
                 ImDrawListAddLine(drawList, ImVec2(x: p1.x, y: p1.y), ImVec2(x: p2.x, y: p2.y), color, lw)
                 ImDrawListAddLine(drawList, ImVec2(x: p2.x, y: p2.y), ImVec2(x: p3.x, y: p3.y), color, lw)
@@ -1899,7 +3604,11 @@ public final class EngineRenderer {
         }
     }
 
-    private func renderSprite(_ sprite: Sprite, deltaSec: Double, cam: CameraTransform) {
+    private func renderSprite(
+        _ sprite: Sprite, deltaSec: Double, cam: CameraTransform,
+        viewportWidth: Float? = nil, viewportHeight: Float? = nil,
+        useLightPalette: Bool? = nil, cullOrigin: (x: Float, y: Float) = (0, 0)
+    ) {
         if sprite.speed.0 != 0 || sprite.speed.1 != 0 {
             sprite.position.0 += sprite.speed.0 * deltaSec
             sprite.position.1 += sprite.speed.1 * deltaSec
@@ -1927,15 +3636,15 @@ public final class EngineRenderer {
             let base = sprite.worldQuadBasePosition ?? (sprite.position.0, sprite.position.1)
             let dx = sprite.position.0 - base.0
             let dy = sprite.position.1 - base.1
-            p1 = engine.camera.transformWorldToScreen(worldX: quad[0].x + dx, worldY: quad[0].y + dy, cam: cam)
-            p2 = engine.camera.transformWorldToScreen(worldX: quad[1].x + dx, worldY: quad[1].y + dy, cam: cam)
-            p3 = engine.camera.transformWorldToScreen(worldX: quad[2].x + dx, worldY: quad[2].y + dy, cam: cam)
-            p4 = engine.camera.transformWorldToScreen(worldX: quad[3].x + dx, worldY: quad[3].y + dy, cam: cam)
+            p1 = EngineCameraManager.worldToScreen(worldX: quad[0].x + dx, worldY: quad[0].y + dy, cam: cam)
+            p2 = EngineCameraManager.worldToScreen(worldX: quad[1].x + dx, worldY: quad[1].y + dy, cam: cam)
+            p3 = EngineCameraManager.worldToScreen(worldX: quad[2].x + dx, worldY: quad[2].y + dy, cam: cam)
+            p4 = EngineCameraManager.worldToScreen(worldX: quad[3].x + dx, worldY: quad[3].y + dy, cam: cam)
         } else {
             let topShift = sprite.shearX * h
             func transformedCorner(_ localX: Double, _ localY: Double) -> SDL_FPoint {
                 let shiftedX = localX + (localY > 0 ? topShift : 0)
-                return engine.camera.transformWorldToScreen(
+                return EngineCameraManager.worldToScreen(
                     worldX: px + shiftedX * c - localY * s,
                     worldY: py + shiftedX * s + localY * c,
                     cam: cam)
@@ -1952,12 +3661,14 @@ public final class EngineRenderer {
         let maxX = max(p1.x, p2.x, p3.x, p4.x)
         let minY = min(p1.y, p2.y, p3.y, p4.y)
         let maxY = max(p1.y, p2.y, p3.y, p4.y)
-        if maxX < -margin || minX > Float(engine.windowWidth) + margin
-            || maxY < -margin || minY > Float(engine.windowHeight) + margin {
+        let cullW = viewportWidth ?? Float(engine.windowWidth)
+        let cullH = viewportHeight ?? Float(engine.windowHeight)
+        if maxX < cullOrigin.x - margin || minX > cullOrigin.x + cullW + margin
+            || maxY < cullOrigin.y - margin || minY > cullOrigin.y + cullH + margin {
             return
         }
 
-        let isLight = engine.ui.isViewportBackgroundLight
+        let isLight = useLightPalette ?? engine.ui.isViewportBackgroundLight
         let drawList = igGetBackgroundDrawList(nil)
         let spriteColor = isLight ? sprite.adjustedColorLight : sprite.adjustedColorDark
         let col = makeImCol32(r: spriteColor.0, g: spriteColor.1, b: spriteColor.2, a: spriteColor.3)
@@ -1985,7 +3696,7 @@ public final class EngineRenderer {
             clipOffset = (0, 0)
         }
         let clipScreen = sprite.clipPolygon?.map {
-            engine.camera.transformWorldToScreen(
+            EngineCameraManager.worldToScreen(
                 worldX: $0.x + clipOffset.0,
                 worldY: $0.y + clipOffset.1,
                 cam: cam)

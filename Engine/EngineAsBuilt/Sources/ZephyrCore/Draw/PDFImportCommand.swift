@@ -538,7 +538,7 @@ public final class PDFImportCommand: FeatureCommand {
                     guard let self, let engine else { return }
                     print("[PDFImport] Showing native open dialog (window: valid)...")
                     NativeFileDialog.showOpenDialog(
-                        window: engine.window,
+                        window: engine.dialogParentWindow,
                         filters: [
                             NativeFileDialog.Filter(label: "PDF Documents", extensions: ["pdf"])
                         ]

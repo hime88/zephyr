@@ -22,18 +22,17 @@ extension EngineRenderer {
 
     /// Copies the grid-query result into value-type `TessInput` structs so the
     /// tessellator can run off the main actor without touching live primitives.
+    /// The source geometry manager and display palette are explicit so
+    /// secondary (unfocused-window) contexts can gather without touching the
+    /// primary pipeline's stores.
     internal func gatherTessInputs(
-        region: (minX: Double, minY: Double, maxX: Double, maxY: Double)
+        region: (minX: Double, minY: Double, maxX: Double, maxY: Double),
+        from geometryManager: GeometryManager,
+        into ctx: WindowRenderContext,
+        useLightDisplayPalette: Bool,
+        viewportBackground: (UInt8, UInt8, UInt8, UInt8)
     ) -> [TessInput] {
         var inputs: [TessInput] = []
-        let useLightDisplayPalette = engine.ui.isViewportBackgroundLight
-        let viewport = engine.ui.backgroundColor
-        let viewportBackground: (UInt8, UInt8, UInt8, UInt8) = (
-            UInt8(max(0.0, min(255.0, viewport.r * 255.0)).rounded()),
-            UInt8(max(0.0, min(255.0, viewport.g * 255.0)).rounded()),
-            UInt8(max(0.0, min(255.0, viewport.b * 255.0)).rounded()),
-            UInt8(max(0.0, min(255.0, viewport.a * 255.0)).rounded())
-        )
 
         func displayColor(for primitive: RenderPrimitive) -> (UInt8, UInt8, UInt8, UInt8) {
             if primitive.usesViewportBackgroundColor {
@@ -64,15 +63,15 @@ extension EngineRenderer {
                 diag: gradient.diag)
         }
 
-        if let indices = engine.geometryManager.visiblePrimitiveIndices(
+        if let indices = geometryManager.visiblePrimitiveIndices(
             inWorldRect: region.minX, minY: region.minY,
             maxX: region.maxX, maxY: region.maxY)
         {
-            engine._cachedUsingGrid = true
+            ctx.cachedUsingGrid = true
             inputs.reserveCapacity(indices.count)
 
             for idx in indices {
-                guard let p = engine.geometryManager.getPrimitive(at: idx) else { continue }
+                guard let p = geometryManager.getPrimitive(at: idx) else { continue }
                 inputs.append(TessInput(
                     type: p.type,
                     points: p.points,
@@ -90,8 +89,8 @@ extension EngineRenderer {
                 ))
             }
         } else {
-            engine._cachedUsingGrid = false
-            let primitives = engine.geometryManager.getPrimitivesForRendering()
+            ctx.cachedUsingGrid = false
+            let primitives = geometryManager.getPrimitivesForRendering()
             inputs.reserveCapacity(primitives.count)
 
             for p in primitives {
@@ -126,7 +125,7 @@ extension EngineRenderer {
     ///
     /// Called from both the sync `rebuildCadVertexBuffer()` and the async
     /// `applyPendingVertexBuildIfReady()` paths.
-    internal func applyVertexBuild(_ result: VertexBuildResult, paletteGen: Int) {
+    internal func applyVertexBuild(_ result: VertexBuildResult, paletteGen: Int, ctx: WindowRenderContext) {
         let vertices = result.vertices
 
         // --- Build NEW GPU buffers into locals ---
@@ -191,29 +190,29 @@ extension EngineRenderer {
         }
 
         // --- Swap: release old, assign new (atomic with metadata write) ---
-        if let oldBuf = cadVertexBuffer {
+        if let oldBuf = ctx.vertexBuffer {
             SDL_ReleaseGPUBuffer(engine.gpuDevice, oldBuf)
         }
 
-        cadVertexBuffer = newVertexBuffer
+        ctx.vertexBuffer = newVertexBuffer
 
         if newVertexBuffer != nil {
-            cadVertexCount = vertices.count
-            cadDrawBatches = result.batches
+            ctx.vertexCount = vertices.count
+            ctx.batches = result.batches
         } else {
-            cadVertexCount = 0
-            cadDrawBatches.removeAll()
+            ctx.vertexCount = 0
+            ctx.batches.removeAll()
         }
 
         // --- Write cache metadata at swap time (atomic with buffer replacement) ---
-        _cachedViewportMinX = result.regionMinX
-        _cachedViewportMaxX = result.regionMaxX
-        _cachedViewportMinY = result.regionMinY
-        _cachedViewportMaxY = result.regionMaxY
-        _bufferedZoom = result.builtZoom
-        engine._lastCameraZoom = result.builtZoom
-        engine._cachedMutationGen = result.mutationGen
-        engine._cachedDisplayPaletteGen = paletteGen
+        ctx.cachedViewportMinX = result.regionMinX
+        ctx.cachedViewportMaxX = result.regionMaxX
+        ctx.cachedViewportMinY = result.regionMinY
+        ctx.cachedViewportMaxY = result.regionMaxY
+        ctx.bufferedZoom = result.builtZoom
+        ctx.lastCameraZoom = result.builtZoom
+        ctx.cachedMutationGen = result.mutationGen
+        ctx.cachedPaletteGen = paletteGen
     }
 
     // MARK: - Async Launch / Apply (main actor)
@@ -223,8 +222,18 @@ extension EngineRenderer {
     /// mutation. Dedup prevents 60 Hz thrashing: if the in-flight build targets
     /// the same region, zoom band, and mutationGen, we just wait for it rather
     /// than relaunching.
-    internal func launchAsyncVertexBuildIfNeeded() {
-        let vp = engine.camera.worldViewportRect(windowWidth: engine.windowWidth, windowHeight: engine.windowHeight)
+    internal func launchAsyncVertexBuildIfNeeded(
+        ctx: WindowRenderContext,
+        camera: EngineCameraManager,
+        viewportWidth: Int32,
+        viewportHeight: Int32,
+        pixelScale: Float,
+        geometry: GeometryManager,
+        paletteGen: Int,
+        useLightDisplayPalette: Bool,
+        viewportBackground: (UInt8, UInt8, UInt8, UInt8)
+    ) {
+        let vp = camera.worldViewportRect(windowWidth: viewportWidth, windowHeight: viewportHeight)
         let marginX = (vp.maxX - vp.minX) * cadCullMargin
         let marginY = (vp.maxY - vp.minY) * cadCullMargin
         let region = (
@@ -233,50 +242,52 @@ extension EngineRenderer {
             maxX: vp.maxX + marginX,
             maxY: vp.maxY + marginY
         )
-        let zoom = engine.camera.zoom
-        let lineZoom = currentLineWidthZoom
-        let mutationGen = engine.geometryManager.mutationGeneration
-        let paletteGen = engine.ui.displayPaletteGeneration
+        let zoom = camera.zoom
+        let lineZoom = zoom * Double(pixelScale)
+        let mutationGen = geometry.mutationGeneration
 
         // Dedup: is the in-flight build already going to satisfy the current desire?
-        if let inFlightRegion = _vbInFlightRegion,
-           _vbInFlightToken != nil
+        if let inFlightRegion = ctx.vbInFlightRegion,
+           ctx.vbInFlightToken != nil
         {
             let vpInsideInFlight =
                 vp.minX >= inFlightRegion.minX && vp.maxX <= inFlightRegion.maxX &&
                 vp.minY >= inFlightRegion.minY && vp.maxY <= inFlightRegion.maxY
 
-            let zoomStable = isLineWidthZoomStable(lineZoom, _vbInFlightZoom)
+            let zoomStable = isLineWidthZoomStable(lineZoom, ctx.vbInFlightZoom)
             if vpInsideInFlight && zoomStable
-                && _vbInFlightMutationGen == mutationGen
-                && _vbInFlightPaletteGen == paletteGen
+                && ctx.vbInFlightMutationGen == mutationGen
+                && ctx.vbInFlightPaletteGen == paletteGen
             {
                 return  // Already computing exactly what we need
             }
         }
 
         // Cancel stale in-flight build and launch fresh.
-        _vbBuildTask?.cancel()
+        ctx.vbTask?.cancel()
 
-        _vbBuildToken += 1
-        let token = _vbBuildToken
+        ctx.vbToken += 1
+        let token = ctx.vbToken
 
-        let inputs = gatherTessInputs(region: region)
+        let inputs = gatherTessInputs(
+            region: region, from: geometry, into: ctx,
+            useLightDisplayPalette: useLightDisplayPalette,
+            viewportBackground: viewportBackground)
 
-        _vbInFlightToken = token
-        _vbInFlightRegion = region
-        _vbInFlightZoom = lineZoom
-        _vbInFlightMutationGen = mutationGen
-        _vbInFlightPaletteGen = paletteGen
+        ctx.vbInFlightToken = token
+        ctx.vbInFlightRegion = region
+        ctx.vbInFlightZoom = lineZoom
+        ctx.vbInFlightMutationGen = mutationGen
+        ctx.vbInFlightPaletteGen = paletteGen
 
         let capturedZoom = zoom
-        let capturedPixelScale = lineWidthPixelScale
+        let capturedPixelScale = pixelScale
         let capturedAA = antiAliasLines
         let capturedHairlineQuads = usesTriangleHairlines
         let capturedMutationGen = mutationGen
 
-        _vbBuildTask = Task.detached { [vbBuilder] in
-            await vbBuilder.build(
+        ctx.vbTask = Task.detached { [builder = ctx.vbBuilder] in
+            await builder.build(
                 inputs: inputs,
                 token: token,
                 cameraZoom: capturedZoom,
@@ -292,24 +303,24 @@ extension EngineRenderer {
     /// Called every frame. If a pending build matches the current in-flight
     /// token, applies it (GPU upload + swap). Also clears the in-flight marker
     /// so a new build can be launched.
-    internal func applyPendingVertexBuildIfReady() {
-        guard let wantToken = _vbInFlightToken else { return }
-        guard let result = vbBuilder.takePending(forToken: wantToken) else { return }
+    internal func applyPendingVertexBuildIfReady(ctx: WindowRenderContext, currentLineZoom: Double) {
+        guard let wantToken = ctx.vbInFlightToken else { return }
+        guard let result = ctx.vbBuilder.takePending(forToken: wantToken) else { return }
 
-        if !isLineWidthZoomStable(currentLineWidthZoom, result.builtZoom) {
-            _vbInFlightToken = nil
-            _vbBuildTask = nil
-            _vbInFlightRegion = nil
-            engine._cachedMutationGen = -1
+        if !isLineWidthZoomStable(currentLineZoom, result.builtZoom) {
+            ctx.vbInFlightToken = nil
+            ctx.vbTask = nil
+            ctx.vbInFlightRegion = nil
+            ctx.cachedMutationGen = -1
             return
         }
 
-        let paletteGen = _vbInFlightPaletteGen
-        applyVertexBuild(result, paletteGen: paletteGen)
+        let paletteGen = ctx.vbInFlightPaletteGen
+        applyVertexBuild(result, paletteGen: paletteGen, ctx: ctx)
 
-        _vbInFlightToken = nil
-        _vbBuildTask = nil
-        _vbInFlightRegion = nil
+        ctx.vbInFlightToken = nil
+        ctx.vbTask = nil
+        ctx.vbInFlightRegion = nil
     }
 
     // MARK: - Dashed Line Rendering

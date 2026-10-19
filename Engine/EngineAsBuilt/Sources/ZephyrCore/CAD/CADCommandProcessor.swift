@@ -195,6 +195,19 @@ public struct CommandDescriptor: Sendable {
         CommandDescriptor(canonicalName: "DXFVERSION", aliases: ["DXFVER"],        category: .settings, syntax: "[2018|2013|2010|2007|2004|2000|R14|R13|R12|R10]", description: "Set the DXF version used by Save and Save As"),
         CommandDescriptor(canonicalName: "PDFEXPORT",  aliases: ["EXPORTPDF"],     category: .draw,    syntax: "", description: "Export the current drawing to a PDF file"),
         CommandDescriptor(canonicalName: "PDFIMPORT",  aliases: ["PDFI", "PDF"],   category: .draw,    syntax: "", description: "Import a PDF page as an image underlay"),
+        CommandDescriptor(canonicalName: "TABLEFT",    aliases: ["TABL"],          category: .draw,    syntax: "", description: "Move the active drawing tab one position left"),
+        CommandDescriptor(canonicalName: "TABRIGHT",   aliases: ["TABR"],          category: .draw,    syntax: "", description: "Move the active drawing tab one position right"),
+        CommandDescriptor(canonicalName: "FILETAB",    aliases: [],                category: .draw,    syntax: "", description: "Show the file tabs at the top of the drawing area"),
+        CommandDescriptor(canonicalName: "FILETABCLOSE", aliases: [],              category: .draw,    syntax: "", description: "Hide the file tabs at the top of the drawing area"),
+        CommandDescriptor(canonicalName: "TABWINDOW",  aliases: ["TABW", "FLOAT"], category: .draw,    syntax: "", description: "Move the active drawing tab into its own window"),
+        CommandDescriptor(canonicalName: "TABDOCK",    aliases: ["TABD", "DOCK"],  category: .draw,    syntax: "", description: "Dock the active floating tab back into the main window"),
+        CommandDescriptor(canonicalName: "VPORTS",     aliases: [],                category: .view,    syntax: "2V|2H|SINGLE|JOIN|TOGGLE|?", description: "Split the main view into tiled panes showing different tabs"),
+        CommandDescriptor(canonicalName: "VSPLIT",     aliases: [],                category: .view,    syntax: "", description: "Split the focused pane side-by-side (VPORTS 2 Vertical)"),
+        CommandDescriptor(canonicalName: "HSPLIT",     aliases: [],                category: .view,    syntax: "", description: "Split the focused pane stacked (VPORTS 2 Horizontal)"),
+        CommandDescriptor(canonicalName: "UNSPLIT",    aliases: ["CLOSESPLIT"],    category: .view,    syntax: "", description: "Remove all splits, keeping the focused pane (VPORTS SINGLE)"),
+        CommandDescriptor(canonicalName: "CLOSEPANE",  aliases: [],                category: .view,    syntax: "", description: "Close the focused pane (VPORTS JOIN)"),
+        CommandDescriptor(canonicalName: "VPMAX",      aliases: [],                category: .view,    syntax: "", description: "Maximize the focused pane"),
+        CommandDescriptor(canonicalName: "VPMIN",      aliases: [],                category: .view,    syntax: "", description: "Restore the split arrangement saved by VPMAX"),
         // --- Draw ---
         CommandDescriptor(canonicalName: "LINE",       aliases: ["L"],             category: .draw,    syntax: "", description: "Draw a line segment by picking two points"),
         CommandDescriptor(canonicalName: "POLYLINE",   aliases: ["PL", "PLINE"],   category: .draw,    syntax: "", description: "Draw a multi-segment polyline"),
@@ -568,7 +581,7 @@ public final class CADCommandProcessor {
             guard let eng = engine else { clearCommand(); return }
             clearCommand()
             NativeFileDialog.showOpenDialog(
-                window: eng.window,
+                window: eng.dialogParentWindow,
                 filters: [
                     NativeFileDialog.Filter(label: "Drawings", extensions: ["dxf", "dwg", "eab"])
                 ],
@@ -590,7 +603,7 @@ public final class CADCommandProcessor {
             guard let eng = engine else { clearCommand(); return }
             clearCommand()
             NativeFileDialog.showOpenDialog(
-                window: eng.window,
+                window: eng.dialogParentWindow,
                 filters: [
                     NativeFileDialog.Filter(label: "PDF Documents", extensions: ["pdf"])
                 ]
@@ -605,6 +618,64 @@ public final class CADCommandProcessor {
             }
         case "CLOSE":
             _ = engine?.tabManager.requestCloseActiveTab()
+            clearCommand()
+        case "TABL", "TABLEFT":
+            _ = engine?.tabManager.moveActiveTabLeft()
+            clearCommand()
+        case "TABR", "TABRIGHT":
+            _ = engine?.tabManager.moveActiveTabRight()
+            clearCommand()
+        case "FILETAB":
+            engine?.ui.fileTabsVisible = true
+            clearCommand()
+        case "FILETABCLOSE":
+            engine?.ui.fileTabsVisible = false
+            clearCommand()
+        case "TABW", "TABWINDOW", "FLOAT":
+            if let id = engine?.tabManager.activeTab?.id {
+                _ = engine?.floatTab(id: id)
+            }
+            clearCommand()
+        case "TABD", "TABDOCK", "DOCK":
+            if let id = engine?.tabManager.activeTab?.id {
+                if engine?.dockTab(id: id) == false {
+                    print("[CAD] Active tab is not floated.")
+                }
+            }
+            clearCommand()
+        case "VSPLIT":
+            engine?.splitMainPane(axis: .sideBySide)
+            clearCommand()
+        case "HSPLIT":
+            engine?.splitMainPane(axis: .stacked)
+            clearCommand()
+        case "UNSPLIT", "CLOSESPLIT":
+            if engine?.unsplitMainPane() == false {
+                print("[CAD] The main view is not split.")
+            }
+            clearCommand()
+        case "CLOSEPANE":
+            if engine?.joinMainPane() == false {
+                print("[CAD] The main view is not split.")
+            }
+            clearCommand()
+        case "VPMAX":
+            if engine?.unsplitMainPane() == false {
+                print("[CAD] The main view is not split.")
+            }
+            clearCommand()
+        case "VPMIN":
+            if engine?.vpMinRestore() == false {
+                print("[CAD] No saved split arrangement to restore.")
+            }
+            clearCommand()
+        case _ where upper == "VPORTS" || upper.hasPrefix("VPORTS "):
+            if let engine {
+                let arg = String(upper.dropFirst("VPORTS".count))
+                    .trimmingCharacters(in: .whitespaces)
+                    .replacingOccurrences(of: " ", with: "")
+                handleVPortsCommand(engine: engine, arg: arg)
+            }
             clearCommand()
         case "CLOSEALL":
             guard let engine = engine else { clearCommand(); return }
@@ -676,7 +747,7 @@ public final class CADCommandProcessor {
                 .replacingOccurrences(of: ".dwg", with: "")
                 .replacingOccurrences(of: ".eab", with: "")
             NativeFileDialog.showSaveDialog(
-                window: eng.window,
+                window: eng.dialogParentWindow,
                 filters: [
                     NativeFileDialog.Filter(label: "PDF Document", extensions: ["pdf"])
                 ],
@@ -1201,7 +1272,7 @@ public final class CADCommandProcessor {
                 return
             }
             engine.splineTessellationDivisor = val
-            engine._regenerationGeneration &+= 1
+            engine.renderer.bumpAllContextGenerations()
             print("[CAD] Spline tessellation divisor set to \(val)")
             clearCommand()
         // --- Grid ---
@@ -1390,6 +1461,51 @@ public final class CADCommandProcessor {
         }
     }
 
+    /// Single-shot `VPORTS` options (AutoCAD-aligned names; Zephyr panes show
+    /// different tabs instead of multiple views of one drawing).
+    private func handleVPortsCommand(engine: PhrostEngine, arg: String) {
+        switch arg {
+        case "2V":
+            engine.splitMainPane(axis: .sideBySide)
+        case "2H":
+            engine.splitMainPane(axis: .stacked)
+        case "SINGLE":
+            if !engine.unsplitMainPane() {
+                print("[CAD] The main view is not split.")
+            }
+        case "JOIN":
+            if !engine.joinMainPane() {
+                print("[CAD] The main view is not split.")
+            }
+        case "TOGGLE":
+            if !engine.toggleMainPanes() {
+                print("[CAD] Nothing to toggle: single view with no saved arrangement.")
+            }
+        case "?":
+            printVPortsConfig(engine: engine)
+        case "3", "3V", "3H", "4", "SAVE", "RESTORE", "DELETE":
+            print("[CAD] VPORTS \(arg) is not supported yet (2V/2H/SINGLE/JOIN/TOGGLE only).")
+        default:
+            print("[CAD] VPORTS options: 2V  2H  SINGLE  JOIN  TOGGLE  ?")
+            printVPortsConfig(engine: engine)
+        }
+    }
+
+    private func printVPortsConfig(engine: PhrostEngine) {
+        let leaves = engine.mainPanes.leaves()
+        if !engine.mainPanes.isSplit {
+            print("[CAD] Single viewport.")
+            return
+        }
+        print("[CAD] \(leaves.count) viewports:")
+        for (i, leaf) in leaves.enumerated() {
+            guard case .leaf(let id, let tabID) = leaf else { continue }
+            let name = tabID.flatMap { engine.tabManager.tab(for: $0)?.displayName } ?? "(empty)"
+            let mark = id == engine.mainPanes.focusedLeafID ? "*" : " "
+            print("[CAD]  [\(i + 1)]\(mark) \(name)")
+        }
+    }
+
     private func handleDrawingViewCommand(_ text: String) -> Bool {
         guard let engine else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1528,7 +1644,7 @@ public final class CADCommandProcessor {
         let defaultName = eng.tabManager.activeTab?.displayName ?? "untitled"
         let dxfVersion = eng.tabManager.activeTab?.dxfVersion ?? .r2018
         NativeFileDialog.showSaveDialog(
-            window: eng.window,
+            window: eng.dialogParentWindow,
             filters: [
                 NativeFileDialog.Filter(label: "DXF Drawing", extensions: ["dxf"]),
                 NativeFileDialog.Filter(label: "Zephyr Drawing", extensions: ["eab"]),

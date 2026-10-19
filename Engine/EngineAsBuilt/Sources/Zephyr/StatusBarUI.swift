@@ -10,10 +10,9 @@ import ImGui
 //              undo/redo depth, pan mode indicator
 //   Right side: FPS counter, primitive count, sprite count, camera zoom
 //
-// Status text on the left is cached and only recomputed when relevant
-// state changes (entity count, undo depth, active layer, etc.) to avoid
-// unnecessary string formatting every frame. FPS text on the right uses
-// a frame counter to refresh every 15 frames (~4 times/sec at 60fps).
+// Left-side text is computed from the tab/view shown in the window
+// being rendered (see `StatusBarUIPolicy`), never from the global
+// active tab: each OS window reports its own drawing.
 
 @MainActor
 struct StatusBarUI {
@@ -25,49 +24,31 @@ struct StatusBarUI {
     ///   - dh: Display height.
     static func render(
         engine: PhrostEngine, io: UnsafeMutablePointer<ImGuiIO>,
-        dw: Float, dh: Float
+        dw: Float, dh: Float,
+        shownTab: DocumentTab?, shownViewIndex: Int
     ) {
-        let doc = engine.document
-        let currentEntityCount = doc.entityCount
-        let activeViewName = engine.tabManager.activeTab.map { tab in
-            tab.drawingViews[tab.activeViewIndex].name
-        } ?? "Model"
+        // Per-window status: filename/view/layer/entities describe the
+        // drawing this window (or focused pane) shows. The old code read
+        // the one active tab into a single shared cache, so every OS
+        // window reported the active drawing.
+        let info = StatusBarUIPolicy.shownInfo(tab: shownTab, viewIndex: shownViewIndex)
+        let saveState = shownTab.flatMap { engine.tabManager.saveStateByTabID[$0.id] }
 
-        // Check for active save state
-        let saveState = engine.tabManager.activeSaveState
-
+        let statusLeft: String
         if let ss = saveState {
-            // When saving, always rebuild status text to show progress
             let pct = Int(ss.progress * 100)
             if case .failed(let msg) = ss.status {
-                engine._cachedStatusLeft = "Save failed: \(msg)"
-                // Auto-clear after 3 seconds
-                if let failedAt = ss.failedAt, Date().timeIntervalSince(failedAt) > 3 {
+                statusLeft = "Save failed: \(msg)"
+                // Auto-clear after 3 seconds (clearing is active-tab scoped).
+                if let failedAt = ss.failedAt, Date().timeIntervalSince(failedAt) > 3,
+                   shownTab?.id == engine.tabManager.activeTab?.id {
                     engine.tabManager.clearSaveError()
                 }
             } else {
-                engine._cachedStatusLeft = "\(ss.statusText) \(pct)%"
+                statusLeft = "\(ss.statusText) \(pct)%"
             }
-            engine._lastHadSaveState = true
-        } else if engine._lastHadSaveState || engine._lastStatusEntityCount != currentEntityCount
-            || engine._lastStatusUndo != doc.undoManager.undoDepth
-            || engine._lastStatusRedo != doc.undoManager.redoDepth
-            || engine._lastStatusLayerID != doc.activeLayerID
-            || engine._lastStatusViewName != activeViewName
-            || engine._lastPolarEnabled != engine.snap.polarTrackingEnabled
-            || engine._lastOTrackEnabled != engine.snap.objectSnapTrackingEnabled
-            || engine._lastExtEnabled != engine.snap.extensionSnapEnabled
-            || engine._lastOrthoEnabled != engine.snap.orthoEnabled
-        {
-            let tabName = engine.tabManager.activeTab?.displayName ?? "Untitled"
-            let dirtyMark = engine.tabManager.activeIsDirty ? " *" : ""
-            let activeLayerName: String
-            if let alid = doc.activeLayerID, let layer = doc.layer(for: alid) {
-                activeLayerName = layer.name
-            } else {
-                activeLayerName = "none"
-            }
-            // Build snap tracking indicators.
+        } else {
+            // Build snap tracking indicators (app-global snap settings).
             var trackingParts: [String] = []
             if engine.snap.polarTrackingEnabled {
                 trackingParts.append("POLAR(\(Int(engine.snap.polarAngleIncrement))°)")
@@ -83,21 +64,7 @@ struct StatusBarUI {
                 trackingParts.append("ORTHO")
             }
             let trackingStr = trackingParts.isEmpty ? "" : "  ·  " + trackingParts.joined(separator: "  ·  ")
-
-            // New mockup format: filename · Layer 0 · Entities: 967 · POLAR(45°)
-            engine._cachedStatusLeft =
-                "\(tabName)\(dirtyMark)  ·  View: \(activeViewName)  ·  Layer: \(activeLayerName)  ·  Entities: \(currentEntityCount)\(trackingStr)"
-
-            engine._lastStatusEntityCount = currentEntityCount
-            engine._lastStatusUndo = doc.undoManager.undoDepth
-            engine._lastStatusRedo = doc.undoManager.redoDepth
-            engine._lastStatusLayerID = doc.activeLayerID
-            engine._lastStatusViewName = activeViewName
-            engine._lastPolarEnabled = engine.snap.polarTrackingEnabled
-            engine._lastOTrackEnabled = engine.snap.objectSnapTrackingEnabled
-            engine._lastExtEnabled = engine.snap.extensionSnapEnabled
-            engine._lastOrthoEnabled = engine.snap.orthoEnabled
-            engine._lastHadSaveState = false
+            statusLeft = StatusBarUIPolicy.leftText(info: info, trackingSuffix: trackingStr)
         }
 
         let barH = AppLayout.statusBarHeight
@@ -121,7 +88,7 @@ struct StatusBarUI {
         if igBegin("##StatusBar", &opened, flags) {
 
             ImGuiSetCursorPosX(16)
-            ImGuiTextV(engine._cachedStatusLeft)
+            ImGuiTextV(statusLeft)
 
             // Save failure indicator
             if let ss = saveState, case .failed = ss.status {
@@ -132,8 +99,22 @@ struct StatusBarUI {
                 ImGuiPopStyleColor(1)
             }
 
-            // Right side: Coordinates
-            let mousePos = EngineCameraManager.screenToWorld(screenX: io.pointee.MousePos.x, screenY: io.pointee.MousePos.y, cam: engine.camera.currentTransform(windowWidth: Int32(dw), windowHeight: Int32(dh)))
+            // Right side: Coordinates (focused pane's transform while split).
+            let coordCam: CameraTransform = {
+                guard engine.mainPanes.isSplit,
+                      let canvasF = engine.ui.drawingViewportRect else {
+                    return engine.camera.currentTransform(windowWidth: Int32(dw), windowHeight: Int32(dh))
+                }
+                let canvas = PaneRect(x: canvasF.x, y: canvasF.y, w: canvasF.w, h: canvasF.h)
+                let leaves = engine.mainPanes.leafRects(canvas: canvas)
+                guard let focused = leaves.first(where: { $0.id == engine.mainPanes.focusedLeafID }) else {
+                    return engine.camera.currentTransform(windowWidth: Int32(dw), windowHeight: Int32(dh))
+                }
+                return engine.camera.transformForSubRect(
+                    originX: Double(focused.rect.x), originY: Double(focused.rect.y),
+                    width: Int32(focused.rect.w), height: Int32(focused.rect.h))
+            }()
+            let mousePos = EngineCameraManager.screenToWorld(screenX: io.pointee.MousePos.x, screenY: io.pointee.MousePos.y, cam: coordCam)
             let coordText = String(format: "%.3f, %.3f", mousePos.0, mousePos.1)
             let textSize = ImGuiCalcTextSize(coordText, nil, false, -1)
             

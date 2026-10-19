@@ -108,6 +108,58 @@ Zephyr's DXF pipeline runs entirely in Swift — a native port of [libdxfrw](htt
 | SAVEAS | | Save the current drawing as a new file |
 | PDFEXPORT | `EXPORTPDF` | Export the current drawing to a PDF file |
 
+### Tabs, Windows & Split Views
+| Command | Alias | Description |
+|---|---|---|
+| TABLEFT | `TABL` | Move the active tab one position left |
+| TABRIGHT | `TABR` | Move the active tab one position right |
+| TABWINDOW | `TABW`, `FLOAT` | Float the active tab into its own OS window |
+| TABDOCK | `TABD`, `DOCK` | Dock the active floating tab back into the main window |
+| FILETAB | | Show the file tab bar |
+| FILETABCLOSE | | Hide the file tab bar |
+| VPORTS | | Manage split panes: `VPORTS 2V`, `2H`, `SINGLE`, `JOIN`, `TOGGLE`, or `?` |
+| VSPLIT | | Split the focused pane side-by-side |
+| HSPLIT | | Split the focused pane stacked |
+| UNSPLIT | `CLOSESPLIT` | Remove all splits, keeping the focused pane |
+| CLOSEPANE | | Close the focused pane |
+| VPMAX | | Maximize the focused pane (arrangement is saved) |
+| VPMIN | | Restore the split arrangement saved by VPMAX |
+
+#### Working with tabs
+
+- Click a file tab to activate that drawing. Drag it left or right to reorder it, or drag it out of the main window to float it.
+- `TABLEFT`/`TABL` and `TABRIGHT`/`TABR` move the active tab one slot. Moving a tab does not change which drawing is active.
+- `Ctrl+Tab` and `Ctrl+Shift+Tab` cycle open drawings, including drawings hosted in floating windows.
+- Dirty drawings keep their unsaved marker and save/discard confirmation. `CLOSE` still closes the active drawing; it is not the same as closing a float window (below).
+- `FILETAB` and `FILETABCLOSE` show or hide the file-tab bar. The file-tab bar itself remains in the main window; floated drawings do not get a second copy of it.
+
+#### Floating a drawing into an OS window
+
+`TABWINDOW` (`TABW` or `FLOAT`) moves the active drawing into a true SDL/OS window with its own native title bar, so it can be moved to another monitor. Running the command again for an already floated drawing raises its window. You can pan, zoom, select, edit, use commands, and edit blocks in the float window. Click, mouse-wheel, pen, and keyboard input in a window activate the drawing it hosts; merely hovering over it does not steal activation.
+
+`TABDOCK` (`TABD` or `DOCK`) returns the active floating drawing to the main tab bar at its existing tab-order position. The float window's OS close box also docks it. It never closes the drawing, so unsaved work is not lost. Up to four drawings can be floated at once. All windows belong to one Zephyr process and share one active drawing and editing session at a time, while inactive windows continue to show their hosted drawing, cursor, hover, and stored selection.
+
+#### Splitting the main window
+
+`VSPLIT` splits the focused main pane side-by-side; `HSPLIT` stacks it. Repeating either command splits the newly focused pane again, creating a nested arrangement. New panes start at 50/50. Drag a divider to resize (minimum pane size: 80 points).
+
+When another docked drawing is available, a new pane shows the next docked drawing. When only one docked drawing is available, the new pane shows the same drawing, AutoCAD-viewport style. Click a pane to focus it and activate its drawing. Click a file tab while split to bring that drawing into the focused pane. Each pane remembers its own pan/zoom/rotation and its Model or paper-layout view for the drawing it shows, so one pane can show `Model` while another shows `Layout1`, or two panes can compare different drawings. The bottom Model/Layout tabs belong to the tab shown by the current window or focused pane.
+
+`CLOSEPANE` joins away the focused pane. `UNSPLIT` and `VPORTS SINGLE` collapse to the focused pane and remember the arrangement. `VPMAX` does the same as a maximize step, `VPMIN` restores the remembered arrangement, and `VPORTS TOGGLE` switches between single and split. `VPORTS ?` lists the current panes in command output and marks the focused pane with `*`. Bare `VPORTS` prints the accepted options and the current layout; Zephyr's compact forms are `VPORTS 2V` and `VPORTS 2H`.
+
+#### AutoCAD compatibility
+
+| Area | AutoCAD behavior | Zephyr behavior |
+|---|---|---|
+| File-tab visibility | `FILETAB` / `FILETABCLOSE` | Same command names and purpose. |
+| Tiled viewports | `VPORTS` creates multiple model-space views of one drawing. | Same-drawing panes are supported, and panes may also show different drawings. Supported options are `2V`, `2H`, `SINGLE`, `JOIN`, `TOGGLE`, and `?`. AutoCAD named configurations (`SAVE`/`RESTORE`/`DELETE`) and preset 3/4 arrangements are not implemented yet. |
+| Maximize a viewport | `VPMAX` / `VPMIN` expand and restore a layout viewport for model-space editing. | The names are reused for Zephyr split panes: maximize the focused pane, then restore the saved pane tree. This is not paper-space `MSPACE` editing. |
+| Drawing layouts | Model/layout tabs and the full `LAYOUT` management command. | Model/layout tabs switch views. `MODEL`, `SHEET`/`LAYOUT`, `VIEW`, `NEXTVIEW`, and `PREVIOUSVIEW` are selectors for imported Model/paper views; they do not implement AutoCAD layout creation/copy/rename options or `MSPACE`/`PSPACE`. |
+| Tab order and floating | File tabs and document-window workflows vary by AutoCAD version. | `TABLEFT`, `TABRIGHT`, `TABWINDOW`, and `TABDOCK` (with the `TABL`/`TABR`/`TABW`/`TABD` aliases) are Zephyr command names. Drag-to-reorder and drag-out-to-float provide the pointer workflow. |
+| Drawing activation | One current drawing/viewport receives editing input. | Exactly one tab and, when split, one focused pane is active across the main and float windows. Direct interaction activates the clicked window/pane. |
+
+Dialogs are parented to the window hosting the active drawing where the platform supports it. Tab-close confirmations surface in the main window, where the file tabs live. Split layouts and floated positions are session state; they are not saved as named viewport configurations yet.
+
 ### Dimension Commands
 | Command | Alias | Description |
 |---|---|---|
@@ -196,9 +248,11 @@ SELECT, MOVE, ROTATE, SCALE, PAN, ZOOM
 | VIEW | `VIEWS` | List, select, or cycle model and sheet views |
 | SHEET | `LAYOUT` | Select or cycle imported DXF sheet layouts |
 | MODEL | `2DVIEW` | Switch to the DXF 2D model-space view |
-| NEXTVIEW | | Switch to next model or sheet view |
-| PREVIOUSVIEW | | Switch to previous model or sheet view |
+| NEXTVIEW | `VIEWNEXT` | Switch to next model or sheet view |
+| PREVIOUSVIEW | `PREVVIEW`, `VIEWPREV` | Switch to previous model or sheet view |
 | SELECTALL | `SELALL` | Select all entities in the active layer |
+| VPORTS | | Split the main view into tiled panes showing different tabs (`2V`, `2H`, `SINGLE`, `JOIN`, `TOGGLE`, `?`) |
+| VPMAX / VPMIN | | Maximize the focused pane / restore the saved arrangement |
 
 ### Snap Engine
 9 anchor types with two-tier filtering (AABB proximity → exact distance):
@@ -269,7 +323,7 @@ Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, ActiveX
 
 ### UI
 - **Command palette** — Type any letter to open, Tab-cycle through fuzzy-matched autocomplete. Space repeats the last command (AutoCAD-style). 100+ registered commands with descriptions and syntax hints.
-- **Multi-drawing tabs** — Open multiple files, dirty-state tracking, unsaved-changes confirmation. Tab management commands: `NEW`, `CLOSE`, `CLOSEALL`, `CLOSEALLOTHERS`.
+- **Multi-drawing tabs, OS float windows, and split panes** — Reorder tabs, dock drawings side-by-side, or move a drawing to another monitor. Dirty-state tracking and unsaved-changes confirmation apply across windows. See “Tabs, Windows & Split Views” above.
 - **Draw palette** — Visual tool picker with categorized commands.
 - **Layer panel** — Visibility toggles, color swatches, opacity sliders, entity counts.
 - **Properties panel** — Per-entity property editing with geometry inspector.

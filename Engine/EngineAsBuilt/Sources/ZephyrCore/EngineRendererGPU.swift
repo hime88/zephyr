@@ -641,15 +641,31 @@ extension EngineRenderer {
         // Release engine.fontTexture
         if let tex = engine.fontTexture { SDL_ReleaseGPUTexture(engine.gpuDevice, tex) }
 
-        // Cancel async vertex-buffer build
-        _vbBuildTask?.cancel()
-
-        // Release CAD vertex buffer
-        if let buf = cadVertexBuffer { SDL_ReleaseGPUBuffer(engine.gpuDevice, buf) }
+        // Cancel async builds and release per-context CAD vertex buffers.
+        // The adopted primary context also lives in secondaryCtxs — destroy
+        // each object exactly once.
+        primaryCtx.destroy(device: engine.gpuDevice)
+        for ctx in secondaryCtxs.values where ctx !== primaryCtx {
+            ctx.destroy(device: engine.gpuDevice)
+        }
+        secondaryCtxs.removeAll()
         if let buf = imguiVertexBuffer { SDL_ReleaseGPUBuffer(engine.gpuDevice, buf) }
         if let buf = imguiIndexBuffer { SDL_ReleaseGPUBuffer(engine.gpuDevice, buf) }
 
+        // Aux contexts share the main context's font atlas — destroy them
+        // first so the atlas outlives every context using it.
+        for aux in engine.windowManager.auxWindows {
+            if let auxCtx = aux.imguiContext {
+                ImGuiDestroyContext(auxCtx)
+                aux.imguiContext = nil
+                aux.imguiIO = nil
+            }
+        }
         ImGuiDestroyContext(engine.ctx)
+        for aux in engine.windowManager.auxWindows {
+            SDL_ReleaseWindowFromGPUDevice(engine.gpuDevice, aux.handle)
+            SDL_DestroyWindow(aux.handle)
+        }
         SDL_ReleaseWindowFromGPUDevice(engine.gpuDevice, engine.window)
         SDL_DestroyGPUDevice(engine.gpuDevice)
         SDL_DestroyWindow(engine.window)

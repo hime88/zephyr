@@ -154,15 +154,19 @@ struct TopChromeUI {
             #endif
 
             // --- Window Title Text (Centered) ---
-            let activeTabName = engine.tabManager.activeTab?.displayName ?? "Untitled"
-            var title = "Zephyr — \(activeTabName)"
+            // The main window's chrome names the document THIS window
+            // shows, not whichever tab is globally active (selecting in a
+            // float window must not retitle the main window).
+            let shownTab = engine.mainShownTab()
+            let shownTabName = shownTab?.displayName ?? "Untitled"
+            var title = "Zephyr — \(shownTabName)"
             var blockName: String = ""
             let inBlockEditor: Bool
-            if let blockID = engine.tabManager.activeTab?.editingBlockID {
+            if let blockID = shownTab?.editingBlockID {
                 inBlockEditor = true
-                if let block = engine.tabManager.activeTab?.document.block(for: blockID) {
+                if let block = shownTab?.document.block(for: blockID) {
                     blockName = block.name
-                } else if let block = engine.tabManager.activeTab?.parentDocument?.block(for: blockID) {
+                } else if let block = shownTab?.parentDocument?.block(for: blockID) {
                     blockName = block.name
                 } else {
                     blockName = "Unknown Block"

@@ -52,12 +52,51 @@ struct AppUI {
         let dw = io.pointee.DisplaySize.x
         let dh = io.pointee.DisplaySize.y
 
+        // Float windows render this same full UI in float role: no custom
+        // top chrome (they have OS decorations), no file tab bar (a float
+        // is one document), and app-global dialogs stay in the main window.
+        // Exception: while the float's document is in the block editor, a
+        // slim bar replaces TopChrome's block segment (name + Save &
+        // Close) so the editor is enterable AND exitable from the float.
+        let isFloat = engine.ui.isFloatFrame
+        let hostedTabID: UUID? = {
+            if case .floatWindow(let id) = engine.ui.frameRole { return id }
+            return nil
+        }()
+        let hostedTab = hostedTabID.flatMap { engine.tabManager.tab(for: $0) }
+        let floatBlockBarShown = isFloat && hostedTab?.editingBlockID != nil
+        let mainShownTab = isFloat ? nil : engine.mainShownTab()
+        let shownTab = isFloat ? hostedTab : mainShownTab
+        // Session-modal UIs (text editor, layer move, style managers,
+        // block-close) render only in the window showing the active tab,
+        // so they don't duplicate across every open window.
+        let showsActiveTab: Bool = isFloat
+            ? (hostedTabID != nil && hostedTabID == engine.tabManager.activeTab?.id)
+            : (mainShownTab?.id == engine.tabManager.activeTab?.id)
+
         // Create a dockspace covering the work area
-        let topOffset = AppLayout.topChromeHeight + AppLayout.tabBarHeight
-        let showsDrawingViewTabs = (engine.tabManager.activeTab?.drawingViews.count ?? 0) > 1
-            && engine.tabManager.activeTab?.editingBlockID == nil
+        let topOffset: Float = isFloat
+            ? (floatBlockBarShown ? AppLayout.topChromeHeight : 0)
+            : AppLayout.topChromeHeight
+                + (engine.ui.fileTabsVisible ? AppLayout.tabBarHeight : 0)
+        // Drawing-view tabs list the views of the tab this window/pane
+        // actually shows. In a split main window that is the focused
+        // pane's tab/view; in a float it is the hosted tab.
+        let shownViewIndex: Int = {
+            guard let shownTab else { return 0 }
+            if !isFloat && engine.mainPanes.isSplit {
+                let entry = engine.paneViews.entry(
+                    leafID: engine.mainPanes.focusedLeafID, tabID: shownTab.id)
+                return entry?.viewIndex ?? shownTab.activeViewIndex
+            }
+            return shownTab.activeViewIndex
+        }()
+        let showsDrawingViewTabs = DrawingViewTabBarPolicy.shouldRender(
+            shownTabViewCount: shownTab?.drawingViews.count ?? 0,
+            isEditingBlock: shownTab?.editingBlockID != nil)
+        let showViewTabsHere = showsDrawingViewTabs
         let bottomOffset = AppLayout.statusBarHeight
-            + (showsDrawingViewTabs ? AppLayout.drawingViewTabBarHeight : 0)
+            + (showViewTabsHere ? AppLayout.drawingViewTabBarHeight : 0)
         let workH = dh - topOffset - bottomOffset
         engine.ui.beginDrawingViewportFrame(
             x: 0,
@@ -89,17 +128,27 @@ struct AppUI {
 
         ImGuiPopStyleVar(3)
 
-        // 0. Custom Top Chrome (window header)
-        if AppLayout.topChromeHeight > 0 {
+        // 0. Custom Top Chrome (window header) — main window only.
+        if !isFloat && AppLayout.topChromeHeight > 0 {
             TopChromeUI.render(engine: engine, dw: dw)
         }
+        if floatBlockBarShown, let hostedTab, let blockID = hostedTab.editingBlockID {
+            renderFloatBlockEditorBar(engine: engine, dw: dw, tab: hostedTab, blockID: blockID)
+        }
 
-        // 1. Tab bar at the very top.
-        TabBarUI.render(engine: engine, dw: dw)
+        // 1. Tab bar at the very top (unless hidden via FILETABCLOSE).
+        // Main window only: a float window is a single document.
+        if !isFloat && engine.ui.fileTabsVisible {
+            TabBarUI.render(engine: engine, dw: dw)
+        }
 
-        // 2. Side panels — Layers on the left.
-        if engine.ui.layersPanelVisible {
-            LayerPanelUI.render(engine: engine)
+        // 2. Side panels — Layers on the left. Layers are document-local,
+        // so each window shows the layers for the tab it actually displays.
+        if DocumentPanelUIPolicy.shouldRenderLayers(
+            isVisible: engine.ui.layersPanelVisible,
+            hasShownTab: shownTab != nil),
+           let shownTab {
+            LayerPanelUI.render(engine: engine, document: shownTab.document)
         }
 
         // 3. Draw palette — optional side panel for drawing tools.
@@ -109,35 +158,51 @@ struct AppUI {
 
         // 4. Toolbar removed in redesign. Functionality moved to command line.
 
-        // 5. File browser dialogs (native-style modal overlays).
-        engine.fileBrowser.render(ui: engine.ui)
-        engine.saveFileBrowser.render(ui: engine.ui)
+        // 5. File browser dialogs (native-style modal overlays) — main only.
+        if !isFloat {
+            engine.fileBrowser.render(ui: engine.ui)
+            engine.saveFileBrowser.render(ui: engine.ui)
+        }
 
-        // 6. Properties panel — shows selected entity details.
-        PropertiesPanelUI.render(engine: engine)
+        // 6. Properties panel — shows selected entity details. Like the
+        // contextual ribbons below, it reads the shared active selection,
+        // so it belongs only in the window showing the active tab.
+        if SelectionContextUIPolicy.shouldRender(showsActiveTab: showsActiveTab) {
+            PropertiesPanelUI.render(engine: engine)
+        }
 
         // 6b. Hatch editing ribbon — appears when a hatch entity is selected
         //     and no hatch creation command is active.
-        if engine.commandProcessor.activeFeatureCommand == nil,
-           engine.cadSelection.selectedCount == 1,
-           let handle = engine.cadSelection.lastSelectedHandle,
+        let hatchHandle = engine.cadSelection.lastSelectedHandle
+        if SelectionContextUIPolicy.shouldRenderHatchEditor(
+            showsActiveTab: showsActiveTab,
+            hasActiveFeatureCommand: engine.commandProcessor.activeFeatureCommand != nil,
+            selectedCount: engine.cadSelection.selectedCount,
+            hasLastSelectedHandle: hatchHandle != nil),
+           let handle = hatchHandle,
            let entity = engine.document.entity(for: handle) {
             renderHatchEditingRibbonIfNeeded(entity: entity, engine: engine)
         }
 
-        // 6c. Associative array contextual ribbon.
-        ArrayRibbonUI.renderIfNeeded(engine: engine, displayWidth: dw)
+        // 6c/6d. Associative-array and data-table contextual ribbons.
+        if SelectionContextUIPolicy.shouldRender(showsActiveTab: showsActiveTab) {
+            ArrayRibbonUI.renderIfNeeded(engine: engine, displayWidth: dw)
+            DataTableRibbonUI.renderIfNeeded(engine: engine, displayWidth: dw)
+        }
 
-        // 6d. Data table contextual ribbon and in-canvas cell editor.
-        DataTableRibbonUI.renderIfNeeded(engine: engine, displayWidth: dw)
-
-        // 7. Block management panel — list/create/edit blocks.
-        if engine.ui.blockPanelVisible {
+        // 7. Block management panel — list/create/edit blocks. It still
+        // drives the shared active selection and block editor, so keep it
+        // in the active tab's window only.
+        if DocumentPanelUIPolicy.shouldRenderActiveDocumentPanel(
+            isVisible: engine.ui.blockPanelVisible,
+            showsActiveTab: showsActiveTab) {
             BlockPanelUI.render(engine: engine)
         }
 
         // 7b. Data Table panel — list/create/edit ACAD_TABLE entities.
-        if engine.ui.dataTablePanelVisible {
+        if DocumentPanelUIPolicy.shouldRenderActiveDocumentPanel(
+            isVisible: engine.ui.dataTablePanelVisible,
+            showsActiveTab: showsActiveTab) {
             DataTablePanelUI.render(engine: engine)
         }
 
@@ -145,19 +210,19 @@ struct AppUI {
         CommandLineUI.render(engine: engine, dw: dw, dh: dh)
 
         // 9. Layer-move modal dialog (when moving entities between layers).
-        if engine.ui.layerMoveActive {
+        if showsActiveTab && engine.ui.layerMoveActive {
             LayerMoveUI.render(engine: engine, dw: dw, dh: dh)
         }
 
-        if engine.ui.styleManagerActive {
+        if showsActiveTab && engine.ui.styleManagerActive {
             StyleManagerUI.render(engine: engine, dw: dw, dh: dh)
         }
-        if engine.ui.leaderStyleManagerActive {
+        if showsActiveTab && engine.ui.leaderStyleManagerActive {
             LeaderStyleManagerUI.render(engine: engine, dw: dw, dh: dh)
         }
 
         // 9b. Text editor modal dialog (when creating/editing text).
-        if engine.textManager.isEditorActive {
+        if showsActiveTab && engine.textManager.isEditorActive {
             let result = TextEditorUI.render(state: &engine.textManager.editorState, engine: engine, dw: dw, dh: dh)
             switch result {
             case .active:
@@ -173,17 +238,24 @@ struct AppUI {
             }
         }
 
-        // 10. Drawing view tabs and status bar at the bottom.
-        if showsDrawingViewTabs {
-            DrawingViewTabBarUI.render(engine: engine, dw: dw, dh: dh)
+        // 10. Drawing view tabs and status bar at the bottom. The view tabs
+        // belong to the tab shown in this window/pane.
+        if showViewTabsHere, let shownTab {
+            DrawingViewTabBarUI.render(
+                engine: engine, dw: dw, dh: dh,
+                tab: shownTab,
+                selectedViewIndex: shownViewIndex,
+                canSwitch: showsActiveTab)
         }
-        StatusBarUI.render(engine: engine, io: io, dw: dw, dh: dh)
+        StatusBarUI.render(
+            engine: engine, io: io, dw: dw, dh: dh,
+            shownTab: shownTab, shownViewIndex: shownViewIndex)
 
         // 11. (Removed: Block editor banner now fully integrated into titlebar)
 
         // 11b. Block editor close-confirmation popup (Save / Discard / Cancel).
         //      Triggered by the titlebar "Save & Close" button or BCLOSE command.
-        if engine.ui.blockClosePending {
+        if showsActiveTab && engine.ui.blockClosePending {
             let blockName: String
             if let blockID = engine.tabManager.activeTab?.editingBlockID {
                 if let block = engine.tabManager.activeTab?.document.block(for: blockID) {
@@ -247,14 +319,17 @@ struct AppUI {
             }
         }
 
-        renderTabCloseConfirmation(engine: engine, dw: dw)
-        renderWindowCloseConfirmation(engine: engine, dw: dw)
+        // App-global confirmations/setup live in the main window only.
+        if !isFloat {
+            renderTabCloseConfirmation(engine: engine, dw: dw)
+            renderWindowCloseConfirmation(engine: engine, dw: dw)
 
-        // 11c. First-run setup popup (theme + DWG/ODA intro).
-        renderSetupIfNeeded(engine: engine, dw: dw)
+            // 11c. First-run setup popup (theme + DWG/ODA intro).
+            renderSetupIfNeeded(engine: engine, dw: dw)
+        }
 
         // 12. Radial Navigation Tool (Artrage style)
-        if engine.ui.radialNavVisible {
+        if showsActiveTab && engine.ui.radialNavVisible {
             RadialNavUI.render(engine: engine, dw: dw, dh: dh)
         }
     }
@@ -290,6 +365,59 @@ struct AppUI {
     /// One-time welcome popup: theme choice plus the DWG/ODA intro.
     /// Shows until completed; X and Remind Me Later dismiss for this
     /// session only, Get Started and Install persist completion.
+    /// Slim block-editor bar for float windows (they have no TopChrome):
+    /// centered "Zephyr — <doc> — Block Editor: <name>" plus Save & Close,
+    /// mirroring TopChromeUI's block segment.
+    private static func renderFloatBlockEditorBar(
+        engine: PhrostEngine, dw: Float, tab: DocumentTab, blockID: UUID
+    ) {
+        let barH = AppLayout.topChromeHeight
+        let flags: Int32 =
+            Int32(ImGuiWindowFlags_NoTitleBar.rawValue) |
+            Int32(ImGuiWindowFlags_NoResize.rawValue) |
+            Int32(ImGuiWindowFlags_NoMove.rawValue) |
+            Int32(ImGuiWindowFlags_NoScrollbar.rawValue) |
+            Int32(ImGuiWindowFlags_NoSavedSettings.rawValue) |
+            Int32(ImGuiWindowFlags_NoBringToFrontOnFocus.rawValue) |
+            Int32(ImGuiWindowFlags_NoNavFocus.rawValue)
+        ImGuiSetNextWindowPos(ImVec2(x: 0, y: 0), Int32(ImGuiCond_Always.rawValue), ImVec2(x: 0, y: 0))
+        ImGuiSetNextWindowSize(ImVec2(x: dw, y: barH), Int32(ImGuiCond_Always.rawValue))
+        ImGuiPushStyleVarX(Int32(ImGuiStyleVar_WindowPadding.rawValue), 0)
+        ImGuiPushStyleVarY(Int32(ImGuiStyleVar_WindowPadding.rawValue), 0)
+        ImGuiPushStyleVar(Int32(ImGuiStyleVar_WindowBorderSize.rawValue), Float(0.0))
+        ImGuiPushStyleColor(Int32(ImGuiCol_WindowBg.rawValue), engine.ui.theme.topChromeBg)
+        var opened = true
+        if igBegin("##FloatBlockBar", &opened, flags) {
+            let blockName = tab.document.block(for: blockID)?.name
+                ?? tab.parentDocument?.block(for: blockID)?.name
+                ?? "Unknown Block"
+            let title = "Zephyr — \(tab.displayName) — Block Editor: \(blockName)"
+            let titleSize = ImGuiCalcTextSize(title, nil, false, -1)
+            let btnLabel = "Save & Close"
+            let btnSize = ImGuiCalcTextSize(btnLabel, nil, false, -1)
+            let btnPad: Float = 8
+            let btnFullW = btnSize.x + btnPad * 2
+            let titleStartX = (dw - (titleSize.x + 10 + btnFullW)) * 0.5
+            let textY = (barH - titleSize.y) * 0.5
+            ImGuiSetCursorScreenPos(ImVec2(x: titleStartX, y: textY))
+            ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textDim)
+            ImGuiTextV(title)
+            ImGuiPopStyleColor(1)
+
+            let btnX = titleStartX + titleSize.x + 10
+            let btnY = (barH - btnSize.y) * 0.5 - 3
+            ImGuiPushStyleVar(Int32(ImGuiStyleVar_FramePadding.rawValue), ImVec2(x: btnPad, y: 2))
+            ImGuiSetCursorScreenPos(ImVec2(x: btnX, y: btnY))
+            if igSmallButton(btnLabel) {
+                engine.ui.blockClosePending = true
+            }
+            ImGuiPopStyleVar(1)
+        }
+        igEnd()
+        ImGuiPopStyleVar(3)
+        ImGuiPopStyleColor(1)
+    }
+
     private static func renderSetupIfNeeded(engine: PhrostEngine, dw: Float) {
         guard !engine.ui.hasCompletedSetup, !_setupDismissedThisSession else { return }
         if _setupOdaInstalled == nil {
