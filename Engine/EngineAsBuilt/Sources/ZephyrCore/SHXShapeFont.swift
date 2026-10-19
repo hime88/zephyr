@@ -558,16 +558,19 @@ public final class SHXShapeFont: @unchecked Sendable {
                     case 10:
                         guard pos + 1 < end else { return }
                         let radius = Double(shapeData[pos]) * scale
-                        let signedSpec = Int(Int8(bitPattern: shapeData[pos + 1]))
+                        // Spec byte `(-)0SC` is sign-magnitude: bit 7 set means
+                        // clockwise, bits 6-4 are the start octant, bits 2-0
+                        // the octant count. It must not be read as a two's
+                        // complement Int8 (abs would give 256 - byte).
+                        let spec = Int(shapeData[pos + 1])
                         pos += 2
                         if !skip {
-                            let spec = abs(signedSpec)
                             let startOctant = (spec >> 4) & 0x7
                             var octantCount = spec & 0x7
                             if octantCount == 0 { octantCount = 8 }
                             let octantAngle = Double.pi / 4.0
                             let startAngle = Double(startOctant) * octantAngle
-                            let direction = signedSpec < 0 ? -1.0 : 1.0
+                            let direction = spec & 0x80 != 0 ? -1.0 : 1.0
                             let sweepAngle = direction * Double(octantCount) * octantAngle
                             let centerX = x - radius * cos(startAngle)
                             let centerY = y - radius * sin(startAngle)
@@ -586,18 +589,20 @@ public final class SHXShapeFont: @unchecked Sendable {
                         let endOffset = Double(shapeData[pos + 1]) / 256.0
                         let radiusHigh = Int(shapeData[pos + 2])
                         let radiusLow = Int(shapeData[pos + 3])
-                        let signedSpec = Int(Int8(bitPattern: shapeData[pos + 4]))
+                        // Sign-magnitude spec byte, same as opcode 10: bit 7
+                        // set means clockwise, bits 6-4 are the start octant,
+                        // bits 2-0 the end octant.
+                        let spec = Int(shapeData[pos + 4])
                         pos += 5
                         if !skip {
                             let radius = Double(256 * radiusHigh + radiusLow) * scale
-                            let spec = abs(signedSpec)
                             let startOctant = (spec >> 4) & 0x7
                             let endOctant = spec & 0x7
                             let octantAngle = Double.pi / 4.0
                             let startAngle = (Double(startOctant) + startOffset) * octantAngle
                             let endAngle = (Double(endOctant) + endOffset) * octantAngle
                             var sweepAngle = endAngle - startAngle
-                            if signedSpec > 0 {
+                            if spec & 0x80 == 0 {
                                 while sweepAngle <= 1e-12 { sweepAngle += 2.0 * Double.pi }
                             } else {
                                 while sweepAngle >= -1e-12 { sweepAngle -= 2.0 * Double.pi }
