@@ -81,6 +81,62 @@ public enum DrawingViewTabBarPolicy {
     }
 }
 
+/// Left-side status values for one OS window/pane: the drawing that
+/// window actually shows, not the one global active tab.
+public struct StatusBarShownInfo: Equatable {
+    public var tabName: String
+    public var isDirty: Bool
+    public var viewName: String
+    public var layerName: String
+    public var entityCount: Int
+
+    public init(
+        tabName: String, isDirty: Bool, viewName: String,
+        layerName: String, entityCount: Int
+    ) {
+        self.tabName = tabName
+        self.isDirty = isDirty
+        self.viewName = viewName
+        self.layerName = layerName
+        self.entityCount = entityCount
+    }
+}
+
+/// The status bar is rendered once per OS window, so its filename, view,
+/// layer, and entity count must come from that window's shown tab/view.
+/// Reading the active tab (and one shared text cache) made every window
+/// report the active drawing.
+public enum StatusBarUIPolicy {
+    public static func shownInfo(tab: DocumentTab?, viewIndex: Int) -> StatusBarShownInfo {
+        guard let tab, !tab.drawingViews.isEmpty else {
+            return StatusBarShownInfo(
+                tabName: "Untitled", isDirty: false, viewName: "Model",
+                layerName: "none", entityCount: 0)
+        }
+        let clamped = DrawingViewTabBarPolicy.clampedViewIndex(
+            viewIndex, viewCount: tab.drawingViews.count)
+        let view = tab.drawingViews[clamped]
+        let document = view.document
+        let layerName: String
+        if let layerID = document.activeLayerID, let layer = document.layer(for: layerID) {
+            layerName = layer.name
+        } else {
+            layerName = "none"
+        }
+        return StatusBarShownInfo(
+            tabName: tab.displayName,
+            isDirty: tab.hasUnsavedChanges,
+            viewName: view.name,
+            layerName: layerName,
+            entityCount: document.entityCount)
+    }
+
+    public static func leftText(info: StatusBarShownInfo, trackingSuffix: String) -> String {
+        let dirtyMark = info.isDirty ? " *" : ""
+        return "\(info.tabName)\(dirtyMark)  ·  View: \(info.viewName)  ·  Layer: \(info.layerName)  ·  Entities: \(info.entityCount)\(trackingSuffix)"
+    }
+}
+
 /// The radial nav captures the mouse (relative mode) and warps it back on
 /// release. Both SDL calls must target the OS window the nav is rendered
 /// in: targeting the main window from a float frame teleports the cursor

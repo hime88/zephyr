@@ -247,7 +247,9 @@ struct AppUI {
                 selectedViewIndex: shownViewIndex,
                 canSwitch: showsActiveTab)
         }
-        StatusBarUI.render(engine: engine, io: io, dw: dw, dh: dh)
+        StatusBarUI.render(
+            engine: engine, io: io, dw: dw, dh: dh,
+            shownTab: shownTab, shownViewIndex: shownViewIndex)
 
         // 11. (Removed: Block editor banner now fully integrated into titlebar)
 
