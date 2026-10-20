@@ -267,4 +267,162 @@ final class HatchIslandAndBackgroundTests: XCTestCase {
         HatchRibbonUI.lastUsedBackgroundColor = ColorRGBA(r: 40, g: 220, b: 240, a: 255)
         XCTAssertEqual(HatchRibbonUI.lastUsedBackgroundColor, ColorRGBA(r: 40, g: 220, b: 240, a: 255))
     }
+
+    func testHatchEntityUpdateWithUndoAndRedo() {
+        let doc = CADDocument()
+        let layerID = doc.allLayers.first?.handle ?? UUID()
+        let outer = CADPolyline(points: [
+            Vector3(x: 0, y: 0, z: 0),
+            Vector3(x: 50, y: 0, z: 0),
+            Vector3(x: 50, y: 50, z: 0),
+            Vector3(x: 0, y: 50, z: 0)
+        ], isClosed: true)
+        let prim1 = CADPrimitive.hatchPath(
+            boundary: outer,
+            holes: [],
+            pattern: "ANSI31",
+            scale: 1.0,
+            angle: 0.0,
+            color: nil,
+            backgroundColor: nil
+        )
+        var entity = CADEntity(layerID: layerID, localGeometry: [prim1])
+        entity.xdata["dxf.hatchPatternName"] = .string("ANSI31")
+        entity.xdata["dxf.hatchScale"] = .double(1.0)
+        entity.xdata["dxf.hatchAngle"] = .double(0.0)
+        entity.xdata["dxf.hatchAssociative"] = .bool(true)
+        doc.addEntity(entity)
+
+        XCTAssertEqual(doc.undoManager.undoDepth, 1)
+
+        // 1. Perform discrete update (e.g. changing pattern to ANSI32 and angle to 0.785)
+        var updated = entity
+        let prim2 = CADPrimitive.hatchPath(
+            boundary: outer,
+            holes: [],
+            pattern: "ANSI32",
+            scale: 2.0,
+            angle: 0.785,
+            color: nil,
+            backgroundColor: nil
+        )
+        updated.localGeometry = [prim2]
+        updated.xdata["dxf.hatchPatternName"] = .string("ANSI32")
+        updated.xdata["dxf.hatchScale"] = .double(2.0)
+        updated.xdata["dxf.hatchAngle"] = .double(0.785)
+        doc.updateEntity(updated)
+
+        XCTAssertEqual(doc.undoManager.undoDepth, 2)
+        XCTAssertEqual(doc.entity(for: entity.handle)?.xdata["dxf.hatchPatternName"], .string("ANSI32"))
+
+        // 2. Undo discrete update
+        doc.undo()
+        XCTAssertEqual(doc.undoManager.undoDepth, 1)
+        XCTAssertEqual(doc.entity(for: entity.handle)?.xdata["dxf.hatchPatternName"], .string("ANSI31"))
+        XCTAssertEqual(doc.entity(for: entity.handle)?.xdata["dxf.hatchAngle"], .double(0.0))
+
+        // 3. Redo discrete update
+        doc.redo()
+        XCTAssertEqual(doc.undoManager.undoDepth, 2)
+        XCTAssertEqual(doc.entity(for: entity.handle)?.xdata["dxf.hatchPatternName"], .string("ANSI32"))
+        XCTAssertEqual(doc.entity(for: entity.handle)?.xdata["dxf.hatchAngle"], .double(0.785))
+    }
+
+    func testHatchContinuousDragUndoCoalescing() {
+        let doc = CADDocument()
+        let layerID = doc.allLayers.first?.handle ?? UUID()
+        let outer = CADPolyline(points: [
+            Vector3(x: 0, y: 0, z: 0),
+            Vector3(x: 50, y: 0, z: 0),
+            Vector3(x: 50, y: 50, z: 0),
+            Vector3(x: 0, y: 50, z: 0)
+        ], isClosed: true)
+        let initialPrim = CADPrimitive.hatchPath(
+            boundary: outer,
+            holes: [],
+            pattern: "ANSI31",
+            scale: 1.0,
+            angle: 0.0,
+            color: nil,
+            backgroundColor: nil
+        )
+        var entity = CADEntity(layerID: layerID, localGeometry: [initialPrim])
+        entity.xdata["dxf.hatchAngle"] = .double(0.0)
+        doc.addEntity(entity)
+
+        let initialDepth = doc.undoManager.undoDepth
+        XCTAssertEqual(initialDepth, 1)
+
+        // Continuous drag begins: capture pre-drag snapshot
+        let preDragSnapshot = doc.snapshot()
+
+        // 10 intermediate frames of live updates while user drags angle slider
+        for i in 1...10 {
+            let angle = Double(i) * 0.1
+            var liveEntity = entity
+            liveEntity.xdata["dxf.hatchAngle"] = .double(angle)
+            doc.updateEntityLive(liveEntity)
+            // Undo stack MUST NOT be flooded with intermediate frames
+            XCTAssertEqual(doc.undoManager.undoDepth, 1)
+        }
+
+        // Drag finishes: push pre-drag snapshot
+        doc.pushUndo(preDragSnapshot)
+        XCTAssertEqual(doc.undoManager.undoDepth, 2, "Exactly one undo entry must be created for the entire drag")
+
+        // Undo restores initial pre-drag state
+        doc.undo()
+        XCTAssertEqual(doc.entity(for: entity.handle)?.xdata["dxf.hatchAngle"], .double(0.0))
+
+        // Redo restores final dragged state
+        doc.redo()
+        XCTAssertEqual(doc.entity(for: entity.handle)?.xdata["dxf.hatchAngle"], .double(1.0))
+    }
+
+    @MainActor
+    func testHatchCommandAssociativeAndSettingsSynchronization() {
+        let outer = CADPolyline(points: [
+            Vector3(x: 0, y: 0, z: 0),
+            Vector3(x: 50, y: 0, z: 0),
+            Vector3(x: 50, y: 50, z: 0),
+            Vector3(x: 0, y: 50, z: 0)
+        ], isClosed: true)
+        let prim = CADPrimitive.hatchPath(
+            boundary: outer,
+            holes: [],
+            pattern: "ANSI31",
+            scale: 1.0,
+            angle: 0.0,
+            color: nil,
+            backgroundColor: nil
+        )
+        var entity = CADEntity(layerID: UUID(), localGeometry: [prim])
+        entity.xdata["dxf.hatchAssociative"] = .bool(true)
+        entity.xdata["dxf.hatchPatternName"] = .string("ANSI31")
+
+        let cmd = HatchCommand()
+        cmd.initFromEntity(entity)
+        XCTAssertEqual(cmd.currentPatternName, "ANSI31")
+
+        // Mutating entity and resyncing upon undo
+        let prim33 = CADPrimitive.hatchPath(
+            boundary: outer,
+            holes: [],
+            pattern: "ANSI33",
+            scale: 1.0,
+            angle: 0.0,
+            color: nil,
+            backgroundColor: nil
+        )
+        var updatedEntity = entity
+        updatedEntity.localGeometry = [prim33]
+        updatedEntity.xdata["zephyr.hatchPatternKey"] = .string("ANSI33")
+        updatedEntity.xdata["dxf.hatchPatternName"] = .string("ANSI33")
+        cmd.initFromEntity(updatedEntity)
+        XCTAssertEqual(cmd.currentPatternName, "ANSI33")
+
+        // Resync back to original (as happens when undo restores original entity)
+        cmd.initFromEntity(entity)
+        XCTAssertEqual(cmd.currentPatternName, "ANSI31")
+    }
 }

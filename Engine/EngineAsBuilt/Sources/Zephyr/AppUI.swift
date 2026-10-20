@@ -626,11 +626,23 @@ struct AppUI {
         var backgroundColor: ColorRGBA?
         var secondaryColor: ColorRGBA?
         var islandStyle: Int32
+        var associative: Bool
         var regions: [HatchEditRegion]
         var allBoundaryPaths: [CADPolyline]
     }
 
+    private static var hatchDragPreEditSnapshot: CADDocumentSnapshot?
+    private static var hatchDragEntityHandle: UUID?
+
     private static func renderHatchEditingRibbonIfNeeded(entity: CADEntity, engine: PhrostEngine) {
+        if let activeHandle = hatchDragEntityHandle, activeHandle != entity.handle {
+            if let snapshot = hatchDragPreEditSnapshot {
+                engine.document.pushUndo(snapshot)
+            }
+            hatchDragPreEditSnapshot = nil
+            hatchDragEntityHandle = nil
+        }
+
         guard let payload = hatchEditPayload(from: entity) else { return }
 
         var settings = HatchRibbonUI.Settings(
@@ -644,14 +656,25 @@ struct AppUI {
             secondaryColor: payload.secondaryColor,
             selectionMode: 0,
             islandStyle: payload.islandStyle,
-            showModeSection: false
+            showModeSection: false,
+            associative: payload.associative
         )
         let oldSettings = settings
         HatchRibbonUI.render(&settings, engine: engine)
 
+        if settings.closeRequested {
+            if let snapshot = hatchDragPreEditSnapshot {
+                engine.document.pushUndo(snapshot)
+                hatchDragPreEditSnapshot = nil
+                hatchDragEntityHandle = nil
+            }
+            engine.cadSelection.clearSelection()
+            return
+        }
+
         let geometryFillType = hatchGeometryFillType(entity)
         let needsGeometryRepair = geometryFillType != nil && geometryFillType != payload.fillType
-        guard settings.closeRequested || settings != oldSettings || needsGeometryRepair else { return }
+        guard settings.isContinuousDragFinished || settings != oldSettings || needsGeometryRepair else { return }
 
         let newPatternKey = hatchPatternKey(from: settings)
         let newDXFPatternName = settings.fillType == 0
@@ -680,6 +703,7 @@ struct AppUI {
         newEntity.xdata["dxf.hatchSpacing"] = .double(DXFHatchGenerator.effectiveSpacing(patternName: newPatternKey, scale: Double(settings.scale)))
         newEntity.xdata["dxf.hatchIsGradient"] = .bool(settings.fillType == 2)
         newEntity.xdata["dxf.hatchStyle"] = .int(Int(settings.islandStyle))
+        newEntity.xdata["dxf.hatchAssociative"] = .bool(settings.associative)
         let definitionType = settings.fillType == 3
             ? 0
             : DXFHatchGenerator.patternDefinitionType(for: newPatternKey)
@@ -714,11 +738,35 @@ struct AppUI {
         }
         newEntity.localGeometry = newGeometry
 
-        if settings.closeRequested {
-            engine.document.updateEntity(newEntity)
-            engine.cadSelection.clearSelection()
-        } else {
+        if settings.isContinuousDragFinished {
+            if let snapshot = hatchDragPreEditSnapshot {
+                engine.document.pushUndo(snapshot)
+                hatchDragPreEditSnapshot = nil
+                hatchDragEntityHandle = nil
+            } else if settings != oldSettings {
+                engine.document.updateEntity(newEntity)
+                engine.tabManager.markActiveDirty()
+                return
+            }
             engine.document.updateEntityLive(newEntity)
+            engine.document.invalidateEntityGrid()
+            engine.document.markEdited(regenerate: true)
+            engine.tabManager.markActiveDirty()
+        } else if settings.isContinuousDragActive {
+            if hatchDragPreEditSnapshot == nil {
+                hatchDragPreEditSnapshot = engine.document.snapshot()
+                hatchDragEntityHandle = entity.handle
+            }
+            engine.document.updateEntityLive(newEntity)
+            engine.tabManager.markActiveDirty()
+        } else {
+            // Discrete change: pattern, fill type, color swatch, island style, associative toggle, etc.
+            if let snapshot = hatchDragPreEditSnapshot {
+                engine.document.pushUndo(snapshot)
+                hatchDragPreEditSnapshot = nil
+                hatchDragEntityHandle = nil
+            }
+            engine.document.updateEntity(newEntity)
             engine.tabManager.markActiveDirty()
         }
     }
@@ -746,6 +794,11 @@ struct AppUI {
             return path
         }
         let storedIslandStyle = Int32(hatchIntFromXData(entity, key: "dxf.hatchStyle") ?? 0)
+        let storedAssoc: Bool = {
+            if case .bool(let b)? = entity.xdata["dxf.hatchAssociative"] { return b }
+            if case .int(let i)? = entity.xdata["dxf.hatchAssociative"] { return i != 0 }
+            return true
+        }()
         let carrierRegions = classifyBoundaryPaths(carrierPaths, islandStyle: storedIslandStyle)
         let storedBg: ColorRGBA? = {
             if case .string(let hex)? = entity.xdata["zephyr.hatchBackgroundColor"] {
@@ -806,6 +859,7 @@ struct AppUI {
                 backgroundColor: nil,
                 secondaryColor: first.c2,
                 islandStyle: storedIslandStyle,
+                associative: storedAssoc,
                 regions: regions,
                 allBoundaryPaths: allBoundaryPaths)
         }
@@ -854,6 +908,7 @@ struct AppUI {
                 backgroundColor: effectiveBg,
                 secondaryColor: nil,
                 islandStyle: storedIslandStyle,
+                associative: storedAssoc,
                 regions: regions,
                 allBoundaryPaths: allBoundaryPaths)
         }
@@ -885,6 +940,7 @@ struct AppUI {
                 backgroundColor: storedBg,
                 secondaryColor: nil,
                 islandStyle: storedIslandStyle,
+                associative: storedAssoc,
                 regions: regions,
                 allBoundaryPaths: allBoundaryPaths)
         }

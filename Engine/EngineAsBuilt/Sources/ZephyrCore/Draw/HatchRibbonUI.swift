@@ -24,11 +24,14 @@ public struct HatchRibbonUI {
         public var applyClicked: Bool = false
         public var closeRequested: Bool = false
         public var associative: Bool = true
+        public var isContinuousDragActive: Bool = false
+        public var isContinuousDragFinished: Bool = false
 
         public init(fillType: Int32, patternName: String, gradientName: String = "LINEAR", scale: Float, angle: Float,
                     primaryColor: ColorRGBA?, backgroundColor: ColorRGBA?,
                     secondaryColor: ColorRGBA?, selectionMode: Int32, islandStyle: Int32 = 0, showModeSection: Bool,
-                    applyClicked: Bool = false, closeRequested: Bool = false, associative: Bool = true) {
+                    applyClicked: Bool = false, closeRequested: Bool = false, associative: Bool = true,
+                    isContinuousDragActive: Bool = false, isContinuousDragFinished: Bool = false) {
             self.fillType = fillType
             self.patternName = patternName
             self.gradientName = gradientName
@@ -43,6 +46,8 @@ public struct HatchRibbonUI {
             self.applyClicked = applyClicked
             self.closeRequested = closeRequested
             self.associative = associative
+            self.isContinuousDragActive = isContinuousDragActive
+            self.isContinuousDragFinished = isContinuousDragFinished
         }
     }
 
@@ -53,6 +58,9 @@ public struct HatchRibbonUI {
     // MARK: - Public render entry point
 
     public static func render(_ settings: inout Settings, engine: PhrostEngine) {
+        settings.isContinuousDragActive = false
+        settings.isContinuousDragFinished = false
+
         let fontSize = ImGuiGetFontSize()
         let uiScale = max(0.75, engine.effectiveUiScale)
         let pad: Float = 16.0 * uiScale
@@ -286,7 +294,12 @@ public struct HatchRibbonUI {
         // Colors
         if settings.fillType == 0 || settings.fillType == 1 {
             ImGuiTextV(settings.fillType == 0 ? "Pattern color" : "Color")
-            renderColorPresetRow(id: 1, currentColor: &settings.primaryColor, engine: engine)
+            renderColorPresetRow(
+                id: 1,
+                currentColor: &settings.primaryColor,
+                engine: engine,
+                isContinuousDragActive: &settings.isContinuousDragActive,
+                isContinuousDragFinished: &settings.isContinuousDragFinished)
             
             if settings.fillType == 0 {
                 ImGuiDummy(ImVec2(x: 0, y: 8.0 * uiScale))
@@ -303,7 +316,12 @@ public struct HatchRibbonUI {
                 }
                 if hasBg {
                     ImGuiDummy(ImVec2(x: 0, y: 4.0 * uiScale))
-                    renderColorPresetRow(id: 2, currentColor: &settings.backgroundColor, engine: engine)
+                    renderColorPresetRow(
+                        id: 2,
+                        currentColor: &settings.backgroundColor,
+                        engine: engine,
+                        isContinuousDragActive: &settings.isContinuousDragActive,
+                        isContinuousDragFinished: &settings.isContinuousDragFinished)
                     if let current = settings.backgroundColor {
                         lastUsedBackgroundColor = current
                     }
@@ -338,10 +356,20 @@ public struct HatchRibbonUI {
 
             ImGuiDummy(ImVec2(x: 0, y: 12.0 * uiScale))
             ImGuiTextV("Start color")
-            renderColorPresetRow(id: 1, currentColor: &settings.primaryColor, engine: engine)
+            renderColorPresetRow(
+                id: 1,
+                currentColor: &settings.primaryColor,
+                engine: engine,
+                isContinuousDragActive: &settings.isContinuousDragActive,
+                isContinuousDragFinished: &settings.isContinuousDragFinished)
             ImGuiDummy(ImVec2(x: 0, y: 8.0 * uiScale))
             ImGuiTextV("Stop color")
-            renderColorPresetRow(id: 3, currentColor: &settings.secondaryColor, engine: engine)
+            renderColorPresetRow(
+                id: 3,
+                currentColor: &settings.secondaryColor,
+                engine: engine,
+                isContinuousDragActive: &settings.isContinuousDragActive,
+                isContinuousDragFinished: &settings.isContinuousDragFinished)
         }
         
         ImGuiDummy(ImVec2(x: 0, y: 12.0 * uiScale))
@@ -350,6 +378,12 @@ public struct HatchRibbonUI {
         ImGuiTextV("Angle")
         ImGuiPushItemWidth(-1)
         ImGuiSliderAngle("##HatchAngle", &settings.angle, -180, 180, "%.0f", ImGuiSliderFlags(0))
+        if igIsItemActive() {
+            settings.isContinuousDragActive = true
+        }
+        if igIsItemDeactivatedAfterEdit() {
+            settings.isContinuousDragFinished = true
+        }
         ImGuiPopItemWidth()
         
         if settings.fillType == 0 {
@@ -357,6 +391,12 @@ public struct HatchRibbonUI {
             ImGuiTextV("Scale")
             ImGuiPushItemWidth(-1)
             ImGuiInputFloat("##HatchScale", &settings.scale, 0.1, 1.0, "%.2f", 0)
+            if igIsItemActive() {
+                settings.isContinuousDragActive = true
+            }
+            if igIsItemDeactivatedAfterEdit() {
+                settings.isContinuousDragFinished = true
+            }
             ImGuiPopItemWidth()
         }
         
@@ -569,7 +609,13 @@ public struct HatchRibbonUI {
         }
     }
 
-    private static func renderColorPresetRow(id: Int, currentColor: inout ColorRGBA?, engine: PhrostEngine) {
+    private static func renderColorPresetRow(
+        id: Int,
+        currentColor: inout ColorRGBA?,
+        engine: PhrostEngine,
+        isContinuousDragActive: inout Bool,
+        isContinuousDragFinished: inout Bool
+    ) {
         let presetColors: [ColorRGBA] = [
             ColorRGBA(r: 255, g: 90,  b: 90),
             ColorRGBA(r: 250, g: 180, b: 40),
@@ -634,6 +680,12 @@ public struct HatchRibbonUI {
                     g: UInt8(Swift.max(0, Swift.min(255, col[1] * 255))),
                     b: UInt8(Swift.max(0, Swift.min(255, col[2] * 255))),
                     a: UInt8(Swift.max(0, Swift.min(255, col[3] * 255))))
+            }
+            if igIsItemActive() {
+                isContinuousDragActive = true
+            }
+            if igIsItemDeactivatedAfterEdit() {
+                isContinuousDragFinished = true
             }
             igEndPopup()
         }

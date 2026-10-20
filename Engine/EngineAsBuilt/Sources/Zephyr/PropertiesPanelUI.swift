@@ -951,14 +951,24 @@ struct PropertiesPanelUI {
                 }
                 ImGuiPopItemWidth()
 
-                var angleDeg = Float(angle * 180.0 / .pi)
+                var angleRad = Float(angle)
                 ImGuiTextV("Angle")
                 ImGuiSameLine(0, 8)
                 ImGuiPushItemWidth(ImGuiGetFontSize() * 5)
-                if ImGuiSliderAngle("##PropsHatchAngle", &angleDeg, -180, 180, "%.0f", ImGuiSliderFlags(0)) {
-                    let newPrim = CADPrimitive.hatch(boundary: boundary, pattern: pattern, scale: scale, angle: Double(angleDeg), color: color, backgroundColor: backgroundColor)
-                    updateHatchPrimitive(entity: entity, geometry: geometry, index: primitiveIndex, primitive: newPrim, engine: engine)
-                    engine.tabManager.markActiveDirty()
+                let angleChanged = ImGuiSliderAngle("##PropsHatchAngle", &angleRad, -180, 180, "%.0f", ImGuiSliderFlags(0))
+                let angleActive = igIsItemActive()
+                let angleDeactivated = igIsItemDeactivatedAfterEdit()
+                if angleChanged || angleActive || angleDeactivated {
+                    let newPrim = CADPrimitive.hatch(boundary: boundary, pattern: pattern, scale: scale, angle: Double(angleRad), color: color, backgroundColor: backgroundColor)
+                    handleHatchPrimitiveEdit(
+                        entity: entity,
+                        geometry: geometry,
+                        index: primitiveIndex,
+                        primitive: newPrim,
+                        engine: engine,
+                        isActive: angleActive,
+                        isFinished: angleDeactivated,
+                        hasChanged: angleChanged)
                 }
                 ImGuiPopItemWidth()
 
@@ -966,10 +976,20 @@ struct PropertiesPanelUI {
                 ImGuiTextV("Scale")
                 ImGuiSameLine(0, 8)
                 ImGuiPushItemWidth(ImGuiGetFontSize() * 5)
-                if ImGuiInputFloat("##PropsHatchScale", &scl, 0.1, 1.0, "%.2f", 0) {
+                let scaleChanged = ImGuiInputFloat("##PropsHatchScale", &scl, 0.1, 1.0, "%.2f", 0)
+                let scaleActive = igIsItemActive()
+                let scaleDeactivated = igIsItemDeactivatedAfterEdit()
+                if scaleChanged || scaleActive || scaleDeactivated {
                     let newPrim = CADPrimitive.hatch(boundary: boundary, pattern: pattern, scale: Double(scl), angle: angle, color: color, backgroundColor: backgroundColor)
-                    updateHatchPrimitive(entity: entity, geometry: geometry, index: primitiveIndex, primitive: newPrim, engine: engine)
-                    engine.tabManager.markActiveDirty()
+                    handleHatchPrimitiveEdit(
+                        entity: entity,
+                        geometry: geometry,
+                        index: primitiveIndex,
+                        primitive: newPrim,
+                        engine: engine,
+                        isActive: scaleActive,
+                        isFinished: scaleDeactivated,
+                        hasChanged: scaleChanged)
                 }
                 ImGuiPopItemWidth()
 
@@ -999,14 +1019,24 @@ struct PropertiesPanelUI {
                 }
                 ImGuiPopItemWidth()
 
-                var angleDeg = Float(angle * 180.0 / .pi)
+                var angleRad = Float(angle)
                 ImGuiTextV("Angle")
                 ImGuiSameLine(0, 8)
                 ImGuiPushItemWidth(ImGuiGetFontSize() * 5)
-                if ImGuiSliderAngle("##PropsHatchPathAngle", &angleDeg, -180, 180, "%.0f", ImGuiSliderFlags(0)) {
-                    let newPrim = CADPrimitive.hatchPath(boundary: boundary, holes: holes, pattern: pattern, scale: scale, angle: Double(angleDeg), color: color, backgroundColor: backgroundColor)
-                    updateHatchPrimitive(entity: entity, geometry: geometry, index: primitiveIndex, primitive: newPrim, engine: engine)
-                    engine.tabManager.markActiveDirty()
+                let angleChanged = ImGuiSliderAngle("##PropsHatchPathAngle", &angleRad, -180, 180, "%.0f", ImGuiSliderFlags(0))
+                let angleActive = igIsItemActive()
+                let angleDeactivated = igIsItemDeactivatedAfterEdit()
+                if angleChanged || angleActive || angleDeactivated {
+                    let newPrim = CADPrimitive.hatchPath(boundary: boundary, holes: holes, pattern: pattern, scale: scale, angle: Double(angleRad), color: color, backgroundColor: backgroundColor)
+                    handleHatchPrimitiveEdit(
+                        entity: entity,
+                        geometry: geometry,
+                        index: primitiveIndex,
+                        primitive: newPrim,
+                        engine: engine,
+                        isActive: angleActive,
+                        isFinished: angleDeactivated,
+                        hasChanged: angleChanged)
                 }
                 ImGuiPopItemWidth()
 
@@ -1014,10 +1044,20 @@ struct PropertiesPanelUI {
                 ImGuiTextV("Scale")
                 ImGuiSameLine(0, 8)
                 ImGuiPushItemWidth(ImGuiGetFontSize() * 5)
-                if ImGuiInputFloat("##PropsHatchPathScale", &scl, 0.1, 1.0, "%.2f", 0) {
+                let scaleChanged = ImGuiInputFloat("##PropsHatchPathScale", &scl, 0.1, 1.0, "%.2f", 0)
+                let scaleActive = igIsItemActive()
+                let scaleDeactivated = igIsItemDeactivatedAfterEdit()
+                if scaleChanged || scaleActive || scaleDeactivated {
                     let newPrim = CADPrimitive.hatchPath(boundary: boundary, holes: holes, pattern: pattern, scale: Double(scl), angle: angle, color: color, backgroundColor: backgroundColor)
-                    updateHatchPrimitive(entity: entity, geometry: geometry, index: primitiveIndex, primitive: newPrim, engine: engine)
-                    engine.tabManager.markActiveDirty()
+                    handleHatchPrimitiveEdit(
+                        entity: entity,
+                        geometry: geometry,
+                        index: primitiveIndex,
+                        primitive: newPrim,
+                        engine: engine,
+                        isActive: scaleActive,
+                        isFinished: scaleDeactivated,
+                        hasChanged: scaleChanged)
                 }
                 ImGuiPopItemWidth()
 
@@ -1027,14 +1067,24 @@ struct PropertiesPanelUI {
                 guard ImGuiCollapsingHeader("Gradient", Int32(ImGuiTreeNodeFlags_DefaultOpen.rawValue)) else { continue }
                 ImGuiTextV("Type: \(name)")
 
-                var angleDeg = Float(gradAngle * 180.0 / .pi)
+                var angleRad = Float(gradAngle)
                 ImGuiTextV("Angle")
                 ImGuiSameLine(0, 8)
                 ImGuiPushItemWidth(ImGuiGetFontSize() * 5)
-                if ImGuiSliderAngle("##PropsGradAngle", &angleDeg, -180, 180, "%.0f", ImGuiSliderFlags(0)) {
-                    let newPrim = CADPrimitive.gradient(outer: outer, holes: holes, gradientName: name, angle: Double(angleDeg), color1: c1, color2: c2)
-                    updateHatchPrimitive(entity: entity, geometry: geometry, index: primitiveIndex, primitive: newPrim, engine: engine)
-                    engine.tabManager.markActiveDirty()
+                let angleChanged = ImGuiSliderAngle("##PropsGradAngle", &angleRad, -180, 180, "%.0f", ImGuiSliderFlags(0))
+                let angleActive = igIsItemActive()
+                let angleDeactivated = igIsItemDeactivatedAfterEdit()
+                if angleChanged || angleActive || angleDeactivated {
+                    let newPrim = CADPrimitive.gradient(outer: outer, holes: holes, gradientName: name, angle: Double(angleRad), color1: c1, color2: c2)
+                    handleHatchPrimitiveEdit(
+                        entity: entity,
+                        geometry: geometry,
+                        index: primitiveIndex,
+                        primitive: newPrim,
+                        engine: engine,
+                        isActive: angleActive,
+                        isFinished: angleDeactivated,
+                        hasChanged: angleChanged)
                 }
                 ImGuiPopItemWidth()
 
@@ -1046,14 +1096,54 @@ struct PropertiesPanelUI {
         }
     }
 
-    private static func updateHatchPrimitive(
+    private static var propsHatchDragPreEditSnapshot: CADDocumentSnapshot?
+
+    private static func handleHatchPrimitiveEdit(
         entity: CADEntity,
         geometry: [CADPrimitive],
         index: Int,
         primitive: CADPrimitive,
-        engine: PhrostEngine
+        engine: PhrostEngine,
+        isActive: Bool,
+        isFinished: Bool,
+        hasChanged: Bool
     ) {
-        guard geometry.indices.contains(index) else { return }
+        if isFinished {
+            if let snapshot = propsHatchDragPreEditSnapshot {
+                engine.document.pushUndo(snapshot)
+                propsHatchDragPreEditSnapshot = nil
+            } else if hasChanged {
+                updateHatchPrimitive(entity: entity, geometry: geometry, index: index, primitive: primitive, engine: engine)
+                engine.tabManager.markActiveDirty()
+                return
+            }
+            updateHatchPrimitiveLive(entity: entity, geometry: geometry, index: index, primitive: primitive, engine: engine)
+            engine.document.invalidateEntityGrid()
+            engine.document.markEdited(regenerate: true)
+            engine.tabManager.markActiveDirty()
+        } else if isActive {
+            if propsHatchDragPreEditSnapshot == nil {
+                propsHatchDragPreEditSnapshot = engine.document.snapshot()
+            }
+            updateHatchPrimitiveLive(entity: entity, geometry: geometry, index: index, primitive: primitive, engine: engine)
+            engine.tabManager.markActiveDirty()
+        } else if hasChanged {
+            if let snapshot = propsHatchDragPreEditSnapshot {
+                engine.document.pushUndo(snapshot)
+                propsHatchDragPreEditSnapshot = nil
+            }
+            updateHatchPrimitive(entity: entity, geometry: geometry, index: index, primitive: primitive, engine: engine)
+            engine.tabManager.markActiveDirty()
+        }
+    }
+
+    private static func prepareHatchEntity(
+        entity: CADEntity,
+        geometry: [CADPrimitive],
+        index: Int,
+        primitive: CADPrimitive
+    ) -> CADEntity? {
+        guard geometry.indices.contains(index) else { return nil }
         var updatedGeometry = geometry
         updatedGeometry[index] = primitive
         var updatedEntity = entity
@@ -1062,11 +1152,16 @@ struct PropertiesPanelUI {
         switch primitive {
         case .hatch(_, let pattern, let scale, let angle, _, _),
              .hatchPath(_, _, let pattern, let scale, let angle, _, _):
-            updatedEntity.xdata["dxf.hatchPatternName"] = .string(pattern)
+            let patternKey = pattern.isEmpty ? "SOLID" : pattern.uppercased()
+            updatedEntity.xdata["zephyr.hatchPatternKey"] = .string(patternKey)
+            updatedEntity.xdata["dxf.hatchPatternName"] = .string(patternKey)
+            updatedEntity.xdata["dxf.hatchPatternType"] = .string(DXFHatchGenerator.patternKindName(for: patternKey))
             updatedEntity.xdata["dxf.hatchScale"] = .double(scale)
             updatedEntity.xdata["dxf.hatchAngle"] = .double(angle)
+            updatedEntity.xdata["dxf.hatchSpacing"] = .double(DXFHatchGenerator.effectiveSpacing(patternName: patternKey, scale: scale))
             updatedEntity.xdata["dxf.hatchIsGradient"] = .bool(false)
         case .gradient(_, _, let name, let angle, _, _):
+            updatedEntity.xdata["zephyr.hatchPatternKey"] = .string("GRADIENT")
             updatedEntity.xdata["dxf.hatchPatternName"] = .string("GRADIENT")
             updatedEntity.xdata["dxf.hatchIsGradient"] = .bool(true)
             updatedEntity.xdata["dxf.hatchGradientName"] = .string(name)
@@ -1074,7 +1169,28 @@ struct PropertiesPanelUI {
         default:
             break
         }
+        return updatedEntity
+    }
 
+    private static func updateHatchPrimitiveLive(
+        entity: CADEntity,
+        geometry: [CADPrimitive],
+        index: Int,
+        primitive: CADPrimitive,
+        engine: PhrostEngine
+    ) {
+        guard let updatedEntity = prepareHatchEntity(entity: entity, geometry: geometry, index: index, primitive: primitive) else { return }
+        engine.document.updateEntityLive(updatedEntity)
+    }
+
+    private static func updateHatchPrimitive(
+        entity: CADEntity,
+        geometry: [CADPrimitive],
+        index: Int,
+        primitive: CADPrimitive,
+        engine: PhrostEngine
+    ) {
+        guard let updatedEntity = prepareHatchEntity(entity: entity, geometry: geometry, index: index, primitive: primitive) else { return }
         engine.document.updateEntity(updatedEntity)
     }
 

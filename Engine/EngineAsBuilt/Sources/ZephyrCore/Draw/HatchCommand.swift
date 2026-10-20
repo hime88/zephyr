@@ -46,7 +46,10 @@ public final class HatchCommand: FeatureCommand {
     private var secondaryColor: ColorRGBA? = nil     // for gradients
     private var selectionMode: HatchSelectionMode = .pickPoints
     private var islandStyle: Int32 = 0
+    private var associative: Bool = true
     private var lastCreatedHatchHandle: UUID?
+    private var hatchDragPreEditSnapshot: CADDocumentSnapshot?
+    private var lastObservedUndoDepth: Int = -1
 
     public init() {}
 
@@ -62,6 +65,7 @@ public final class HatchCommand: FeatureCommand {
         currentMouseWorldX = 0
         currentMouseWorldY = 0
         lastCreatedHatchHandle = nil
+        hatchDragPreEditSnapshot = nil
 
         if let handle = engine.cadSelection.lastSelectedHandle,
            let entity = engine.document.entity(for: handle) {
@@ -69,13 +73,14 @@ public final class HatchCommand: FeatureCommand {
             lastCreatedHatchHandle = handle
         }
 
+        lastObservedUndoDepth = engine.document.undoManager.undoDepth
         processor.commandPrompt = "HATCH: Click inside an enclosed area to fill (Esc to cancel)."
     }
 
     public func cancel(engine: PhrostEngine, processor: CADCommandProcessor) {
-        if let handle = engine.cadSelection.lastSelectedHandle,
-           let entity = engine.document.entity(for: handle) {
-            engine.document.updateEntity(entity)
+        if let snapshot = hatchDragPreEditSnapshot {
+            engine.document.pushUndo(snapshot)
+            hatchDragPreEditSnapshot = nil
         }
         state = .completed
     }
@@ -85,6 +90,14 @@ public final class HatchCommand: FeatureCommand {
             switch storedIsland {
             case .int(let v): islandStyle = Int32(v)
             case .double(let v): islandStyle = Int32(v)
+            default: break
+            }
+        }
+
+        if let storedAssoc = entity.xdata["dxf.hatchAssociative"] {
+            switch storedAssoc {
+            case .bool(let b): associative = b
+            case .int(let v): associative = v != 0
             default: break
             }
         }
@@ -116,6 +129,8 @@ public final class HatchCommand: FeatureCommand {
         if case .string(let hex)? = entity.xdata["zephyr.hatchBackgroundColor"],
            let bg = ColorRGBA(hex: hex) {
             backgroundColor = bg
+        } else {
+            backgroundColor = nil
         }
 
         guard let geometry = entity.localGeometry else { return }
@@ -128,6 +143,7 @@ public final class HatchCommand: FeatureCommand {
                 hatchAngle = Float(angle)
                 primaryColor = c1
                 secondaryColor = c2
+                backgroundColor = nil
                 return
             case .hatchPath(_, _, let pat, let scale, let angle, let color, let bg):
                 fillType = 0
@@ -135,6 +151,7 @@ public final class HatchCommand: FeatureCommand {
                 hatchScale = Float(scale)
                 hatchAngle = Float(angle)
                 primaryColor = color
+                secondaryColor = nil
                 if bg != nil { backgroundColor = bg }
                 return
             case .hatch(_, let pat, let scale, let angle, let color, let bg):
@@ -143,11 +160,14 @@ public final class HatchCommand: FeatureCommand {
                 hatchScale = Float(scale)
                 hatchAngle = Float(angle)
                 primaryColor = color
+                secondaryColor = nil
                 if bg != nil { backgroundColor = bg }
                 return
             case .fillComplexPolygon(_, _, let color):
                 fillType = 1
                 primaryColor = color
+                secondaryColor = nil
+                backgroundColor = nil
             default:
                 break
             }
@@ -231,9 +251,9 @@ public final class HatchCommand: FeatureCommand {
     ) -> CommandResult {
         switch scancode {
         case SDL_SCANCODE_ESCAPE, SDL_SCANCODE_RETURN, SDL_SCANCODE_KP_ENTER:
-            if let handle = engine.cadSelection.lastSelectedHandle,
-               let entity = engine.document.entity(for: handle) {
-                engine.document.updateEntity(entity)
+            if let snapshot = hatchDragPreEditSnapshot {
+                engine.document.pushUndo(snapshot)
+                hatchDragPreEditSnapshot = nil
             }
             state = .completed
             return .finished
@@ -409,7 +429,7 @@ public final class HatchCommand: FeatureCommand {
         entity.xdata["dxf.hatchAngle"] = .double(Double(hatchAngle))
         entity.xdata["dxf.hatchSpacing"] = .double(
             DXFHatchGenerator.effectiveSpacing(patternName: patternKey, scale: scale))
-        entity.xdata["dxf.hatchAssociative"] = .bool(false)
+        entity.xdata["dxf.hatchAssociative"] = .bool(associative)
         entity.xdata["dxf.hatchIsGradient"] = .bool(fillType == 2)
         entity.xdata["dxf.hatchStyle"] = .int(Int(islandStyle))
 
@@ -535,8 +555,12 @@ public final class HatchCommand: FeatureCommand {
     }
 
     /// Apply the current ribbon settings to the selected hatch entity in-place.
-    private func applyToSelected(engine: PhrostEngine, processor: CADCommandProcessor) {
-        guard let handle = engine.cadSelection.lastSelectedHandle,
+    private func applyToSelected(
+        engine: PhrostEngine,
+        processor: CADCommandProcessor,
+        pushUndo: Bool = false
+    ) {
+        guard let handle = engine.cadSelection.lastSelectedHandle ?? lastCreatedHatchHandle,
               let entity = engine.document.entity(for: handle) else {
             processor.commandPrompt = "No hatch selected to apply changes to."
             return
@@ -563,7 +587,11 @@ public final class HatchCommand: FeatureCommand {
         var updated = entity
         applyHatchXData(to: &updated)
         updated.localGeometry = newPrims
-        engine.document.updateEntityLive(updated)
+        if pushUndo {
+            engine.document.updateEntity(updated)
+        } else {
+            engine.document.updateEntityLive(updated)
+        }
         engine.tabManager.markActiveDirty()
         processor.commandPrompt = "Hatch updated. Click inside another area or press Esc/Enter."
     }
@@ -631,6 +659,16 @@ public final class HatchCommand: FeatureCommand {
     public func renderImGui(engine: PhrostEngine) {
         guard case .waitingForInternalPoint = state else { return }
 
+        // Resync command state if undo/redo altered the document
+        let currentUndoDepth = engine.document.undoManager.undoDepth
+        if lastObservedUndoDepth != -1, currentUndoDepth != lastObservedUndoDepth {
+            if let handle = engine.cadSelection.lastSelectedHandle ?? lastCreatedHatchHandle,
+               let entity = engine.document.entity(for: handle) {
+                initFromEntity(entity)
+            }
+        }
+        lastObservedUndoDepth = currentUndoDepth
+
         let previousFillType = fillType
         let previousPatternName = patternName
         let previousGradientName = gradientName
@@ -640,6 +678,7 @@ public final class HatchCommand: FeatureCommand {
         let previousBackgroundColor = backgroundColor
         let previousSecondaryColor = secondaryColor
         let previousIslandStyle = islandStyle
+        let previousAssociative = associative
 
         // Package command state into HatchRibbonUI.Settings
         var uiSettings = HatchRibbonUI.Settings(
@@ -656,7 +695,7 @@ public final class HatchCommand: FeatureCommand {
             showModeSection: true,
             applyClicked: false,
             closeRequested: false,
-            associative: true
+            associative: associative
         )
         HatchRibbonUI.render(&uiSettings, engine: engine)
         
@@ -671,6 +710,7 @@ public final class HatchCommand: FeatureCommand {
         secondaryColor = uiSettings.secondaryColor
         selectionMode = uiSettings.selectionMode == 1 ? .selectBoundary : .pickPoints
         islandStyle = uiSettings.islandStyle
+        associative = uiSettings.associative
 
         let settingsChanged = previousFillType != fillType
             || previousPatternName != patternName
@@ -681,19 +721,49 @@ public final class HatchCommand: FeatureCommand {
             || previousBackgroundColor != backgroundColor
             || previousSecondaryColor != secondaryColor
             || previousIslandStyle != islandStyle
+            || previousAssociative != associative
 
-        let shouldLiveApply = settingsChanged
-            && (lastCreatedHatchHandle == engine.cadSelection.lastSelectedHandle || engine.cadSelection.lastSelectedHandle != nil)
-
-        if uiSettings.applyClicked || shouldLiveApply {
-            applyToSelected(engine: engine, processor: engine.commandProcessor)
-        }
         if uiSettings.closeRequested {
-            if let handle = engine.cadSelection.lastSelectedHandle,
-               let entity = engine.document.entity(for: handle) {
-                engine.document.updateEntity(entity)
+            if let snapshot = hatchDragPreEditSnapshot {
+                engine.document.pushUndo(snapshot)
+                hatchDragPreEditSnapshot = nil
             }
             state = .completed
+            engine.commandProcessor.finishFeatureCommand(engine: engine)
+            return
+        }
+
+        let hasHatchToUpdate = lastCreatedHatchHandle != nil || engine.cadSelection.lastSelectedHandle != nil
+
+        if uiSettings.isContinuousDragFinished {
+            if let snapshot = hatchDragPreEditSnapshot {
+                engine.document.pushUndo(snapshot)
+                hatchDragPreEditSnapshot = nil
+            } else if settingsChanged && hasHatchToUpdate {
+                applyToSelected(engine: engine, processor: engine.commandProcessor, pushUndo: true)
+                lastObservedUndoDepth = engine.document.undoManager.undoDepth
+                return
+            }
+            if hasHatchToUpdate {
+                applyToSelected(engine: engine, processor: engine.commandProcessor, pushUndo: false)
+                engine.document.invalidateEntityGrid()
+                engine.document.markEdited(regenerate: true)
+            }
+            lastObservedUndoDepth = engine.document.undoManager.undoDepth
+        } else if uiSettings.isContinuousDragActive {
+            if hatchDragPreEditSnapshot == nil {
+                hatchDragPreEditSnapshot = engine.document.snapshot()
+            }
+            if hasHatchToUpdate {
+                applyToSelected(engine: engine, processor: engine.commandProcessor, pushUndo: false)
+            }
+        } else if uiSettings.applyClicked || (settingsChanged && hasHatchToUpdate) {
+            if let snapshot = hatchDragPreEditSnapshot {
+                engine.document.pushUndo(snapshot)
+                hatchDragPreEditSnapshot = nil
+            }
+            applyToSelected(engine: engine, processor: engine.commandProcessor, pushUndo: true)
+            lastObservedUndoDepth = engine.document.undoManager.undoDepth
         }
     }
 }
