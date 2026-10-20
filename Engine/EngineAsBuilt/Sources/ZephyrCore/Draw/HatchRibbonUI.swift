@@ -85,9 +85,41 @@ public struct HatchRibbonUI {
             { _ in },
             nil)
 
+        let theme = engine.ui.theme
+        let isDark = engine.ui.isDarkTheme
+
         ImGuiPushStyleVar(Int32(ImGuiStyleVar_WindowRounding.rawValue), 12.0 * uiScale)
+        ImGuiPushStyleVar(Int32(ImGuiStyleVar_WindowBorderSize.rawValue), 1.0)
         ImGuiPushStyleVar(Int32(ImGuiStyleVar_WindowPadding.rawValue), ImVec2(x: pad, y: pad))
-        ImGuiPushStyleColor(Int32(ImGuiCol_WindowBg.rawValue), engine.ui.theme.panelBg)
+        ImGuiPushStyleVar(Int32(ImGuiStyleVar_FrameRounding.rawValue), 6.0 * uiScale)
+        ImGuiPushStyleVar(Int32(ImGuiStyleVar_FramePadding.rawValue), ImVec2(x: 8.0 * uiScale, y: 4.0 * uiScale))
+
+        let frameBg = isDark
+            ? ImVec4(x: 0.14, y: 0.25, z: 0.38, w: 0.70)
+            : ImVec4(x: 0.88, y: 0.92, z: 0.96, w: 0.80)
+        let frameHover = isDark
+            ? theme.hoverBg
+            : ImVec4(x: 0.80, y: 0.87, z: 0.93, w: 0.90)
+        let btnBg = isDark
+            ? ImVec4(x: 0.12, y: 0.22, z: 0.32, w: 0.85)
+            : ImVec4(x: 0.88, y: 0.92, z: 0.96, w: 1.0)
+        let btnHover = isDark
+            ? theme.hoverBg
+            : ImVec4(x: 0.80, y: 0.87, z: 0.93, w: 1.0)
+
+        ImGuiPushStyleColor(Int32(ImGuiCol_WindowBg.rawValue), theme.panelBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_Border.rawValue), theme.border)
+        ImGuiPushStyleColor(Int32(ImGuiCol_FrameBg.rawValue), frameBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_FrameBgHovered.rawValue), frameHover)
+        ImGuiPushStyleColor(Int32(ImGuiCol_FrameBgActive.rawValue), theme.activeBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), btnBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_ButtonHovered.rawValue), btnHover)
+        ImGuiPushStyleColor(Int32(ImGuiCol_ButtonActive.rawValue), theme.activeBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_SliderGrab.rawValue), theme.brandGold)
+        ImGuiPushStyleColor(Int32(ImGuiCol_SliderGrabActive.rawValue), theme.brandGoldActive)
+        ImGuiPushStyleColor(Int32(ImGuiCol_CheckMark.rawValue), theme.brandGold)
+        ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), theme.textPrimary)
+        ImGuiPushStyleColor(Int32(ImGuiCol_TextDisabled.rawValue), theme.textDim)
 
         let flags = Int32(ImGuiWindowFlags_NoTitleBar.rawValue
                         | ImGuiWindowFlags_NoSavedSettings.rawValue
@@ -96,15 +128,15 @@ public struct HatchRibbonUI {
 
         guard igBegin("##HatchCard", nil, flags) else {
             ImGuiEnd()
-            ImGuiPopStyleVar(2)
-            ImGuiPopStyleColor(1)
+            ImGuiPopStyleVar(5)
+            ImGuiPopStyleColor(13)
             return
         }
 
         defer {
             ImGuiEnd()
-            ImGuiPopStyleVar(2)
-            ImGuiPopStyleColor(1)
+            ImGuiPopStyleVar(5)
+            ImGuiPopStyleColor(13)
         }
 
         let dl = igGetWindowDrawList()
@@ -112,23 +144,33 @@ public struct HatchRibbonUI {
 
         // --- Custom Header ---
         igBeginGroup()
-        // We simulate a bold header
-        ImGuiTextV("... Hatch")
+        if let bold = engine.ui.boldFont ?? engine.ui.commandTitleFont { ImGuiPushFont(bold, 0.0) }
+        ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), theme.brandGold)
+        ImGuiTextV("Hatch")
+        ImGuiPopStyleColor(1)
+        if engine.ui.boldFont != nil || engine.ui.commandTitleFont != nil { ImGuiPopFont() }
         
         if !settings.showModeSection {
-            ImGuiSameLine(0, 8)
+            ImGuiSameLine(0, 8.0 * uiScale)
+            ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), theme.textDim)
             ImGuiTextV("[ 1 SELECTED ]")
+            ImGuiPopStyleColor(1)
         }
 
-        // Close button 'x' on right
+        // Close button '✕' on right
         ImGuiSameLine(0, 0)
         let closeX = pad + contentW - controlH
         if ImGuiGetCursorPosX() < closeX {
             ImGuiSetCursorPosX(closeX)
         }
-        if igButton("x##HatchClose", ImVec2(x: controlH, y: controlH)) {
+        ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), ImVec4(x: 0, y: 0, z: 0, w: 0))
+        ImGuiPushStyleColor(Int32(ImGuiCol_ButtonHovered.rawValue), theme.dangerBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_ButtonActive.rawValue), theme.dangerBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), theme.textDim)
+        if igButton("✕##HatchClose", ImVec2(x: controlH, y: controlH)) {
             settings.closeRequested = true
         }
+        ImGuiPopStyleColor(4)
         igEndGroup()
         
         ImGuiDummy(ImVec2(x: 0, y: 8.0 * uiScale))
@@ -209,7 +251,7 @@ public struct HatchRibbonUI {
                 ImDrawListAddRectFilled(dl, pMin, pMax, solidU32, 8.0 * uiScale, 0)
             }
         }
-        ImDrawListAddRect(dl, pMin, pMax, makeCol32(255, 255, 255, 40), 8.0 * uiScale, 1.0 * uiScale, 0)
+        ImDrawListAddRect(dl, pMin, pMax, igGetColorU32_Vec4(theme.border), 8.0 * uiScale, 1.0 * uiScale, 0)
         
         // Pattern / Gradient Name Badge in bottom left
         let badgeText = settings.fillType == 0
@@ -224,7 +266,9 @@ public struct HatchRibbonUI {
         
         let oldPos = igGetCursorScreenPos()
         ImGuiSetCursorScreenPos(ImVec2(x: badgeMin.x + 6.0 * uiScale, y: badgeMin.y + 4.0 * uiScale))
+        ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), makeCol32(240, 240, 240, 255))
         ImGuiTextV(badgeText)
+        ImGuiPopStyleColor(1)
         ImGuiSetCursorScreenPos(oldPos)
         
         ImGuiDummy(ImVec2(x: 0, y: 12.0 * uiScale))
@@ -372,10 +416,15 @@ public struct HatchRibbonUI {
             ImGuiDummy(ImVec2(x: 0, y: 12.0 * uiScale))
             
             // Apply hatch button
-            ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), makeCol32(220, 150, 40, 255))
-            ImGuiPushStyleColor(Int32(ImGuiCol_ButtonHovered.rawValue), makeCol32(240, 170, 60, 255))
-            ImGuiPushStyleColor(Int32(ImGuiCol_ButtonActive.rawValue), makeCol32(200, 130, 20, 255))
-            ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), makeCol32(20, 20, 20, 255))
+            let gold = engine.ui.theme.brandGold
+            let goldHover = engine.ui.theme.brandGoldHover
+            let goldActive = engine.ui.theme.brandGoldActive
+            let darkText = engine.ui.theme.rowHoverText
+
+            ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), gold)
+            ImGuiPushStyleColor(Int32(ImGuiCol_ButtonHovered.rawValue), goldHover)
+            ImGuiPushStyleColor(Int32(ImGuiCol_ButtonActive.rawValue), goldActive)
+            ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), darkText)
             
             if igButton("Apply hatch", ImVec2(x: ImGuiGetContentRegionAvail().x, y: max(controlH, 40.0 * uiScale))) {
                 settings.applyClicked = true
@@ -432,6 +481,10 @@ public struct HatchRibbonUI {
 
         ImGuiDummy(ImVec2(x: 0, y: 6.0 * uiScale))
         let listHeight = min(150.0 * uiScale, max(96.0 * uiScale, ImGuiGetTextLineHeightWithSpacing() * 5.0))
+        let childBg = engine.ui.isDarkTheme
+            ? ImVec4(x: 0.06, y: 0.14, z: 0.22, w: 0.50)
+            : ImVec4(x: 1.0, y: 1.0, z: 1.0, w: 0.60)
+        ImGuiPushStyleColor(Int32(ImGuiCol_ChildBg.rawValue), childBg)
         if igBeginChild_Str(
             "##HatchPatternResults",
             ImVec2(x: contentWidth, y: listHeight),
@@ -463,6 +516,7 @@ public struct HatchRibbonUI {
             }
         }
         igEndChild()
+        ImGuiPopStyleColor(1)
     }
 
     private static func renderPatternPreview(
@@ -551,7 +605,10 @@ public struct HatchRibbonUI {
             if currentColor == col {
                 let rMin = igGetItemRectMin()
                 let rMax = igGetItemRectMax()
-                ImDrawListAddRect(igGetWindowDrawList(), rMin, rMax, makeCol32(255, 255, 255, 255), 4.0 * uiScale, 2.0 * uiScale, 0)
+                let highlightCol = engine.ui.isDarkTheme
+                    ? makeCol32(255, 255, 255, 255)
+                    : igGetColorU32_Vec4(engine.ui.theme.brandGold)
+                ImDrawListAddRect(igGetWindowDrawList(), rMin, rMax, highlightCol, 4.0 * uiScale, 2.0 * uiScale, 0)
             } else {
                 let rMin = igGetItemRectMin()
                 let rMax = igGetItemRectMax()
@@ -589,10 +646,13 @@ public struct HatchRibbonUI {
         engine: PhrostEngine,
         tooltip: String? = nil
     ) -> Bool {
-        let gold = engine.ui.theme.brandGold
-        let goldHover = engine.ui.theme.brandGoldHover
-        let goldActive = engine.ui.theme.brandGoldActive
-        let darkText = engine.ui.theme.rowHoverText
+        let theme = engine.ui.theme
+        let isDark = engine.ui.isDarkTheme
+
+        let gold = theme.brandGold
+        let goldHover = theme.brandGoldHover
+        let goldActive = theme.brandGoldActive
+        let darkText = theme.rowHoverText
 
         if isSelected {
             ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), gold)
@@ -600,10 +660,17 @@ public struct HatchRibbonUI {
             ImGuiPushStyleColor(Int32(ImGuiCol_ButtonActive.rawValue), goldActive)
             ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), darkText)
         } else {
-            ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), makeCol32(24, 46, 66, 220))
-            ImGuiPushStyleColor(Int32(ImGuiCol_ButtonHovered.rawValue), makeCol32(40, 72, 100, 255))
-            ImGuiPushStyleColor(Int32(ImGuiCol_ButtonActive.rawValue), makeCol32(30, 58, 82, 255))
-            ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textDim)
+            if isDark {
+                ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), makeCol32(24, 46, 66, 220))
+                ImGuiPushStyleColor(Int32(ImGuiCol_ButtonHovered.rawValue), makeCol32(40, 72, 100, 255))
+                ImGuiPushStyleColor(Int32(ImGuiCol_ButtonActive.rawValue), makeCol32(30, 58, 82, 255))
+                ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), theme.textDim)
+            } else {
+                ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), ImVec4(x: 0.88, y: 0.92, z: 0.96, w: 1.0))
+                ImGuiPushStyleColor(Int32(ImGuiCol_ButtonHovered.rawValue), ImVec4(x: 0.80, y: 0.87, z: 0.93, w: 1.0))
+                ImGuiPushStyleColor(Int32(ImGuiCol_ButtonActive.rawValue), theme.activeBg)
+                ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), theme.textPrimary)
+            }
         }
 
         let clicked = igButton(label, size)
@@ -613,7 +680,7 @@ public struct HatchRibbonUI {
             let rMin = igGetItemRectMin()
             let rMax = igGetItemRectMax()
             let dl = igGetWindowDrawList()
-            let borderCol = makeCol32(255, 255, 255, 180)
+            let borderCol = isDark ? makeCol32(255, 255, 255, 180) : makeCol32(200, 140, 0, 255)
             ImDrawListAddRect(dl, rMin, rMax, borderCol, 4.0 * max(0.75, engine.effectiveUiScale), 1.0, 0)
         }
 

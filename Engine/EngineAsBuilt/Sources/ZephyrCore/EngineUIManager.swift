@@ -549,7 +549,17 @@ public final class EngineUIManager {
             tuplePtr.withMemoryRebound(to: ImVec4.self, capacity: Int(ImGuiCol_COUNT.rawValue)) { colors in
                 
                 // Generic mappings for both themes based on semantic colors
-                colors[Int(ImGuiCol_Button.rawValue)]        = theme.border
+                if isDarkTheme {
+                    colors[Int(ImGuiCol_Button.rawValue)]         = theme.border
+                    colors[Int(ImGuiCol_FrameBg.rawValue)]        = ImVec4(x: 0.14, y: 0.25, z: 0.38, w: 0.70)
+                    colors[Int(ImGuiCol_FrameBgHovered.rawValue)] = theme.hoverBg
+                    colors[Int(ImGuiCol_FrameBgActive.rawValue)]  = theme.activeBg
+                } else {
+                    colors[Int(ImGuiCol_Button.rawValue)]         = ImVec4(x: 0.88, y: 0.92, z: 0.96, w: 1.00)
+                    colors[Int(ImGuiCol_FrameBg.rawValue)]        = ImVec4(x: 0.88, y: 0.92, z: 0.96, w: 0.80)
+                    colors[Int(ImGuiCol_FrameBgHovered.rawValue)] = ImVec4(x: 0.80, y: 0.87, z: 0.93, w: 0.90)
+                    colors[Int(ImGuiCol_FrameBgActive.rawValue)]  = theme.activeBg
+                }
                 colors[Int(ImGuiCol_ButtonHovered.rawValue)] = theme.brandGoldHover
                 colors[Int(ImGuiCol_ButtonActive.rawValue)]  = theme.brandGoldActive
 
@@ -569,6 +579,7 @@ public final class EngineUIManager {
                 
                 colors[Int(ImGuiCol_WindowBg.rawValue)]      = theme.panelBg
                 colors[Int(ImGuiCol_Text.rawValue)]          = theme.textPrimary
+                colors[Int(ImGuiCol_TextDisabled.rawValue)]  = theme.textDim
                 colors[Int(ImGuiCol_SliderGrab.rawValue)]    = theme.brandGold
                 colors[Int(ImGuiCol_SliderGrabActive.rawValue)] = theme.brandGoldActive
                 colors[Int(ImGuiCol_CheckMark.rawValue)]     = theme.brandGold

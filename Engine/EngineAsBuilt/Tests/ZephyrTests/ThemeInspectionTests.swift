@@ -15,6 +15,17 @@ final class ThemeInspectionTests: XCTestCase {
         _ = ImFontAtlas_AddFontDefault(io.pointee.Fonts, nil)
         igImFontAtlasBuildMain(io.pointee.Fonts)
 
+        func luminance(_ col: ImVec4) -> Double {
+            return 0.2126 * Double(col.x) + 0.7152 * Double(col.y) + 0.0722 * Double(col.z)
+        }
+        func contrastRatio(_ c1: ImVec4, _ c2: ImVec4) -> Double {
+            let l1 = luminance(c1)
+            let l2 = luminance(c2)
+            let top = max(l1, l2) + 0.05
+            let bottom = min(l1, l2) + 0.05
+            return top / bottom
+        }
+
         // 1. Dark theme verification
         ui.isDarkTheme = true
         ui.applyTheme()
@@ -28,11 +39,19 @@ final class ThemeInspectionTests: XCTestCase {
         let darkText = ImGuiGetStyleColorVec4(Int32(ImGuiCol_Text.rawValue))!.pointee
         let darkSliderGrab = ImGuiGetStyleColorVec4(Int32(ImGuiCol_SliderGrab.rawValue))!.pointee
         let darkCheckMark = ImGuiGetStyleColorVec4(Int32(ImGuiCol_CheckMark.rawValue))!.pointee
+        let darkFrameBg = ImGuiGetStyleColorVec4(Int32(ImGuiCol_FrameBg.rawValue))!.pointee
+        let darkButton = ImGuiGetStyleColorVec4(Int32(ImGuiCol_Button.rawValue))!.pointee
+        let darkTextDisabled = ImGuiGetStyleColorVec4(Int32(ImGuiCol_TextDisabled.rawValue))!.pointee
 
         XCTAssertEqual(darkWinBg.x, AppTheme.dark.panelBg.x, accuracy: 0.001)
         XCTAssertEqual(darkText.x, AppTheme.dark.textPrimary.x, accuracy: 0.001)
         XCTAssertEqual(darkSliderGrab.x, AppTheme.dark.brandGold.x, accuracy: 0.001)
         XCTAssertEqual(darkCheckMark.x, AppTheme.dark.brandGold.x, accuracy: 0.001)
+        XCTAssertEqual(darkTextDisabled.x, AppTheme.dark.textDim.x, accuracy: 0.001)
+
+        // Dark theme frame and button should be subtle dark values
+        XCTAssertLessThan(darkFrameBg.x, 0.3)
+        XCTAssertEqual(darkButton.x, AppTheme.dark.border.x, accuracy: 0.001)
 
         ImGuiRender()
 
@@ -48,6 +67,9 @@ final class ThemeInspectionTests: XCTestCase {
         let lightText = ImGuiGetStyleColorVec4(Int32(ImGuiCol_Text.rawValue))!.pointee
         let lightSliderGrab = ImGuiGetStyleColorVec4(Int32(ImGuiCol_SliderGrab.rawValue))!.pointee
         let lightCheckMark = ImGuiGetStyleColorVec4(Int32(ImGuiCol_CheckMark.rawValue))!.pointee
+        let lightFrameBg = ImGuiGetStyleColorVec4(Int32(ImGuiCol_FrameBg.rawValue))!.pointee
+        let lightButton = ImGuiGetStyleColorVec4(Int32(ImGuiCol_Button.rawValue))!.pointee
+        let lightTextDisabled = ImGuiGetStyleColorVec4(Int32(ImGuiCol_TextDisabled.rawValue))!.pointee
 
         // Light panel background should be pale/white (~0.97), text should be dark navy (~0.086)
         XCTAssertGreaterThan(lightWinBg.x, 0.9)
@@ -58,22 +80,32 @@ final class ThemeInspectionTests: XCTestCase {
         XCTAssertLessThan(lightText.y, 0.3)
         XCTAssertLessThan(lightText.z, 0.4)
 
+        // Light frame and button should be soft pale tones (not dark or hardcoded dark navy)
+        XCTAssertGreaterThan(lightFrameBg.x, 0.8)
+        XCTAssertGreaterThan(lightButton.x, 0.8)
+
         XCTAssertEqual(lightSliderGrab.x, AppTheme.light.brandGold.x, accuracy: 0.001)
         XCTAssertEqual(lightCheckMark.x, AppTheme.light.brandGold.x, accuracy: 0.001)
+        XCTAssertEqual(lightTextDisabled.x, AppTheme.light.textDim.x, accuracy: 0.001)
 
-        // 3. Contrast verification: ensure text is readable against panel background
-        func luminance(_ col: ImVec4) -> Double {
-            return 0.2126 * Double(col.x) + 0.7152 * Double(col.y) + 0.0722 * Double(col.z)
-        }
-        let darkContrast = (luminance(darkText) + 0.05) / (luminance(darkWinBg) + 0.05)
-        let lightContrast = (luminance(lightWinBg) + 0.05) / (luminance(lightText) + 0.05)
+        // 3. Contrast verification: ensure text is readable against panel and button backgrounds
+        let darkTextWinContrast = contrastRatio(darkText, darkWinBg)
+        let lightTextWinContrast = contrastRatio(lightText, lightWinBg)
+        let lightTextBtnContrast = contrastRatio(lightText, lightButton)
 
-        XCTAssertGreaterThan(darkContrast, 3.0, "Dark theme must provide high contrast between text and panelBg")
-        XCTAssertGreaterThan(lightContrast, 3.0, "Light theme must provide high contrast between text and panelBg")
+        XCTAssertGreaterThan(darkTextWinContrast, 3.0, "Dark theme must provide high contrast between text and panelBg")
+        XCTAssertGreaterThan(lightTextWinContrast, 3.0, "Light theme must provide high contrast between text and panelBg")
+        XCTAssertGreaterThan(lightTextBtnContrast, 3.0, "Light theme must provide high contrast between text and button background")
+
+        // 4. Verify unselected segment button contrast in light mode
+        let unselectedBtnBgLight = ImVec4(x: 0.88, y: 0.92, z: 0.96, w: 1.0)
+        let unselectedTextLight = AppTheme.light.textPrimary
+        let segmentBtnContrast = contrastRatio(unselectedTextLight, unselectedBtnBgLight)
+        XCTAssertGreaterThan(segmentBtnContrast, 4.0, "Unselected segment button in light mode must be easily legible")
 
         ImGuiRender()
 
-        // 4. toggleTheme() toggles between dark and light seamlessly
+        // 5. toggleTheme() toggles between dark and light seamlessly
         ui.toggleTheme()
         XCTAssertTrue(ui.isDarkTheme)
         ui.toggleTheme()
