@@ -265,6 +265,16 @@ public final class EngineUIManager {
     /// Whether the Blocks panel is visible (toggled via "BLOCKS" command).
     public var blockPanelVisible: Bool = false
 
+    /// Whether the External References palette is visible ("XREF").
+    public var xrefPanelVisible: Bool = false
+    public var xrefRefPathType: Int = 1
+    public var xrefSearchPaths: [String] = []
+    public var xrefMaxLoaded: Int = 32
+    public var xrefMaxDepth: Int = 16
+    public var xrefMaxPrimitives: Int = 5_000_000
+    public var xrefFadePercent: Int = 50
+    public var xrefBindType: Int = 0
+
     /// Whether the Data Tables panel is visible (toggled via "TABLE" command).
     public var dataTablePanelVisible: Bool = false
 

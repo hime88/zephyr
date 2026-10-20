@@ -33,6 +33,19 @@ public struct UserSettings: Codable, Sendable {
     /// files decode this as false, so upgrading users see the popup once.
     public var hasCompletedSetup: Bool
 
+    // MARK: - External references (xrefs)
+    public var xrefPanelVisible: Bool
+    /// REFPATHTYPE: 0 = full path, 1 = relative (default), 2 = no path.
+    public var xrefRefPathType: Int
+    public var xrefSearchPaths: [String]
+    public var xrefMaxLoaded: Int
+    public var xrefMaxDepth: Int
+    public var xrefMaxPrimitives: Int
+    /// XDWGFADECTL display fade percent (0 = off).
+    public var xrefFadePercent: Int
+    /// BINDTYPE: 0 = Bind ($0$ names), 1 = Insert (merge).
+    public var xrefBindType: Int
+
     // MARK: - Initialization
 
     /// Memberwise initializer (explicit: the custom Decodable init
@@ -47,7 +60,15 @@ public struct UserSettings: Codable, Sendable {
         showFPS: Bool,
         toolbarVisible: Bool,
         radialNavVisible: Bool,
-        hasCompletedSetup: Bool
+        hasCompletedSetup: Bool,
+        xrefPanelVisible: Bool = false,
+        xrefRefPathType: Int = 1,
+        xrefSearchPaths: [String] = [],
+        xrefMaxLoaded: Int = 32,
+        xrefMaxDepth: Int = 16,
+        xrefMaxPrimitives: Int = 5_000_000,
+        xrefFadePercent: Int = 50,
+        xrefBindType: Int = 0
     ) {
         self.isDarkTheme = isDarkTheme
         self.layersPanelVisible = layersPanelVisible
@@ -59,6 +80,14 @@ public struct UserSettings: Codable, Sendable {
         self.toolbarVisible = toolbarVisible
         self.radialNavVisible = radialNavVisible
         self.hasCompletedSetup = hasCompletedSetup
+        self.xrefPanelVisible = xrefPanelVisible
+        self.xrefRefPathType = xrefRefPathType
+        self.xrefSearchPaths = xrefSearchPaths
+        self.xrefMaxLoaded = xrefMaxLoaded
+        self.xrefMaxDepth = xrefMaxDepth
+        self.xrefMaxPrimitives = xrefMaxPrimitives
+        self.xrefFadePercent = xrefFadePercent
+        self.xrefBindType = xrefBindType
     }
 
     // MARK: - Default instance
@@ -101,6 +130,22 @@ public struct UserSettings: Codable, Sendable {
             ?? fallback.radialNavVisible
         hasCompletedSetup = try box.decodeIfPresent(Bool.self, forKey: .hasCompletedSetup)
             ?? fallback.hasCompletedSetup
+        xrefPanelVisible = try box.decodeIfPresent(Bool.self, forKey: .xrefPanelVisible)
+            ?? fallback.xrefPanelVisible
+        xrefRefPathType = try box.decodeIfPresent(Int.self, forKey: .xrefRefPathType)
+            ?? fallback.xrefRefPathType
+        xrefSearchPaths = try box.decodeIfPresent([String].self, forKey: .xrefSearchPaths)
+            ?? fallback.xrefSearchPaths
+        xrefMaxLoaded = try box.decodeIfPresent(Int.self, forKey: .xrefMaxLoaded)
+            ?? fallback.xrefMaxLoaded
+        xrefMaxDepth = try box.decodeIfPresent(Int.self, forKey: .xrefMaxDepth)
+            ?? fallback.xrefMaxDepth
+        xrefMaxPrimitives = try box.decodeIfPresent(Int.self, forKey: .xrefMaxPrimitives)
+            ?? fallback.xrefMaxPrimitives
+        xrefFadePercent = try box.decodeIfPresent(Int.self, forKey: .xrefFadePercent)
+            ?? fallback.xrefFadePercent
+        xrefBindType = try box.decodeIfPresent(Int.self, forKey: .xrefBindType)
+            ?? fallback.xrefBindType
     }
 
     /// Snapshots the live UI state into persistable settings. Single
@@ -117,7 +162,15 @@ public struct UserSettings: Codable, Sendable {
             showFPS: ui.showFPS,
             toolbarVisible: ui.toolbarVisible,
             radialNavVisible: ui.radialNavVisible,
-            hasCompletedSetup: ui.hasCompletedSetup
+            hasCompletedSetup: ui.hasCompletedSetup,
+            xrefPanelVisible: ui.xrefPanelVisible,
+            xrefRefPathType: ui.xrefRefPathType,
+            xrefSearchPaths: ui.xrefSearchPaths,
+            xrefMaxLoaded: ui.xrefMaxLoaded,
+            xrefMaxDepth: ui.xrefMaxDepth,
+            xrefMaxPrimitives: ui.xrefMaxPrimitives,
+            xrefFadePercent: ui.xrefFadePercent,
+            xrefBindType: ui.xrefBindType
         )
     }
 

@@ -92,6 +92,14 @@ public class DXFWriter {
     private var materialByLayerHandle: String = ""
     private var materialGlobalHandle: String = ""
     private var imageDictionaryHandle: String = ""
+    /// Clip (SPATIAL_FILTER) object handles per clipped INSERT.
+    private var spatialFilterHandlesByObject:
+        [ObjectIdentifier: (extDict: String, filterDict: String, filter: String)] = [:]
+    private var clippedInserts: [DXFInsertEntity] = []
+    /// PDF underlay definition handles (ACAD_PDFDEFINITIONS).
+    private var pdfDictionaryHandle = ""
+    private var pdfDefinitionHandleByKey: [String: String] = [:]
+    private var pdfUnderlays: [DXFUnderlayEntity] = []
     private var imageDefinitionHandleByEntity: [ObjectIdentifier: String] = [:]
     private var entityHandleByObject: [ObjectIdentifier: String] = [:]
     private var mleaderStyleDictionaryHandle: String = ""
@@ -187,6 +195,11 @@ public class DXFWriter {
         materialByLayerHandle = ""
         materialGlobalHandle = ""
         imageDictionaryHandle = ""
+        spatialFilterHandlesByObject.removeAll(keepingCapacity: true)
+        clippedInserts.removeAll(keepingCapacity: true)
+        pdfDictionaryHandle = ""
+        pdfDefinitionHandleByKey.removeAll(keepingCapacity: true)
+        pdfUnderlays.removeAll(keepingCapacity: true)
         imageDefinitionHandleByEntity.removeAll(keepingCapacity: true)
         entityHandleByObject.removeAll(keepingCapacity: true)
         mleaderStyleDictionaryHandle = ""
@@ -508,23 +521,67 @@ public class DXFWriter {
             }
         }
 
+        // Clipped INSERTs need an extension dictionary + ACAD_FILTER
+        // dictionary + SPATIAL_FILTER object graph (handles allocated
+        // now so the INSERT brace group can reference them).
+        let allInserts = entities.compactMap { $0 as? DXFInsertEntity }
+            + blocks.flatMap { $0.entities.compactMap { $0 as? DXFInsertEntity } }
+        for insert in allInserts where insert.spatialFilter != nil {
+            spatialFilterHandlesByObject[ObjectIdentifier(insert)] = (
+                extDict: allocHandle(), filterDict: allocHandle(), filter: allocHandle())
+            clippedInserts.append(insert)
+        }
+
         let preservedImageDictionaryHandle = rootEntries["ACAD_IMAGE_DICT"]
         let imageEntries = dictionaryEntries(preservedObject(withHandle: preservedImageDictionaryHandle))
-        if entities.contains(where: { $0 is DXFImageEntity }) {
+        let allImageEntities = entities.compactMap { $0 as? DXFImageEntity }
+            + blocks.flatMap { $0.entities.compactMap { $0 as? DXFImageEntity } }
+        if !allImageEntities.isEmpty {
             imageDictionaryHandle = preservedOrAllocatedHandle(preservedImageDictionaryHandle)
+        }
+        // One IMAGEDEF per unique definition (instances share it).
+        var imageHandleByKey: [String: String] = [:]
+        func imageDefinitionHandle(for image: DXFImageEntity) -> String {
+            let dictionaryName = image.definitionName.isEmpty
+                ? (image.imageFilePath as NSString).deletingPathExtension
+                : image.definitionName
+            let key = normalizedName(dictionaryName) + "|" + normalizedName(image.imageFilePath)
+            if let existing = imageHandleByKey[key] { return existing }
+            let handle = preservedOrAllocatedHandle(imageEntries[normalizedName(dictionaryName)])
+            imageHandleByKey[key] = handle
+            return handle
         }
         for entity in entities {
             entityHandleByObject[ObjectIdentifier(entity)] = entityHandle(entity)
             if let image = entity as? DXFImageEntity {
-                let filename = image.imageFilePath
-                let dictionaryName = (filename as NSString).deletingPathExtension
-                imageDefinitionHandleByEntity[ObjectIdentifier(entity)] = preservedOrAllocatedHandle(
-                    imageEntries[normalizedName(dictionaryName)])
+                imageDefinitionHandleByEntity[ObjectIdentifier(entity)] =
+                    imageDefinitionHandle(for: image)
             }
         }
         for block in blocks {
             for entity in block.entities {
                 entityHandleByObject[ObjectIdentifier(entity)] = entityHandle(entity)
+                if let image = entity as? DXFImageEntity {
+                    imageDefinitionHandleByEntity[ObjectIdentifier(entity)] =
+                        imageDefinitionHandle(for: image)
+                }
+            }
+        }
+
+        // PDF underlay definitions (ACAD_PDFDEFINITIONS dictionary).
+        pdfUnderlays = (entities.compactMap { $0 as? DXFUnderlayEntity }
+            + blocks.flatMap { $0.entities.compactMap { $0 as? DXFUnderlayEntity } })
+            .filter { $0.writeData != nil }
+        if !pdfUnderlays.isEmpty {
+            let preservedPdfDict = rootEntries["ACAD_PDFDEFINITIONS"]
+            pdfDictionaryHandle = preservedOrAllocatedHandle(preservedPdfDict)
+            let pdfEntries = dictionaryEntries(preservedObject(withHandle: preservedPdfDict))
+            for underlay in pdfUnderlays {
+                guard let data = underlay.writeData else { continue }
+                let key = normalizedName(data.dictionaryKey)
+                if pdfDefinitionHandleByKey[key] == nil {
+                    pdfDefinitionHandleByKey[key] = preservedOrAllocatedHandle(pdfEntries[key])
+                }
             }
         }
     }
@@ -1863,7 +1920,7 @@ public class DXFWriter {
             writingBlock = false
         }
 
-        func openBlock(_ name: String, _ basePoint: Vector3, flags: Int = 0) {
+        func openBlock(_ name: String, _ basePoint: Vector3, flags: Int = 0, xrefPath: String = "") {
             closeBlock()
             let blockHandle = allocHandle()
             let recordHandle = blockRecordHandle(for: name) ?? "0"
@@ -1879,7 +1936,7 @@ public class DXFWriter {
             writeInt(70, flags, &out)
             writePoint3(10, basePoint, &out)
             writeStr(3, name, &out)
-            writeStrAllowEmpty(1, "", &out)
+            writeStrAllowEmpty(1, xrefPath, &out)
             writingBlock = true
         }
 
@@ -1907,7 +1964,7 @@ public class DXFWriter {
 
         let spaceKeys = Set(spaceNames.map(normalizedName))
         for block in blocks where !spaceKeys.contains(normalizedName(block.name)) {
-            openBlock(block.name, block.basePoint, flags: block.flags)
+            openBlock(block.name, block.basePoint, flags: block.flags, xrefPath: block.xrefPath)
             for entity in block.entities {
                 writeEntity(entity, &out, ownerHandle: currentBlockHandle)
             }
@@ -2489,6 +2546,7 @@ public class DXFWriter {
             guard let im = e as? DXFImageEntity else { return }
             writeEntityHeader("IMAGE", entity: im, handle: h, ownerHandle: ownerHandle, &out)
             out += "100\r\nAcDbRasterImage\r\n"
+            writeInt(90, 0, &out)
             if let imageDefinitionHandle = imageDefinitionHandleByEntity[ObjectIdentifier(im)] {
                 writeStr(340, imageDefinitionHandle, &out)
             }
@@ -2498,10 +2556,43 @@ public class DXFWriter {
             writeDbl(13, im.sizeU, &out)
             writeDbl(23, im.sizeV, &out)
             writeDbl(33, im.dz, &out)
+            writeInt(70, im.clipBoundary.count >= 2 ? 7 : 3, &out)
             writeInt(280, im.clip, &out)
             writeInt(281, im.brightness, &out)
             writeInt(282, im.contrast, &out)
             writeInt(283, im.fade, &out)
+            if im.clipBoundary.count >= 2 {
+                writeInt(71, im.clipBoundary.count == 2 ? 1 : 2, &out)
+                writeInt(91, im.clipBoundary.count, &out)
+                for point in im.clipBoundary {
+                    writeDbl(14, point.x, &out)
+                    writeDbl(24, point.y, &out)
+                }
+            }
+
+        case .pDFUNDERLAY, .dWFUNDERLAY, .dGNUNDERLAY:
+            guard let un = e as? DXFUnderlayEntity else { return }
+            let typeName = e.eType == .dWFUNDERLAY ? "DWFUNDERLAY"
+                : (e.eType == .dGNUNDERLAY ? "DGNUNDERLAY" : "PDFUNDERLAY")
+            writeEntityHeader(typeName, entity: un, handle: h, ownerHandle: ownerHandle, &out)
+            out += "100\r\nAcDbPdfUnderlay\r\n"
+            if let data = un.writeData,
+               let defHandle = pdfDefinitionHandleByKey[normalizedName(data.dictionaryKey)] {
+                writeStr(340, defHandle, &out)
+            }
+            writePoint3(10, un.basePoint, &out)
+            writeDbl(41, un.scaleX, &out)
+            writeDbl(42, un.scaleY, &out)
+            writeDbl(43, un.scaleZ, &out)
+            writeDbl(50, un.rotationDeg, &out)
+            writeCoord3(210, un.extrusion, &out)
+            writeInt(280, un.flags, &out)
+            writeInt(281, un.contrast, &out)
+            writeInt(282, un.fade, &out)
+            for point in un.boundary {
+                writeDbl(11, point.x, &out)
+                writeDbl(21, point.y, &out)
+            }
 
         case .vIEWPORT:
             guard let vp = e as? DXFViewportEntity else { return }
@@ -2651,6 +2742,11 @@ public class DXFWriter {
         out += "  0\r\n\(type)\r\n  5\r\n\(handle)\r\n"
         if isModern, let ownerHandle, !ownerHandle.isEmpty {
             out += "330\r\n\(ownerHandle)\r\n"
+        }
+        if let insertEntity = entity as? DXFInsertEntity,
+           insertEntity.spatialFilter != nil,
+           let clipHandles = spatialFilterHandlesByObject[ObjectIdentifier(insertEntity)] {
+            out += "102\r\n{ACAD_XDICTIONARY\r\n360\r\n\(clipHandles.extDict)\r\n102\r\n}\r\n"
         }
         if hasSubclassMarkers { out += "100\r\nAcDbEntity\r\n" }
         writeStr(8, esc(layer: entity.layer), &out)
@@ -2826,6 +2922,9 @@ public class DXFWriter {
         if entities.contains(where: { $0.eType == .iMAGE }) {
             generatedRootNames.insert("ACAD_IMAGE_DICT")
         }
+        if !pdfUnderlays.isEmpty {
+            generatedRootNames.insert("ACAD_PDFDEFINITIONS")
+        }
         if !mleaderStyleDictionaryHandle.isEmpty {
             generatedRootNames.insert("ACAD_MLEADERSTYLE")
         }
@@ -2847,6 +2946,7 @@ public class DXFWriter {
         })
 
         let imageEntities = entities.compactMap { $0 as? DXFImageEntity }
+            + blocks.flatMap { $0.entities.compactMap { $0 as? DXFImageEntity } }
         let outputImageDictionaryHandle = imageEntities.isEmpty ? nil : imageDictionaryHandle
         var mleaderStyleEntityByName: [String: DXFMLeaderEntity] = [:]
         let allMLeaderEntities = entities.compactMap { $0 as? DXFMLeaderEntity }
@@ -2887,14 +2987,39 @@ public class DXFWriter {
             generatedHandles.insert(normalizedHandle(mleaderStyleDictionaryHandle))
             generatedHandles.formUnion(mleaderStyleHandleByName.values.map { normalizedHandle($0) })
         }
+        for handles in spatialFilterHandlesByObject.values {
+            generatedHandles.insert(normalizedHandle(handles.extDict))
+            generatedHandles.insert(normalizedHandle(handles.filterDict))
+            generatedHandles.insert(normalizedHandle(handles.filter))
+        }
         if let outputImageDictionaryHandle {
             generatedHandles.insert(normalizedHandle(outputImageDictionaryHandle))
             generatedHandles.formUnion(imageDefinitionHandleByEntity.values.map { normalizedHandle($0) })
+        }
+        if !pdfDictionaryHandle.isEmpty {
+            generatedHandles.insert(normalizedHandle(pdfDictionaryHandle))
+            generatedHandles.formUnion(pdfDefinitionHandleByKey.values.map { normalizedHandle($0) })
         }
 
         let preservedCandidates = preservedObjects.filter { record in
             let handle = recordHandle(record) ?? ""
             let owner = normalizedHandle(record.groups.first(where: { $0.code == 330 })?.value ?? "")
+            if !pdfUnderlays.isEmpty, normalizedName(record.type) == "PDFDEFINITION" {
+                return false
+            }
+            // Clip object graphs are regenerated from entity clip data;
+            // preserved ones would be stale duplicates.
+            if !clippedInserts.isEmpty {
+                let type = normalizedName(record.type)
+                if type == "SPATIAL_FILTER" { return false }
+                if type == "DICTIONARY" || type == "ACDBDICTIONARYWDFLT" {
+                    let names = record.groups.filter { $0.code == 3 }
+                        .map { normalizedName($0.value) }
+                    if names.contains("ACAD_FILTER") || names.contains("SPATIAL") {
+                        return false
+                    }
+                }
+            }
             if handle == rawRootHandle { return false }
             if generatedHandles.contains(handle) { return false }
             if skippedRawDictionaryHandles.contains(handle) || skippedRawDictionaryHandles.contains(owner) {
@@ -2926,6 +3051,9 @@ public class DXFWriter {
         out += "  3\r\nACAD_PLOTSTYLENAME\r\n350\r\n\(plotStyleDictionaryHandle)\r\n"
         if let outputImageDictionaryHandle {
             out += "  3\r\nACAD_IMAGE_DICT\r\n350\r\n\(outputImageDictionaryHandle)\r\n"
+        }
+        if !pdfDictionaryHandle.isEmpty {
+            out += "  3\r\nACAD_PDFDEFINITIONS\r\n350\r\n\(pdfDictionaryHandle)\r\n"
         }
         if !mleaderStyleDictionaryHandle.isEmpty {
             out += "  3\r\nACAD_MLEADERSTYLE\r\n350\r\n\(mleaderStyleDictionaryHandle)\r\n"
@@ -3004,29 +3132,102 @@ public class DXFWriter {
         }
 
         if let outputImageDictionaryHandle {
+            // One dictionary entry + IMAGEDEF per unique definition.
+            var seenImageHandles = Set<String>()
+            var uniqueImages: [(handle: String, name: String, image: DXFImageEntity)] = []
+            for (index, image) in imageEntities.enumerated() {
+                guard let definitionHandle = imageDefinitionHandleByEntity[ObjectIdentifier(image)],
+                      seenImageHandles.insert(normalizedHandle(definitionHandle)).inserted
+                else { continue }
+                let dictionaryName: String
+                if !image.definitionName.isEmpty {
+                    dictionaryName = image.definitionName
+                } else {
+                    let filename = image.imageFilePath.isEmpty ? "Image_\(index + 1)" : image.imageFilePath
+                    let stem = (filename as NSString).deletingPathExtension
+                    dictionaryName = stem.isEmpty ? "Image_\(index + 1)" : stem
+                }
+                uniqueImages.append((definitionHandle, dictionaryName, image))
+            }
             out += "  0\r\nDICTIONARY\r\n  5\r\n\(outputImageDictionaryHandle)\r\n"
             out += "330\r\n\(rootDictionaryHandle)\r\n100\r\nAcDbDictionary\r\n281\r\n1\r\n"
-            for (index, image) in imageEntities.enumerated() {
-                guard let definitionHandle = imageDefinitionHandleByEntity[ObjectIdentifier(image)] else { continue }
-                let filename = image.imageFilePath.isEmpty ? "Image_\(index + 1)" : image.imageFilePath
-                let dictionaryName = (filename as NSString).deletingPathExtension
-                writeStr(3, dictionaryName.isEmpty ? "Image_\(index + 1)" : dictionaryName, &out)
-                writeStr(350, definitionHandle, &out)
+            for item in uniqueImages {
+                writeStr(3, item.name, &out)
+                writeStr(350, item.handle, &out)
             }
-
-            for image in imageEntities {
-                guard let definitionHandle = imageDefinitionHandleByEntity[ObjectIdentifier(image)] else { continue }
-                out += "  0\r\nIMAGEDEF\r\n  5\r\n\(definitionHandle)\r\n"
+            for item in uniqueImages {
+                out += "  0\r\nIMAGEDEF\r\n  5\r\n\(item.handle)\r\n"
                 out += "330\r\n\(outputImageDictionaryHandle)\r\n100\r\nAcDbRasterImageDef\r\n"
                 writeInt(90, 0, &out)
-                writeStr(1, image.imageFilePath, &out)
-                writeDbl(10, image.sizeU, &out)
-                writeDbl(20, image.sizeV, &out)
+                writeStr(1, item.image.imageFilePath, &out)
+                writeDbl(10, item.image.sizeU, &out)
+                writeDbl(20, item.image.sizeV, &out)
                 writeDbl(11, 1.0, &out)
                 writeDbl(21, 1.0, &out)
                 writeInt(280, 1, &out)
                 writeInt(281, 0, &out)
             }
+        }
+
+        if !pdfDictionaryHandle.isEmpty {
+            var seenPdfKeys = Set<String>()
+            var uniquePdfs: [(handle: String, data: DXFUnderlayWriteData)] = []
+            for underlay in pdfUnderlays {
+                guard let data = underlay.writeData,
+                      let handle = pdfDefinitionHandleByKey[normalizedName(data.dictionaryKey)],
+                      seenPdfKeys.insert(normalizedName(data.dictionaryKey)).inserted
+                else { continue }
+                uniquePdfs.append((handle, data))
+            }
+            out += "  0\r\nDICTIONARY\r\n  5\r\n\(pdfDictionaryHandle)\r\n"
+            out += "330\r\n\(rootDictionaryHandle)\r\n100\r\nAcDbDictionary\r\n281\r\n1\r\n"
+            for item in uniquePdfs {
+                writeStr(3, item.data.dictionaryKey, &out)
+                writeStr(350, item.handle, &out)
+            }
+            for item in uniquePdfs {
+                out += "  0\r\nPDFDEFINITION\r\n  5\r\n\(item.handle)\r\n"
+                out += "330\r\n\(pdfDictionaryHandle)\r\n100\r\nAcDbPdfDefinition\r\n"
+                writeStr(1, item.data.filename, &out)
+                writeStr(2, item.data.pageName, &out)
+            }
+        }
+
+        // SPATIAL_FILTER clip object graphs (one per clipped INSERT).
+        for insert in clippedInserts {
+            guard let data = insert.spatialFilter,
+                  let handles = spatialFilterHandlesByObject[ObjectIdentifier(insert)] else {
+                continue
+            }
+            let ownerHandle = entityHandleByObject[ObjectIdentifier(insert)]
+                ?? String(format: "%X", insert.handle)
+            out += "  0\r\nDICTIONARY\r\n  5\r\n\(handles.extDict)\r\n"
+            out += "330\r\n\(ownerHandle)\r\n100\r\nAcDbDictionary\r\n281\r\n1\r\n"
+            writeStr(3, "ACAD_FILTER", &out)
+            writeStr(350, handles.filterDict, &out)
+
+            out += "  0\r\nDICTIONARY\r\n  5\r\n\(handles.filterDict)\r\n"
+            out += "330\r\n\(handles.extDict)\r\n100\r\nAcDbDictionary\r\n281\r\n1\r\n"
+            writeStr(3, "SPATIAL", &out)
+            writeStr(350, handles.filter, &out)
+
+            out += "  0\r\nSPATIAL_FILTER\r\n  5\r\n\(handles.filter)\r\n"
+            out += "330\r\n\(handles.filterDict)\r\n100\r\nAcDbFilter\r\n100\r\nAcDbSpatialFilter\r\n"
+            writeInt(70, data.pointsOCS.count, &out)
+            for point in data.pointsOCS {
+                writePoint3(10, point, &out)
+            }
+            writeCoord3(210, Vector3(x: 0, y: 0, z: 1), &out)
+            writePoint3(11, .zero, &out)
+            writeInt(71, data.enabled ? 1 : 0, &out)
+            writeInt(72, data.frontDistance != nil ? 1 : 0, &out)
+            if let front = data.frontDistance { writeDbl(40, front, &out) }
+            writeInt(73, data.backDistance != nil ? 1 : 0, &out)
+            if let back = data.backDistance { writeDbl(41, back, &out) }
+            for value in data.inverseMatrix { writeDbl(40, value, &out) }
+            for value in data.transformMatrix { writeDbl(40, value, &out) }
+            out += "100\r\nAcDbSpatialFilter\r\n"
+            writeInt(71, data.enabled ? 1 : 0, &out)
         }
 
         for record in preservedRecords {

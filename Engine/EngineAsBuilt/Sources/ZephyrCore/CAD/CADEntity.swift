@@ -690,6 +690,33 @@ public struct CADPrimitiveStyle: Hashable, Sendable {
         self.textBackgroundColor = textBackgroundColor
         self.textBackgroundUsesViewportColor = textBackgroundUsesViewportColor
     }
+
+    /// Layer this primitive's style resolves against: the trimmed
+    /// `layerName`, or nil when empty or "0" (layer "0" inside a block
+    /// inherits the INSERT entity's layer, matching the renderer).
+    public var effectiveLayerName: String? {
+        guard let raw = layerName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty, raw != "0" else { return nil }
+        return raw
+    }
+}
+
+/// Per-primitive layer visibility, shared by rendering, hit-testing,
+/// snapping, rectangle selection, bounds, and PDF export. A primitive is
+/// hidden only when its style names a layer that exists and is invisible;
+/// unknown layer names fall back to the entity's layer (visible here).
+public enum CADPrimitiveVisibility {
+    public static func layersByUppercasedName<S: Sequence>(_ layers: S) -> [String: Layer]
+        where S.Element == Layer {
+        Dictionary(layers.map { ($0.name.uppercased(), $0) },
+                   uniquingKeysWith: { first, _ in first })
+    }
+
+    public static func isVisible(style: CADPrimitiveStyle?, layersByName: [String: Layer]) -> Bool {
+        guard let name = style?.effectiveLayerName,
+              let layer = layersByName[name.uppercased()] else { return true }
+        return layer.isVisible
+    }
 }
 
 // =========================================================================
@@ -705,6 +732,11 @@ public struct CADBlock: Hashable, Sendable {
     public var primitiveXData: [Int: [String: XDataValue]]
     public var dxfFlags: Int
 
+    /// Non-nil when this definition is an external reference. Geometry of
+    /// an xref block stays empty in the document; loaded content lives in
+    /// the runtime store as shadow geometry (see CADXrefDescriptor).
+    public var xrefDescriptor: CADXrefDescriptor?
+
     /// True if this block is an AutoCAD internal table display block (e.g. *T4).
     /// Such blocks are preserved for raw DXF passthrough but never rendered or edited.
     public var isInternalTableDisplayBlock: Bool = false
@@ -719,7 +751,8 @@ public struct CADBlock: Hashable, Sendable {
                 primitiveStyles: [Int: CADPrimitiveStyle] = [:],
                 primitiveXData: [Int: [String: XDataValue]] = [:],
                 dxfFlags: Int = 0,
-                isInternalTableDisplayBlock: Bool = false) {
+                isInternalTableDisplayBlock: Bool = false,
+                xrefDescriptor: CADXrefDescriptor? = nil) {
         self.handle = handle
         self.name = name
         self.geometry = geometry
@@ -727,6 +760,7 @@ public struct CADBlock: Hashable, Sendable {
         self.primitiveXData = primitiveXData
         self.dxfFlags = dxfFlags
         self.isInternalTableDisplayBlock = isInternalTableDisplayBlock
+        self.xrefDescriptor = xrefDescriptor
         self.localBoundingBox = CADBlock.computeBoundingBox(from: geometry)
     }
 
@@ -1031,7 +1065,7 @@ public struct CADEntity: Entity, Snappable, AttributeAttachable, Hashable, Senda
 
     /// Effective geometry: resolves block definition or returns local primitives.
     public func resolvedGeometry(in document: CADDocument) -> [CADPrimitive]? {
-        if let bid = blockID, let block = document.block(for: bid) {
+        if let bid = blockID, let block = document.effectiveBlock(for: bid) {
             return block.geometry
         }
         return localGeometry

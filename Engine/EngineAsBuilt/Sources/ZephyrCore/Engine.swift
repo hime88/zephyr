@@ -363,6 +363,10 @@ public final class PhrostEngine {
     public var autosaveIntervalMinutes: Double = 5.0
     internal var _autosaveAccumulator: Double = 0
 
+    /// Xref change-detection poll interval (AutoCAD XNOTIFYTIME default).
+    public var xrefNotifyIntervalMinutes: Double = 5.0
+    internal var _xrefPollAccumulator: Double = 0
+
     // Frame timing (ms). Printed every 60 frames to console.
     internal var _frameTimingCount: Int = 0
     internal var _frameTimingCadMs: Double = 0
@@ -740,6 +744,14 @@ public final class PhrostEngine {
         self.ui.layersPanelVisible = settings.layersPanelVisible
         self.ui.drawPaletteVisible = settings.drawPaletteVisible
         self.ui.blockPanelVisible = settings.blockPanelVisible
+        self.ui.xrefPanelVisible = settings.xrefPanelVisible
+        self.ui.xrefRefPathType = settings.xrefRefPathType
+        self.ui.xrefSearchPaths = settings.xrefSearchPaths
+        self.ui.xrefMaxLoaded = settings.xrefMaxLoaded
+        self.ui.xrefMaxDepth = settings.xrefMaxDepth
+        self.ui.xrefMaxPrimitives = settings.xrefMaxPrimitives
+        self.ui.xrefFadePercent = settings.xrefFadePercent
+        self.ui.xrefBindType = settings.xrefBindType
         self.ui.dataTablePanelVisible = settings.dataTablePanelVisible
         self.ui.showPropertiesPanel = settings.showPropertiesPanel
         self.ui.showFPS = settings.showFPS

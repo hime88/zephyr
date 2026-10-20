@@ -43,6 +43,7 @@ public enum CADHitTesting {
         var bestDrawOrder: Int = .min
         var bestArea: Double = .infinity
         var bestDist: Double = .infinity
+        let layersByName = document.layersByUppercasedName()
 
         forEachCandidate(in: document, near: point, threshold: threshold) { entity, geometry in
             let frameDistance = CADClipFrameSettings.isVisible(for: entity)
@@ -53,7 +54,11 @@ public enum CADHitTesting {
             var hitDist: Double? = frameDistance.flatMap { $0 <= t2 ? $0 : nil }
             
             let transforms = instanceTransforms(for: entity, document: document)
-            if simplifyComplexBlocks && geometry.count > 50 {
+            let primStyles = document.primitiveStyles(for: entity)
+            let isXrefEntity = entity.blockID.map { document.block(for: $0)?.isXref == true } ?? false
+            if simplifyComplexBlocks && geometry.count > 50 && !isXrefEntity {
+                guard document.anyPrimitiveVisible(for: entity, layersByName: layersByName)
+                        || hitDist != nil else { return }
                 var minDist = Double.infinity
                 let sourceBox = entity.blockID.flatMap { document.block(for: $0)?.localBoundingBox }
                     ?? entity.localBoundingBox
@@ -68,9 +73,15 @@ public enum CADHitTesting {
                 if minDist <= t2 { hitDist = min(hitDist ?? .infinity, minDist) }
             } else {
                 var minDist: Double = .infinity
+                let grid = entity.blockID.flatMap { document.spatialGrid(forBlock: $0) }
                 for transform in transforms {
-                    for prim in geometry {
-                        if let d = distanceSqToPrimitive(prim, point: point, transform: transform, t2: t2) {
+                    let candidates = gridCandidates(
+                        grid: grid, geometryCount: geometry.count,
+                        point: point, transform: transform, radius: threshold)
+                    for primIndex in candidates {
+                        guard CADPrimitiveVisibility.isVisible(
+                            style: primStyles[primIndex], layersByName: layersByName) else { continue }
+                        if let d = distanceSqToPrimitive(geometry[primIndex], point: point, transform: transform, t2: t2) {
                             if d < minDist { minDist = d }
                         }
                     }
@@ -180,7 +191,13 @@ public enum CADHitTesting {
         let t2 = threshold * threshold
 
         let transforms = instanceTransforms(for: entity, document: document)
-        if simplifyComplexBlocks && geom.count > 50 {
+        let layersByName = document.layersByUppercasedName()
+        let primStyles = document.primitiveStyles(for: entity)
+        let isXrefEntity = entity.blockID.map { document.block(for: $0)?.isXref == true } ?? false
+        if simplifyComplexBlocks && geom.count > 50 && !isXrefEntity {
+            guard document.anyPrimitiveVisible(for: entity, layersByName: layersByName) else {
+                return false
+            }
             let sourceBox = entity.blockID.flatMap { document.block(for: $0)?.localBoundingBox }
                 ?? entity.localBoundingBox
             if let sourceBox {
@@ -192,9 +209,15 @@ public enum CADHitTesting {
             return false
         }
 
+        let grid = entity.blockID.flatMap { document.spatialGrid(forBlock: $0) }
         for transform in transforms {
-            for prim in geom {
-                if distanceSqToPrimitive(prim, point: point, transform: transform, t2: t2) != nil {
+            let candidates = gridCandidates(
+                grid: grid, geometryCount: geom.count,
+                point: point, transform: transform, radius: threshold)
+            for primIndex in candidates {
+                guard CADPrimitiveVisibility.isVisible(
+                    style: primStyles[primIndex], layersByName: layersByName) else { continue }
+                if distanceSqToPrimitive(geom[primIndex], point: point, transform: transform, t2: t2) != nil {
                     return true
                 }
             }
@@ -206,6 +229,19 @@ public enum CADHitTesting {
 
     /// Returns squared distance from a point to the primitive if within
     /// threshold, nil otherwise.
+    /// Grid candidate indices near a world point, or all indices when
+    /// the block has no grid.
+    private static func gridCandidates(
+        grid: CADBlockSpatialGrid?, geometryCount: Int,
+        point: Vector3, transform: Transform3D, radius: Double
+    ) -> [Int] {
+        guard let grid else { return Array(0..<geometryCount) }
+        let local = transform.inverse().transformPoint(point)
+        let scale = transform.scale
+        let minScale = max(min(abs(scale.x), abs(scale.y)), 1e-9)
+        return grid.candidateIndices(near: local, radius: radius / minScale)
+    }
+
     public static func distanceSqToPrimitive(
         _ prim: CADPrimitive, point: Vector3, transform: Transform3D, t2: Double
     ) -> Double? {

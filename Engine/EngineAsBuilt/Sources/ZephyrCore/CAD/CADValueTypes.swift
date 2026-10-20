@@ -603,6 +603,20 @@ public enum CADUnit: UInt8, Sendable, CaseIterable, CustomStringConvertible {
     /// Scale factor to convert from millimeters to this unit.
     public var scaleFromMM: Double { 1.0 / scaleToMM }
 
+    /// Unit for a DXF $INSUNITS code, or nil when unspecified (0) or a
+    /// unit Zephyr does not model (callers treat nil as 1:1).
+    public init?(dxfINSUNITS code: Int) {
+        switch code {
+        case 1: self = .inch
+        case 2: self = .foot
+        case 3: self = .yard
+        case 4: self = .millimeter
+        case 5: self = .centimeter
+        case 6: self = .meter
+        default: return nil
+        }
+    }
+
     /// DXF $INSUNITS code.
     public var dxfINSUNITS: Int {
         switch self {

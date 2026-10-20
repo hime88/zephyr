@@ -129,6 +129,21 @@ public final class EngineLoopController {
                 }
             }
 
+            // Xref change-detection poll (stat runs off-thread).
+            engine._xrefPollAccumulator += deltaSec
+            if XrefSysvars.xrefNotify != 0,
+               engine._xrefPollAccumulator >= engine.xrefNotifyIntervalMinutes * 60.0 {
+                engine._xrefPollAccumulator = 0
+                for tab in engine.tabManager.tabs {
+                    XrefLoader.checkForChanges(
+                        store: tab.xrefStore,
+                        documents: tab.drawingViews.map(\.document))
+                    MediaLoader.checkForChanges(
+                        store: tab.mediaStore,
+                        documents: tab.drawingViews.map(\.document))
+                }
+            }
+
             updateBlock?()
 
             // 3. Conditional Rendering
@@ -1054,6 +1069,8 @@ public final class EngineLoopController {
             entities: Array(visibleEntities),
             threshold: acquireThreshold,
             resolveGeometry: { [unowned self] in self.engine.document.resolvedGeometry(for: $0) },
+            primitiveVisibility: { [unowned self] in self.engine.document.primitiveVisibility(for: $0) },
+            spatialGrid: { [unowned self] in self.engine.document.spatialGrid(for: $0) },
             extensionSnapEnabled: snapMgr.extensionSnapEnabled,
             extensionThresholdPx: 12.0,
             pixelsPerWorldUnit: ppwu,
@@ -1096,6 +1113,8 @@ public final class EngineLoopController {
                 entities: Array(visibleEntities),
                 threshold: acquireThreshold,
                 resolveGeometry: { [unowned self] in self.engine.document.resolvedGeometry(for: $0) },
+                primitiveVisibility: { [unowned self] in self.engine.document.primitiveVisibility(for: $0) },
+                spatialGrid: { [unowned self] in self.engine.document.spatialGrid(for: $0) },
                 extensionSnapEnabled: snapMgr.extensionSnapEnabled,
                 extensionThresholdPx: snapMgr.trajectoryTrackingAperturePixels,
                 pixelsPerWorldUnit: ppwu,
@@ -1255,6 +1274,8 @@ public final class EngineLoopController {
                     entities: Array(visibleEntities),
                     threshold: acquireThreshold,
                     resolveGeometry: { [unowned self] in self.engine.document.resolvedGeometry(for: $0) },
+                    primitiveVisibility: { [unowned self] in self.engine.document.primitiveVisibility(for: $0) },
+                    spatialGrid: { [unowned self] in self.engine.document.spatialGrid(for: $0) },
                     extensionSnapEnabled: false,
                     gridSnapEnabled: false,
                     nearestOnCurveOverride: true)
@@ -1291,6 +1312,8 @@ public final class EngineLoopController {
                 entities: Array(visibleEntities),
                 threshold: acquireThreshold,
                 resolveGeometry: { [unowned self] in self.engine.document.resolvedGeometry(for: $0) },
+                primitiveVisibility: { [unowned self] in self.engine.document.primitiveVisibility(for: $0) },
+                spatialGrid: { [unowned self] in self.engine.document.spatialGrid(for: $0) },
                 extensionSnapEnabled: false,
                 extensionThresholdPx: snapMgr.trajectoryTrackingAperturePixels,
                 pixelsPerWorldUnit: ppwu,
@@ -1406,6 +1429,8 @@ public final class EngineLoopController {
                     entities: Array(visibleEntities),
                     threshold: acquireThreshold,
                     resolveGeometry: { [unowned self] in self.engine.document.resolvedGeometry(for: $0) },
+                    primitiveVisibility: { [unowned self] in self.engine.document.primitiveVisibility(for: $0) },
+                    spatialGrid: { [unowned self] in self.engine.document.spatialGrid(for: $0) },
                     extensionSnapEnabled: false,
                     gridSnapEnabled: false,
                     nearestOnCurveOverride: true)

@@ -84,6 +84,12 @@ final class LispVarStore: @unchecked Sendable {
         "SNAPMODE": .int(0),
         "SPLINESEGS": .int(8),
         "TEXTSTYLE": .string("Standard"),
+        "BINDTYPE": .int(0),
+        "REFPATHTYPE": .int(1),
+        "VISRETAIN": .int(1),
+        "XDWGFADECTL": .int(50),
+        "XLOADCTL": .int(2),
+        "XREFNOTIFY": .int(1),
     ]
 
     private static let readOnly: Set<String> = [
@@ -120,6 +126,18 @@ final class LispVarStore: @unchecked Sendable {
             return .int(OffsetSettings.gapType.rawValue)
         case "LASTPOINT":
             return lock.withLock { memory["LASTPOINT"] ?? .nilValue }
+        case "BINDTYPE":
+            return .int(XrefSysvars.bindType)
+        case "REFPATHTYPE":
+            return .int(XrefSysvars.refPathType)
+        case "VISRETAIN":
+            return .int(XrefSysvars.visRetain)
+        case "XDWGFADECTL":
+            return .int(document.xrefFadePercent)
+        case "XLOADCTL":
+            return .int(XrefSysvars.xloadCtl)
+        case "XREFNOTIFY":
+            return .int(XrefSysvars.xrefNotify)
         default:
             return lock.withLock { memory[name] }
         }
@@ -182,6 +200,37 @@ final class LispVarStore: @unchecked Sendable {
                 return "OFFSETGAPTYPE requires an integer 0..2"
             }
             OffsetSettings.gapType = gapType
+            return nil
+        case "BINDTYPE", "REFPATHTYPE", "VISRETAIN", "XREFNOTIFY", "XLOADCTL", "XDWGFADECTL":
+            let intValue: Int?
+            switch value {
+            case .int(let i): intValue = i
+            case .real(let r): intValue = Int(r)
+            default: intValue = nil
+            }
+            guard let intValue else { return "\(name) requires an integer value" }
+            switch name {
+            case "BINDTYPE":
+                guard (0...1).contains(intValue) else { return "BINDTYPE requires 0 or 1" }
+                XrefSysvars.bindType = intValue
+            case "REFPATHTYPE":
+                guard (0...2).contains(intValue) else { return "REFPATHTYPE requires 0, 1, or 2" }
+                XrefSysvars.refPathType = intValue
+            case "VISRETAIN":
+                guard (0...1).contains(intValue) else { return "VISRETAIN requires 0 or 1" }
+                XrefSysvars.visRetain = intValue
+            case "XREFNOTIFY":
+                guard (0...1).contains(intValue) else { return "XREFNOTIFY requires 0 or 1" }
+                XrefSysvars.xrefNotify = intValue
+            case "XLOADCTL":
+                guard (0...2).contains(intValue) else { return "XLOADCTL requires 0, 1, or 2" }
+                XrefSysvars.xloadCtl = intValue
+            default:  // XDWGFADECTL
+                guard (0...90).contains(intValue) else { return "XDWGFADECTL requires 0..90" }
+                document.xrefFadePercent = intValue
+                document.markNeedsRegeneration()
+                XrefSysvars.fadePercent = intValue
+            }
             return nil
         case "TEXTSTYLE":
             guard case let .string(style) = value else {

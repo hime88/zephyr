@@ -121,6 +121,9 @@ public enum DXFWriterBridge {
         var linetypePatterns: [String: [Double]]
         var unit: CADUnit
         var roundTripPayload: DXFRoundTripPayload?
+        var imageDefinitions: [String: CADImageDefinition] = [:]
+        var pdfDefinitions: [String: CADPdfDefinition] = [:]
+        var imageAssets: [String: CADImageAsset] = [:]
     }
 
 
@@ -160,7 +163,10 @@ public enum DXFWriterBridge {
             leaderStyles: document.leaderStyles,
             linetypePatterns: document.linetypePatterns,
             unit: document.unit,
-            roundTripPayload: document.dxfRoundTripPayload)
+            roundTripPayload: document.dxfRoundTripPayload,
+            imageDefinitions: document.imageDefinitions,
+            pdfDefinitions: document.pdfDefinitions,
+            imageAssets: document.imageStore)
         try exportToDXF(views: [view], filePath: url.path, dxfVersion: dxfVersion)
     }
 
@@ -180,7 +186,10 @@ public enum DXFWriterBridge {
                 leaderStyles: $0.document.leaderStyles,
                 linetypePatterns: $0.document.linetypePatterns,
                 unit: $0.document.unit,
-                roundTripPayload: $0.document.dxfRoundTripPayload)
+                roundTripPayload: $0.document.dxfRoundTripPayload,
+                imageDefinitions: $0.document.imageDefinitions,
+                pdfDefinitions: $0.document.pdfDefinitions,
+                imageAssets: $0.document.imageStore)
         }
         try exportToDXF(views: exportViews, filePath: url.path, dxfVersion: dxfVersion)
     }
@@ -223,6 +232,15 @@ public enum DXFWriterBridge {
         var orderedViews = [modelView]
         for view in sourceViews where view.kind == .sheet {
             orderedViews.append(view)
+        }
+
+        // Referenced-media export lookup (merged across views; names
+        // are unique within a tab).
+        var mediaContext = MediaExportContext()
+        for view in orderedViews {
+            mediaContext.imageDefinitions.merge(view.imageDefinitions) { first, _ in first }
+            mediaContext.pdfDefinitions.merge(view.pdfDefinitions) { first, _ in first }
+            mediaContext.imageAssets.merge(view.imageAssets) { first, _ in first }
         }
 
         var requestedArrowBlocks = Set<String>()
@@ -381,8 +399,15 @@ public enum DXFWriterBridge {
         if textStyleNames.contains("STANDARD") == false {
             textStyles["Standard"] = .standard
         }
-        addLinetypes(linetypes, to: writer)
-        addTextStyles(textStyles, to: writer)
+        // Names of blocks that are external references: table entries
+        // named `XrefName|Symbol` for one of these are xref-dependent
+        // and get the externally-dependent (16) + resolved (32) bits.
+        let xrefBlockNames = Set(orderedViews.flatMap { view in
+            view.blocks.filter { $0.xrefDescriptor != nil }
+                .map { $0.name.uppercased() }
+        })
+        addLinetypes(linetypes, to: writer, xrefBlockNames: xrefBlockNames)
+        addTextStyles(textStyles, to: writer, xrefBlockNames: xrefBlockNames)
 
         var layerNames = Set<String>()
         for view in orderedViews {
@@ -399,6 +424,8 @@ public enum DXFWriterBridge {
                 entry.color24 = DXFColorTable.rgbaToTrueColor(layer.color) ?? -1
                 entry.lWeight = DXFLineWidth.fromDXF(Int((layer.lineWeight * 100.0).rounded()))
                 entry.transparency = DXFColorTable.opacityToTransparency(layer.opacity)
+                entry.flags |= dependentSymbolFlags(
+                    forName: layer.name, xrefBlockNames: xrefBlockNames)
                 writer.addLayer(entry)
             }
         }
@@ -413,14 +440,23 @@ public enum DXFWriterBridge {
 
                 let record = DXFBlockRecordEntry()
                 record.name = block.name
+                record.flags = block.effectiveDXFFlags
                 writer.addBlockRecord(record)
 
                 let exported = DXFBlockEntity()
                 exported.name = block.name
                 exported.basePoint = .zero
-                exported.flags = block.dxfFlags
+                exported.flags = block.effectiveDXFFlags
                 if block.isInternalTableDisplayBlock {
                     exported.flags |= 1
+                }
+
+                // External reference: path + flags only, empty body —
+                // loaded (shadow) geometry is never written into the host.
+                if let descriptor = block.xrefDescriptor {
+                    exported.xrefPath = descriptor.savedPath
+                    writer.addBlock(exported)
+                    continue
                 }
 
                 if let tableData = modifiedTableByDisplayBlock[block.name.uppercased()] {
@@ -431,7 +467,7 @@ public enum DXFWriterBridge {
                         guard let entity = primitiveToEntity(
                             visual,
                             transform: .identity,
-                            xdata: [:]) else { continue }
+                            xdata: [:], media: mediaContext) else { continue }
                         if entity.layer.isEmpty { entity.layer = "0" }
                         exported.entities.append(entity)
                     }
@@ -474,7 +510,7 @@ public enum DXFWriterBridge {
                                 guard let entity = primitiveToEntity(
                                     visual,
                                     transform: .identity,
-                                    xdata: primitiveXData) else { continue }
+                                    xdata: primitiveXData, media: mediaContext) else { continue }
                                 applyPrimitiveStyle(block.primitiveStyles[index], to: entity)
                                 if entity.layer.isEmpty { entity.layer = "0" }
                                 exported.entities.append(entity)
@@ -485,7 +521,7 @@ public enum DXFWriterBridge {
                     guard let entity = primitiveToEntity(
                         primitive,
                         transform: .identity,
-                        xdata: primitiveXData) else { continue }
+                        xdata: primitiveXData, media: mediaContext) else { continue }
                     applyPrimitiveStyle(block.primitiveStyles[index], to: entity)
                     if entity.layer.isEmpty { entity.layer = "0" }
                     exported.entities.append(entity)
@@ -729,6 +765,7 @@ public enum DXFWriterBridge {
                             insert.rowCount = max(1, array.rows)
                             insert.colSpace = array.columnSpacing * insert.xScale
                             insert.rowSpace = -array.rowSpacing * insert.yScale
+                            insert.spatialFilter = spatialFilterData(from: entity, transform: entity.transform)
                             applyEntityStyle(entity.xdata, to: insert)
                             appendArrayXData(
                                 to: insert,
@@ -760,6 +797,7 @@ public enum DXFWriterBridge {
                                         layerName: layerName,
                                         paperSpace: isPaperSpace,
                                         transform: transform)
+                                    insert.spatialFilter = spatialFilterData(from: entity, transform: transform)
                                     applyEntityStyle(entity.xdata, to: insert)
                                     appendArrayXData(
                                         to: insert,
@@ -776,6 +814,7 @@ public enum DXFWriterBridge {
                             layerName: layerName,
                             paperSpace: isPaperSpace,
                             transform: entity.transform)
+                        insert.spatialFilter = spatialFilterData(from: entity, transform: entity.transform)
                         applyEntityStyle(entity.xdata, to: insert)
                         writer.addEntity(insert, ownerBlockName: ownerBlockName)
                     }
@@ -820,7 +859,7 @@ public enum DXFWriterBridge {
                                 guard let exported = primitiveToEntity(
                                     visual,
                                     transform: .identity,
-                                    xdata: entity.xdata) else { continue }
+                                    xdata: entity.xdata, media: mediaContext) else { continue }
                                 exported.layer = layerName
                                 exported.space = isPaperSpace ? 1 : 0
                                 applyEntityStyle(entity.xdata, to: exported)
@@ -832,7 +871,7 @@ public enum DXFWriterBridge {
                     guard let exported = primitiveToEntity(
                         primitive,
                         transform: entity.transform,
-                        xdata: entity.xdata) else { continue }
+                        xdata: entity.xdata, media: mediaContext) else { continue }
                     exported.layer = layerName
                     exported.space = isPaperSpace ? 1 : 0
                     applyEntityStyle(entity.xdata, to: exported)
@@ -1361,18 +1400,36 @@ public enum DXFWriterBridge {
         writer.headerVars["$EXTMAX"] = Vector3(x: maxX, y: -minY, z: maxZ.isFinite ? maxZ : 0)
     }
 
-    private static func addLinetypes(_ patterns: [String: [Double]], to writer: DXFWriter) {
+    /// Group-70 bits for an xref-dependent symbol (`XrefName|Symbol`
+    /// where the prefix is a known xref block): 16 = externally
+    /// dependent, 32 = resolved at last merge.
+    private static func dependentSymbolFlags(
+        forName name: String, xrefBlockNames: Set<String>
+    ) -> Int {
+        guard let bar = name.firstIndex(of: "|") else { return 0 }
+        let prefix = name[..<bar].uppercased()
+        return xrefBlockNames.contains(prefix) ? (16 | 32) : 0
+    }
+
+    private static func addLinetypes(
+        _ patterns: [String: [Double]], to writer: DXFWriter,
+        xrefBlockNames: Set<String> = []
+    ) {
         for (name, path) in patterns where !name.isEmpty {
             let entry = DXFLTypeEntry()
             entry.name = name
             entry.path = path
             entry.size = path.count
             entry.length = path.reduce(0) { $0 + abs($1) }
+            entry.flags |= dependentSymbolFlags(forName: name, xrefBlockNames: xrefBlockNames)
             writer.addLType(entry)
         }
     }
 
-    private static func addTextStyles(_ styles: [String: CADTextStyle], to writer: DXFWriter) {
+    private static func addTextStyles(
+        _ styles: [String: CADTextStyle], to writer: DXFWriter,
+        xrefBlockNames: Set<String> = []
+    ) {
         for style in styles.values.sorted(by: { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) where !style.name.isEmpty {
             let normalized = style.normalized
             let entry = DXFStyleEntry()
@@ -1382,6 +1439,7 @@ public enum DXFWriterBridge {
             entry.width = normalized.widthFactor
             entry.oblique = normalized.obliqueAngle
             entry.lastHeight = normalized.fixedHeight > 0 ? normalized.fixedHeight : 2.5
+            entry.flags |= dependentSymbolFlags(forName: normalized.name, xrefBlockNames: xrefBlockNames)
             writer.addTextStyle(entry)
         }
     }
@@ -2286,10 +2344,19 @@ public enum DXFWriterBridge {
         return table
     }
 
+    /// Referenced-media lookup for image/PDF primitive export.
+    private struct MediaExportContext {
+        var imageDefinitions: [String: CADImageDefinition] = [:]
+        var pdfDefinitions: [String: CADPdfDefinition] = [:]
+        var imageAssets: [String: CADImageAsset] = [:]
+        static let empty = MediaExportContext()
+    }
+
     private static func primitiveToEntity(
         _ primitive: CADPrimitive,
         transform: Transform3D,
-        xdata: [String: XDataValue]
+        xdata: [String: XDataValue],
+        media: MediaExportContext = .empty
     ) -> DXFEntity? {
         switch primitive {
         case .point(let position, let color):
@@ -2517,7 +2584,13 @@ public enum DXFWriterBridge {
             applyColor(color, to: entity)
             return entity
 
-        case .hatch, .hatchPath, .fillComplexPolygon, .gradient, .image, .table:
+        case .image(let insertion, let uAxis, let vAxis, let imageName, let clipBoundary, _):
+            return mediaEntity(
+                insertion: insertion, uAxis: uAxis, vAxis: vAxis,
+                imageName: imageName, clipBoundary: clipBoundary,
+                transform: transform, xdata: xdata, media: media)
+
+        case .hatch, .hatchPath, .fillComplexPolygon, .gradient, .table:
             return nil
         }
     }
@@ -2882,6 +2955,144 @@ public enum DXFWriterBridge {
         insert.zScale = max(zAxis.magnitude, 1e-12)
         insert.angle = -atan2(xAxis.y, xAxis.x)
         return insert
+    }
+
+    /// Convert an image primitive to a DXF IMAGE (referenced or
+    /// embedded) or PDFUNDERLAY (referenced PDF) entity. Returns nil
+    /// when neither a definition nor an embedded asset is known.
+    private static func mediaEntity(
+        insertion: Vector3, uAxis: Vector3, vAxis: Vector3,
+        imageName: String, clipBoundary: [Vector3]?,
+        transform: Transform3D, xdata: [String: XDataValue],
+        media: MediaExportContext
+    ) -> DXFEntity? {
+        // Solve d = uAxis*a + vAxis*b for clip mapping.
+        func solveAxes(_ d: Vector3) -> (a: Double, b: Double)? {
+            let det = uAxis.x * vAxis.y - uAxis.y * vAxis.x
+            guard abs(det) > 1e-18 else { return nil }
+            return ((d.x * vAxis.y - d.y * vAxis.x) / det,
+                    (uAxis.x * d.y - uAxis.y * d.x) / det)
+        }
+
+        if let pdfDef = media.pdfDefinitions[imageName] {
+            var params = CADPdfUnderlayParams()
+            if case .string(let json) = xdata[CADPdfUnderlayMetadata.key],
+               let decoded = try? JSONDecoder().decode(
+                   CADPdfUnderlayParams.self, from: Data(json.utf8)) {
+                params = decoded
+            }
+            let uDXF = toDXFVector(transformedVector(uAxis, by: transform))
+            let pageW = max(params.pageWidthPoints, 1e-9)
+            let pageH = max(params.pageHeightPoints, 1e-9)
+            let entity = DXFUnderlayEntity()
+            entity.basePoint = toDXF(transform.transformPoint(insertion))
+            entity.scaleX = uDXF.magnitude / pageW
+            entity.scaleY = toDXFVector(transformedVector(vAxis, by: transform)).magnitude / pageH
+            entity.scaleZ = 1
+            entity.rotationDeg = atan2(uDXF.y, uDXF.x) * 180 / .pi
+            var flags = 0
+            if let clipBoundary, clipBoundary.count >= 3 { flags |= 1 }
+            if params.isOn { flags |= 2 }
+            if params.monochrome { flags |= 4 }
+            entity.flags = flags
+            entity.contrast = params.contrast
+            entity.fade = params.fade
+            if flags & 1 != 0, let clipBoundary {
+                entity.boundary = clipBoundary.compactMap { point in
+                    solveAxes(Vector3(
+                        x: point.x - insertion.x, y: point.y - insertion.y, z: 0))
+                        .map { Vector3(x: $0.a * pageW, y: $0.b * pageH, z: 0) }
+                }
+            }
+            entity.writeData = DXFUnderlayWriteData(
+                filename: pdfDef.savedPath,
+                pageName: String(pdfDef.pageNumber),
+                dictionaryKey: pdfDef.name)
+            return entity
+        }
+
+        let imageDef = media.imageDefinitions[imageName]
+        let asset = media.imageAssets[imageName]
+        guard imageDef != nil || asset != nil else { return nil }
+        let pixelW = imageDef?.pixelWidth ?? asset?.pixelWidth ?? 0
+        let pixelH = imageDef?.pixelHeight ?? asset?.pixelHeight ?? 0
+        let uDXF = toDXFVector(transformedVector(uAxis, by: transform))
+        let vDXF = toDXFVector(transformedVector(vAxis, by: transform))
+        let entity = DXFImageEntity()
+        entity.basePoint = toDXF(transform.transformPoint(insertion))
+        entity.imageFilePath = imageDef?.savedPath ?? asset?.originalFilename ?? imageName
+        entity.definitionName = imageDef?.name ?? ""
+        if pixelW > 0, pixelH > 0 {
+            entity.secPoint = uDXF * (1.0 / Double(pixelW))
+            entity.vVector = vDXF * (1.0 / Double(pixelH))
+            entity.sizeU = Double(pixelW)
+            entity.sizeV = Double(pixelH)
+        } else {
+            entity.secPoint = uDXF
+            entity.vVector = vDXF
+            entity.sizeU = 1
+            entity.sizeV = 1
+        }
+        if let clipBoundary, clipBoundary.count >= 3, pixelW > 0, pixelH > 0 {
+            entity.clip = 1
+            entity.clipBoundary = clipBoundary.compactMap { point in
+                solveAxes(Vector3(
+                    x: point.x - insertion.x, y: point.y - insertion.y, z: 0))
+                    .map { Vector3(x: $0.a * Double(pixelW), y: $0.b * Double(pixelH), z: 0) }
+            }
+        }
+        return entity
+    }
+
+    /// Compose the standard SPATIAL_FILTER payload for an entity's
+    /// clip: boundary points in the filter OCS (world space of the
+    /// DXF insert at unit scale convention — i.e. the boundary mapped
+    /// by the full DXF insert transform), plus forward/inverse
+    /// insert matrices (column-major 4x3).
+    private static func spatialFilterData(
+        from entity: CADEntity, transform: Transform3D
+    ) -> DXFSpatialFilterData? {
+        guard let clip = CADClipMetadata.value(from: entity),
+              clip.boundary.count >= 3 else { return nil }
+        let originDXF = toDXF(transform.transformPoint(.zero))
+        // DXF-space insert transform F = M·T·M (M = Y-negation): the Y
+        // basis column picks up an extra negation from the input side.
+        let fx = toDXFVector(transformedVector(Vector3(x: 1, y: 0, z: 0), by: transform))
+        let fy = toDXFVector(transformedVector(Vector3(x: 0, y: 1, z: 0), by: transform)) * -1
+        let fz = toDXFVector(transformedVector(Vector3(x: 0, y: 0, z: 1), by: transform))
+
+        // Inverse of the 3x3 linear part (columns fx, fy, fz): the
+        // inverse's rows are the reciprocal basis vectors.
+        let det = fx.dot(fy.cross(fz))
+        guard abs(det) > 1e-30 else { return nil }
+        let inv = 1.0 / det
+        let r0 = fy.cross(fz) * inv
+        let r1 = fz.cross(fx) * inv
+        let r2 = fx.cross(fy) * inv
+        // Inverse columns (transpose of inverse rows) + translation.
+        let it = Vector3(
+            x: -(r0.x * originDXF.x + r0.y * originDXF.y + r0.z * originDXF.z),
+            y: -(r1.x * originDXF.x + r1.y * originDXF.y + r1.z * originDXF.z),
+            z: -(r2.x * originDXF.x + r2.y * originDXF.y + r2.z * originDXF.z))
+        let inverseMatrix = [
+            r0.x, r1.x, r2.x,
+            r0.y, r1.y, r2.y,
+            r0.z, r1.z, r2.z,
+            it.x, it.y, it.z,
+        ]
+        let transformMatrix = [
+            fx.x, fx.y, fx.z,
+            fy.x, fy.y, fy.z,
+            fz.x, fz.y, fz.z,
+            originDXF.x, originDXF.y, originDXF.z,
+        ]
+        return DXFSpatialFilterData(
+            pointsOCS: clip.boundary.map { toDXF(transform.transformPoint($0)) },
+            enabled: clip.isEnabled,
+            frontDistance: clip.frontDepth,
+            backDistance: clip.backDepth,
+            inverseMatrix: inverseMatrix,
+            transformMatrix: transformMatrix)
     }
 
     private static func transformedVector(_ vector: Vector3, by transform: Transform3D) -> Vector3 {

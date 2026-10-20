@@ -302,6 +302,15 @@ public struct CommandDescriptor: Sendable {
         CommandDescriptor(canonicalName: "BEDIT",      aliases: ["EDITBLOCK", "BE"], category: .block,  syntax: "", description: "Edit the selected block reference in-place"),
         CommandDescriptor(canonicalName: "BCLOSE",     aliases: [],                category: .block,   syntax: "", description: "Close the block editor and save changes"),
         CommandDescriptor(canonicalName: "BLOCKS",     aliases: ["BLOCKPANEL"],    category: .block,   syntax: "", description: "Show/hide the block panel"),
+        CommandDescriptor(canonicalName: "INSERT",     aliases: ["I", "-INSERT"],  category: .block,   syntax: "", description: "Insert a block or drawing file as a block reference"),
+        CommandDescriptor(canonicalName: "XATTACH",    aliases: ["XA"],            category: .block,   syntax: "", description: "Attach a drawing as an external reference"),
+        CommandDescriptor(canonicalName: "XREF",       aliases: ["EXTERNALREFERENCES", "ER"], category: .block, syntax: "", description: "Show/hide the External References palette"),
+        CommandDescriptor(canonicalName: "ATTACH",     aliases: [],                category: .block,   syntax: "", description: "Attach a drawing, image, or PDF as a live reference"),
+        CommandDescriptor(canonicalName: "IMAGEATTACH", aliases: [],               category: .block,   syntax: "", description: "Attach a raster image as a live reference"),
+        CommandDescriptor(canonicalName: "PDFATTACH",  aliases: [],                category: .block,   syntax: "", description: "Attach a PDF page as a live underlay reference"),
+        CommandDescriptor(canonicalName: "-ATTACH",    aliases: [],                category: .block,   syntax: "", description: "Attach a reference file from the command line"),
+        CommandDescriptor(canonicalName: "-XREF",      aliases: [],                category: .block,   syntax: "", description: "Manage external references from the command line"),
+        CommandDescriptor(canonicalName: "XBIND",      aliases: [],                category: .block,   syntax: "", description: "Bind one xref-dependent layer into the host"),
         // --- Settings ---
         CommandDescriptor(canonicalName: "STYLE",      aliases: ["ST"], category: .settings, syntax: "", description: "Create and edit text styles"),
         CommandDescriptor(canonicalName: "MLEADERSTYLE", aliases: ["MLS"], category: .settings, syntax: "", description: "Create and edit multileader styles"),
@@ -473,6 +482,14 @@ public final class CADCommandProcessor {
                 CommandDescriptor.allCommands.append(desc)
             }
         }
+    }
+
+    /// Activate a specific feature-command instance (used by panels that
+    /// start a command with pre-seeded state, e.g. Insert-with-block).
+    public func activateFeatureCommand(_ command: any FeatureCommand) {
+        guard let engine else { return }
+        activeFeatureCommand = command
+        command.start(engine: engine, processor: self)
     }
 
     /// Clean up the active feature command (calls `cancel()`, nils the reference,
@@ -822,15 +839,9 @@ public final class CADCommandProcessor {
             // Duplicate selected entities in-place
             let result = engine.document.duplicateEntities(
                 handles: engine.cadSelection.selectedHandles)
-            // Add new blocks (create copies of originals with remapped UUIDs)
-            for (origBlockID, newBlockID) in result.blockRemap {
-                if let origBlock = engine.document.block(for: origBlockID) {
-                    let newBlock = CADBlock(
-                        handle: newBlockID,
-                        name: origBlock.name,
-                        geometry: origBlock.geometry)
-                    engine.document.addBlock(newBlock)
-                }
+            // Add cloned anonymous blocks (named blocks are shared in place)
+            for newBlock in result.clonedBlocks {
+                engine.document.addBlock(newBlock)
             }
             // Add new entities
             var newHandles = Set<UUID>()
@@ -1028,6 +1039,11 @@ public final class CADCommandProcessor {
         case "BLOCKS", "BLOCKPANEL":
             if let engine = engine {
                 engine.ui.blockPanelVisible.toggle()
+            }
+            clearCommand()
+        case "XREF", "EXTERNALREFERENCES", "ER":
+            if let engine = engine {
+                engine.ui.xrefPanelVisible.toggle()
             }
             clearCommand()
         // --- Layer commands ---

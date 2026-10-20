@@ -137,6 +137,74 @@ struct AppCommandRegistration {
             factory: { SplineEditCommand() }
         )
         engine.commandProcessor.registerFeatureCommand(
+            name: "INSERT",
+            aliases: ["I", "-INSERT"],
+            descriptor: CommandDescriptor(
+                canonicalName: "INSERT",
+                aliases: ["I", "-INSERT"],
+                category: .block,
+                description: "Insert a block or drawing file as a block reference"),
+            factory: { InsertCommand() }
+        )
+        engine.commandProcessor.registerFeatureCommand(
+            name: "XATTACH",
+            aliases: ["XA"],
+            descriptor: CommandDescriptor(
+                canonicalName: "XATTACH",
+                aliases: ["XA"],
+                category: .block,
+                description: "Attach a drawing as an external reference"),
+            factory: { XAttachCommand() }
+        )
+        engine.commandProcessor.registerFeatureCommand(
+            name: "ATTACH",
+            descriptor: CommandDescriptor(
+                canonicalName: "ATTACH",
+                category: .block,
+                description: "Attach a drawing, image, or PDF as a live reference"),
+            factory: { AttachCommand() }
+        )
+        engine.commandProcessor.registerFeatureCommand(
+            name: "IMAGEATTACH",
+            descriptor: CommandDescriptor(
+                canonicalName: "IMAGEATTACH",
+                category: .block,
+                description: "Attach a raster image as a live reference"),
+            factory: { ImageAttachCommand() }
+        )
+        engine.commandProcessor.registerFeatureCommand(
+            name: "PDFATTACH",
+            descriptor: CommandDescriptor(
+                canonicalName: "PDFATTACH",
+                category: .block,
+                description: "Attach a PDF page as a live underlay reference"),
+            factory: { PdfAttachCommand() }
+        )
+        engine.commandProcessor.registerFeatureCommand(
+            name: "-ATTACH",
+            descriptor: CommandDescriptor(
+                canonicalName: "-ATTACH",
+                category: .block,
+                description: "Attach a reference file from the command line"),
+            factory: { MinusAttachCommand() }
+        )
+        engine.commandProcessor.registerFeatureCommand(
+            name: "-XREF",
+            descriptor: CommandDescriptor(
+                canonicalName: "-XREF",
+                category: .block,
+                description: "Manage external references from the command line"),
+            factory: { MinusXrefCommand() }
+        )
+        engine.commandProcessor.registerFeatureCommand(
+            name: "XBIND",
+            descriptor: CommandDescriptor(
+                canonicalName: "XBIND",
+                category: .block,
+                description: "Bind one xref-dependent layer into the host"),
+            factory: { XBindCommand() }
+        )
+        engine.commandProcessor.registerFeatureCommand(
             name: "CLIP",
             aliases: ["CL"],
             descriptor: CommandDescriptor(

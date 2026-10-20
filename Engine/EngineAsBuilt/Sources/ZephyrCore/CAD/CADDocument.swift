@@ -41,6 +41,15 @@ public struct CADDocumentSnapshot: Sendable {
     /// Names of image assets currently referenced by entities (not the raw Data blobs).
     /// The actual `imageStore` lives on `CADDocument` and persists across undo/redo.
     public let imageAssetNames: Set<String>
+    /// Xref fade percent at snapshot time (render-only).
+    public let xrefFadePercent: Int
+    /// Referenced media definitions (ATTACH).
+    public let imageDefinitions: [String: CADImageDefinition]
+    public let pdfDefinitions: [String: CADPdfDefinition]
+    /// Image asset names with pixels actually available at snapshot
+    /// time (embedded store ∪ loaded media references). Names not in
+    /// this set render as placeholder frames.
+    public let availableImageAssetNames: Set<String>
 
     public init(
         layers: [UUID: Layer],
@@ -56,8 +65,16 @@ public struct CADDocumentSnapshot: Sendable {
         currentLeaderStyleName: String = "Standard",
         linetypePatterns: [String: [Double]] = [:],
         dxfRoundTripPayload: DXFRoundTripPayload? = nil,
-        imageAssetNames: Set<String> = []
+        imageAssetNames: Set<String> = [],
+        xrefFadePercent: Int = 50,
+        imageDefinitions: [String: CADImageDefinition] = [:],
+        pdfDefinitions: [String: CADPdfDefinition] = [:],
+        availableImageAssetNames: Set<String> = []
     ) {
+        self.xrefFadePercent = xrefFadePercent
+        self.imageDefinitions = imageDefinitions
+        self.pdfDefinitions = pdfDefinitions
+        self.availableImageAssetNames = availableImageAssetNames
         self.layers = layers
         self.blocks = blocks
         self.entities = entities
@@ -123,15 +140,24 @@ public struct SaveDocumentSnapshot: Sendable {
     public let cameraState: CameraState
     public let docSnapshot: CADDocumentSnapshot
     public let imageAssets: [String: CADImageAsset]
+    /// Folder of the document's file at snapshot time (xref resolution
+    /// fallback stored in EAB; nil for never-saved documents).
+    public let sourceFolderPath: String?
+    /// Xref blocks unloaded at snapshot time (EAB persistence).
+    public let unloadedXrefHandles: Set<UUID>
 
     public init(viewName: String, viewKind: DXFDrawingViewKind,
                 cameraState: CameraState, docSnapshot: CADDocumentSnapshot,
-                imageAssets: [String: CADImageAsset]) {
+                imageAssets: [String: CADImageAsset],
+                sourceFolderPath: String? = nil,
+                unloadedXrefHandles: Set<UUID> = []) {
         self.viewName = viewName
         self.viewKind = viewKind
         self.cameraState = cameraState
         self.docSnapshot = docSnapshot
         self.imageAssets = imageAssets
+        self.sourceFolderPath = sourceFolderPath
+        self.unloadedXrefHandles = unloadedXrefHandles
     }
 }
 
@@ -305,6 +331,14 @@ public final class CADDocument {
     /// Map of dimension style name -> CADDimensionStyle
     public var dimensionStyles: [String: CADDimensionStyle] = [:]
 
+    /// Referenced image definitions (DXF IMAGEDEF), keyed by name.
+    /// Document data: part of undo snapshots and saves; decoded
+    /// pixels live in the per-tab MediaReferenceStore.
+    public var imageDefinitions: [String: CADImageDefinition] = [:]
+
+    /// Referenced PDF-page definitions (DXF PDFDEFINITION), keyed by name.
+    public var pdfDefinitions: [String: CADPdfDefinition] = [:]
+
     /// Named multileader styles and the active style used by new leaders.
     public var leaderStyles: [String: CADLeaderStyle] = ["Standard": .standard]
     public var currentLeaderStyleName: String = "Standard"
@@ -315,6 +349,45 @@ public final class CADDocument {
 
     /// Raw DXF classes/objects retained for lossless round-trip of native entities.
     public var dxfRoundTripPayload: DXFRoundTripPayload?
+
+    /// Folder of the file this document was loaded from, as recorded in
+    /// the EAB xrefs section — a resolution fallback for relative xref
+    /// paths when the live file location is unknown (autosave recovery).
+    public var xrefSourceFolder: String?
+
+    /// Xref block handles that were unloaded when the EAB file was
+    /// written; consumed by the runtime store on document open.
+    public var eabUnloadedXrefHandles: Set<UUID> = []
+
+    /// Per-tab xref runtime store (load status + shadow geometry),
+    /// assigned by TabManager so all view documents in a tab share one.
+    /// Never snapshotted.
+    public var xrefRuntimeStore: XrefRuntimeStore?
+
+    /// Per-tab referenced-media runtime state (set by TabManager).
+    public var mediaRuntimeStore: MediaReferenceStore?
+
+    /// Embedded assets plus loaded referenced-media assets — what the
+    /// renderer may draw. Runtime assets never enter `imageStore`,
+    /// so saves and undo stay free of referenced pixels.
+    public var effectiveImageStore: [String: CADImageAsset] {
+        guard let mediaRuntimeStore else { return imageStore }
+        let loaded = mediaRuntimeStore.loadedAssets()
+        guard !loaded.isEmpty else { return imageStore }
+        return imageStore.merging(loaded) { _, runtime in runtime }
+    }
+
+    /// Xref display fade percent (XDWGFADECTL): 0 = off, 90 = max.
+    /// Display only; carried into render snapshots.
+    public var xrefFadePercent: Int = 50 {
+        didSet { xrefFadePercent = max(0, min(90, xrefFadePercent)) }
+    }
+
+    /// Bumped whenever rendering must refresh, including non-dirty
+    /// changes (xref load/unload/reload, fade). Secondary render
+    /// contexts (floated windows, split panes) compare against this —
+    /// `editRevision` alone misses non-edit invalidation.
+    public private(set) var renderRevision: UInt64 = 0
 
     /// Image asset store keyed by sha256 hex name. Multiple entities can reference
     /// the same asset. Persists across undo/redo boundaries (snapshots only store
@@ -448,11 +521,13 @@ public final class CADDocument {
     /// - Parameter regenerate: If true (default), also marks the document for regeneration.
     public func markEdited(regenerate: Bool = true) {
         editRevision &+= 1
+        renderRevision &+= 1
         if regenerate { needsRegeneration = true }
     }
 
     /// Call for render/cache-only invalidation (palette change, theme toggle).
     public func markNeedsRegeneration() {
+        renderRevision &+= 1
         needsRegeneration = true
     }
 
@@ -467,6 +542,47 @@ public final class CADDocument {
     }
 
     // MARK: - Text Style Operations
+
+    // MARK: - Referenced media definitions (ATTACH)
+
+    public func imageDefinition(named name: String) -> CADImageDefinition? {
+        if let exact = imageDefinitions[name] { return exact }
+        return imageDefinitions.values.first {
+            $0.name.caseInsensitiveCompare(name) == .orderedSame
+        }
+    }
+
+    public func pdfDefinition(named name: String) -> CADPdfDefinition? {
+        if let exact = pdfDefinitions[name] { return exact }
+        return pdfDefinitions.values.first {
+            $0.name.caseInsensitiveCompare(name) == .orderedSame
+        }
+    }
+
+    /// True when `name` is a referenced-media definition (image or PDF),
+    /// as opposed to an embedded image asset in `imageStore`.
+    public func isMediaReferenceName(_ name: String) -> Bool {
+        imageDefinition(named: name) != nil || pdfDefinition(named: name) != nil
+    }
+
+    public func importMediaDefinitions(
+        image: [CADImageDefinition], pdf: [CADPdfDefinition]
+    ) {
+        for def in image where !def.name.isEmpty { imageDefinitions[def.name] = def }
+        for def in pdf where !def.name.isEmpty { pdfDefinitions[def.name] = def }
+    }
+
+    /// Count entities (model space, incl. block contents one level) whose
+    /// image primitives reference `name`.
+    public func mediaInstanceCount(forName name: String) -> Int {
+        var count = 0
+        func scan(_ geometry: [CADPrimitive]?) {
+            guard let geometry else { return }
+            for prim in geometry where prim.imageReferenceName == name { count += 1 }
+        }
+        for entity in allEntities { scan(entity.localGeometry) }
+        return count
+    }
 
     public func textStyle(named name: String?) -> CADTextStyle? {
         guard let name else { return nil }
@@ -559,6 +675,10 @@ public final class CADDocument {
     }
 
     public func removeLayer(handle: UUID) {
+        if let layer = layerTable[handle], isXrefDependentLayer(layer) {
+            print("[Xref] Layer '\(layer.name)' is xref-dependent and cannot be deleted (Detach the xref).")
+            return
+        }
         pushUndo()
         layerTable.removeValue(forKey: handle)
         if activeLayerID == handle { activeLayerID = layerTable.keys.first }
@@ -586,6 +706,10 @@ public final class CADDocument {
     }
 
     public func renameLayer(handle: UUID, name: String) {
+        if let layer = layerTable[handle], isXrefDependentLayer(layer) {
+            print("[Xref] Layer '\(layer.name)' is xref-dependent and cannot be renamed.")
+            return
+        }
         pushUndo()
         guard var layer = layerTable[handle] else { return }
         layer.name = name
@@ -643,7 +767,7 @@ public final class CADDocument {
 
     private func preparedEntityForStorage(_ entity: CADEntity) -> CADEntity {
         var result = entity
-        if let blockID = result.blockID, let block = blockTable[blockID] {
+        if let blockID = result.blockID, let block = effectiveBlock(for: blockID) {
             if var array = result.arrayData {
                 let path = CADArrayPathResolver.points(
                     for: array,
@@ -656,6 +780,12 @@ public final class CADDocument {
                 result.updateArrayCache(
                     sourceBoundingBox: block.localBoundingBox,
                     pathPoints: path)
+            } else if blockTable[blockID]?.isXref == true && block.geometry.isEmpty {
+                // Unresolved xref: placeholder bounds/anchors.
+                let placeholder = CADRendererBridge.unresolvedXrefPlaceholder(
+                    blockName: block.name)
+                result.localBoundingBox = CADBlock.computeBoundingBox(from: placeholder)
+                result.updateAnchorCache(from: placeholder)
             } else {
                 result.localBoundingBox = block.localBoundingBox
                 result.updateAnchorCache(from: block.geometry)
@@ -750,6 +880,281 @@ public final class CADDocument {
         markEdited(regenerate: true)
     }
 
+    /// Insert a block definition without undo/dirty side effects
+    /// (xref attach fan-out into non-active view documents).
+    public func insertBlockSilently(_ block: CADBlock) {
+        blockTable[block.handle] = block
+    }
+
+    /// Update the descriptor of an xref definition in place (repath).
+    public func updateXrefDescriptor(blockHandle: UUID, descriptor: CADXrefDescriptor) {
+        guard var block = blockTable[blockHandle], block.isXref else { return }
+        block.xrefDescriptor = descriptor
+        blockTable[blockHandle] = block
+    }
+
+    /// Detach an xref: remove the definition, every instance, and any
+    /// dependent layers no remaining geometry references. One undo step.
+    /// Returns (instances removed, layers purged).
+    @discardableResult
+    public func detachXref(blockHandle: UUID, pushUndoBefore: Bool = true) -> (instances: Int, layersPurged: [String]) {
+        guard let block = blockTable[blockHandle], block.isXref else { return (0, []) }
+        if pushUndoBefore { pushUndo() }
+        let instanceHandles = entityRegistry.values
+            .filter { $0.blockID == blockHandle }.map(\.handle)
+        for handle in instanceHandles { entityRegistry.removeValue(forKey: handle) }
+        blockTable.removeValue(forKey: blockHandle)
+
+        // Purge dependent layers owned by this xref that nothing else uses.
+        let prefix = block.name.uppercased() + "|"
+        let dependentLayers = layerTable.values.filter {
+            $0.name.uppercased().hasPrefix(prefix)
+        }
+        var purged: [String] = []
+        for layer in dependentLayers
+        where !isLayerStillReferenced(layer, excludingShadowOf: blockHandle) {
+            layerTable.removeValue(forKey: layer.handle)
+            purged.append(layer.name)
+        }
+        invalidateEntityGrid()
+        markEdited(regenerate: true)
+        return (instanceHandles.count, purged)
+    }
+
+    /// True when any entity sits on the layer or any block primitive
+    /// (including loaded xref shadows) styles against it by name.
+    public func isLayerStillReferenced(
+        _ layer: Layer, excludingShadowOf excludedBlock: UUID? = nil
+    ) -> Bool {
+        if entityRegistry.values.contains(where: { $0.layerID == layer.handle }) {
+            return true
+        }
+        let upper = layer.name.uppercased()
+        func stylesUse(_ styles: [Int: CADPrimitiveStyle]) -> Bool {
+            styles.values.contains { $0.effectiveLayerName?.uppercased() == upper }
+        }
+        if blockTable.values.contains(where: { stylesUse($0.primitiveStyles) }) {
+            return true
+        }
+        if let store = xrefRuntimeStore {
+            for (handle, entry) in store.allEntries() where handle != excludedBlock {
+                if let shadow = entry.shadow, stylesUse(shadow.primitiveStyles) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// Dependent-symbol rename for a bind: mode 0 turns `Owner|Name`
+    /// into `Owner$0$Name` (incrementing `$n$` on collision with
+    /// `existingUpperNames`); mode 1 strips the prefix (merge).
+    public static func boundSymbolName(
+        _ name: String, bindType: Int, existingUpperNames: Set<String>
+    ) -> String? {
+        guard let sep = name.firstIndex(of: "|") else { return nil }
+        let owner = String(name[..<sep])
+        let leaf = String(name[name.index(after: sep)...])
+        if bindType == 1 { return leaf }
+        var n = 0
+        var candidate = "\(owner)$\(n)$\(leaf)"
+        while existingUpperNames.contains(candidate.uppercased()) {
+            n += 1
+            candidate = "\(owner)$\(n)$\(leaf)"
+        }
+        return candidate
+    }
+
+    /// Bind one xref into this document using its loaded shadow block:
+    /// materializes geometry, renames/merges dependent symbols per
+    /// BINDTYPE, and clears the descriptor. One undo step when asked.
+    @discardableResult
+    public func bindXref(
+        blockHandle: UUID, shadow: CADBlock, bindType: Int, pushUndoBefore: Bool = true
+    ) -> Bool {
+        guard var block = blockTable[blockHandle], block.isXref else { return false }
+        if pushUndoBefore { pushUndo() }
+
+        // Scope: only dependent symbols this xref (and its nested
+        // children, baked into the shadow) actually brought in.
+        var owners: Set<String> = [block.name.uppercased()]
+        for style in shadow.primitiveStyles.values {
+            if let name = style.effectiveLayerName,
+               let sep = name.firstIndex(of: "|") {
+                owners.insert(String(name[..<sep]).uppercased())
+            }
+        }
+        func owned(_ name: String) -> Bool {
+            guard let sep = name.firstIndex(of: "|") else { return false }
+            return owners.contains(String(name[..<sep]).uppercased())
+        }
+
+        // Rename maps are derived per symbol table from live names.
+        let layerNames = { Set(self.layerTable.values.map { $0.name.uppercased() }) }
+        var layerRemap: [String: String] = [:]  // uppercased old -> new
+        for layer in layerTable.values where owned(layer.name) {
+            if let newName = Self.boundSymbolName(
+                layer.name, bindType: bindType, existingUpperNames: layerNames()) {
+                layerRemap[layer.name.uppercased()] = newName
+            }
+        }
+        func remapDict<V>(_ map: [String: String], _ dict: inout [String: V], rename: (inout V, String) -> Void) {
+            var result: [String: V] = [:]
+            for (key, var value) in dict {
+                if let newKey = map[key.uppercased()] {
+                    if bindType == 1, dict[newKey] != nil || result[newKey] != nil {
+                        continue  // merge: host definition wins
+                    }
+                    rename(&value, newKey)
+                    result[newKey] = value
+                } else {
+                    result[key] = value
+                }
+            }
+            dict = result
+        }
+        func symbolRemap<V>(_ dict: [String: V]) -> [String: String] {
+            var map: [String: String] = [:]
+            let existing = Set(dict.keys.map { $0.uppercased() })
+            for key in dict.keys where owned(key) {
+                if let newKey = Self.boundSymbolName(key, bindType: bindType, existingUpperNames: existing) {
+                    map[key.uppercased()] = newKey
+                }
+            }
+            return map
+        }
+        let textStyleRemap = symbolRemap(textStyles)
+        let linetypeRemap = symbolRemap(linetypePatterns)
+
+        // Remap shadow styles/xdata into host names.
+        func remapStyles(
+            _ styles: [Int: CADPrimitiveStyle]
+        ) -> [Int: CADPrimitiveStyle] {
+            var out = styles
+            for (index, var style) in out {
+                if let name = style.layerName, let mapped = layerRemap[name.uppercased()] {
+                    style.layerName = mapped
+                }
+                if let name = style.lineType, let mapped = linetypeRemap[name.uppercased()] {
+                    style.lineType = mapped
+                }
+                out[index] = style
+            }
+            return out
+        }
+        func remapXData(
+            _ xdata: [Int: [String: XDataValue]]
+        ) -> [Int: [String: XDataValue]] {
+            var out = xdata
+            for (index, var entry) in out {
+                if case .string(let name) = entry["dxf.textStyle"],
+                   let mapped = textStyleRemap[name.uppercased()] {
+                    entry["dxf.textStyle"] = .string(mapped)
+                }
+                if case .string(let name) = entry["dxf.lineType"],
+                   let mapped = linetypeRemap[name.uppercased()] {
+                    entry["dxf.lineType"] = .string(mapped)
+                }
+                out[index] = entry
+            }
+            return out
+        }
+
+        // Rename/merge the symbol tables themselves.
+        var handleByUpperName: [String: UUID] = [:]
+        for layer in layerTable.values { handleByUpperName[layer.name.uppercased()] = layer.handle }
+        for (upper, newName) in layerRemap {
+            guard let handle = handleByUpperName[upper] else { continue }
+            if bindType == 1, handleByUpperName[newName.uppercased()] != nil {
+                layerTable.removeValue(forKey: handle)
+            } else if var layer = layerTable[handle] {
+                layer.name = newName
+                layerTable[handle] = layer
+            }
+        }
+        remapDict(textStyleRemap, &textStyles) { $0.name = $1 }
+        remapDict(symbolRemap(dimensionStyles), &dimensionStyles) { _, _ in }
+        remapDict(symbolRemap(leaderStyles), &leaderStyles) { $0.name = $1 }
+        remapDict(linetypeRemap, &linetypePatterns) { _, _ in }
+
+        // Host blocks that styled against dependent names follow along.
+        for (handle, var other) in blockTable where handle != blockHandle {
+            let remapped = remapStyles(other.primitiveStyles)
+            if remapped != other.primitiveStyles {
+                other.primitiveStyles = remapped
+                other.primitiveXData = remapXData(other.primitiveXData)
+                blockTable[handle] = other
+            }
+        }
+
+        block.geometry = shadow.geometry
+        block.primitiveStyles = remapStyles(shadow.primitiveStyles)
+        block.primitiveXData = remapXData(shadow.primitiveXData)
+        block.xrefDescriptor = nil
+        block.dxfFlags &= ~(CADXrefDescriptor.Flags.xref | CADXrefDescriptor.Flags.xrefOverlay)
+        block.updateBoundingBox()
+        blockTable[blockHandle] = block
+        blockGridCache.removeValue(forKey: blockHandle)
+
+        for (handle, entity) in entityRegistry where entity.blockID == blockHandle {
+            entityRegistry[handle] = preparedEntityForStorage(entity)
+        }
+        invalidateEntityGrid()
+        markEdited(regenerate: true)
+        return true
+    }
+
+    /// XBIND one dependent layer: rename (bind mode 0) or merge into
+    /// the host layer of the same leaf name (mode 1), rewriting
+    /// references in host blocks. Returns the resulting layer name.
+    @discardableResult
+    public func xbindLayer(named dependentName: String, bindType: Int) -> String? {
+        guard let layer = allLayers.first(where: {
+            $0.name.caseInsensitiveCompare(dependentName) == .orderedSame
+        }), isXrefDependentLayer(layer) else { return nil }
+        let existing = Set(layerTable.values.map { $0.name.uppercased() })
+        guard let newName = Self.boundSymbolName(
+            layer.name, bindType: bindType, existingUpperNames: existing) else { return nil }
+        pushUndo()
+        let upper = layer.name.uppercased()
+        if bindType == 1, existing.contains(newName.uppercased()) {
+            layerTable.removeValue(forKey: layer.handle)
+        } else {
+            var copy = layer
+            copy.name = newName
+            layerTable[layer.handle] = copy
+        }
+        for (handle, var block) in blockTable {
+            var changed = false
+            for (index, var style) in block.primitiveStyles
+            where style.effectiveLayerName?.uppercased() == upper {
+                style.layerName = newName
+                block.primitiveStyles[index] = style
+                changed = true
+            }
+            if changed { blockTable[handle] = block }
+        }
+        // Loaded shadows referencing the old name follow along.
+        if let store = xrefRuntimeStore {
+            for (handle, entry) in store.allEntries() {
+                guard var shadow = entry.shadow else { continue }
+                var changed = false
+                for (index, var style) in shadow.primitiveStyles
+                where style.effectiveLayerName?.uppercased() == upper {
+                    style.layerName = newName
+                    shadow.primitiveStyles[index] = style
+                    changed = true
+                }
+                if changed {
+                    let updated = shadow
+                    store.updateEntry(for: handle) { $0.shadow = updated }
+                }
+            }
+        }
+        markEdited(regenerate: true)
+        return newName
+    }
+
     public func removeBlock(handle: UUID) {
         pushUndo()
         blockTable.removeValue(forKey: handle)
@@ -768,6 +1173,10 @@ public final class CADDocument {
     public var blocksView: Dictionary<UUID, CADBlock>.Values { blockTable.values }
 
     public func updateBlockGeometry(handle: UUID, geometry: [CADPrimitive]) {
+        guard blockTable[handle]?.isXref != true else {
+            print("[Xref] Block geometry of an external reference cannot be edited (Bind it first).")
+            return
+        }
         pushUndo()
         guard var block = blockTable[handle] else { return }
         block.geometry = geometry
@@ -775,6 +1184,7 @@ public final class CADDocument {
         block.primitiveXData.removeAll(keepingCapacity: false)
         block.updateBoundingBox()
         blockTable[handle] = block
+        blockGridCache.removeValue(forKey: handle)
         let affectedHandles = entityRegistry.values
             .filter { $0.blockID == handle }
             .map(\.handle)
@@ -859,23 +1269,26 @@ public final class CADDocument {
 
     // MARK: - Entity Duplication (for COPY / PASTE commands)
 
-    /// Deep-copy a set of entities, generating new UUIDs for each entity and
-    /// their referenced blocks. Returns the duplicated entities ready to be
-    /// added to the document via `addEntity(_:)`.
+    /// Deep-copy a set of entities, generating new UUIDs for each entity.
+    /// Named block definitions are **shared** (copies keep the same
+    /// `blockID`, like AutoCAD COPY); only anonymous blocks (`*…`, whose
+    /// geometry is per-instance — dimensions and friends) are cloned, with
+    /// all fields preserved. Returns the duplicated entities ready to be
+    /// added via `addEntity(_:)`, plus any cloned blocks for `addBlock(_:)`.
     ///
     /// - Parameters:
     ///   - handles: The entity handles to duplicate.
     ///   - offset: A translation applied to each duplicated entity's transform
     ///     (e.g., to offset from original for COPY, or from base-point for PASTECLIP).
-    /// - Returns: The duplicated entities with fresh UUID handles and optional
-    ///   block remapping. Caller is responsible for adding entities and blocks
-    ///   to the document.
+    /// - Returns: Duplicated entities, the anonymous-block remap
+    ///   (original → clone handle), and the cloned block definitions.
     public func duplicateEntities(
         handles: Set<UUID>,
         offset: Vector3 = .zero
-    ) -> (entities: [CADEntity], blockRemap: [UUID: UUID]) {
+    ) -> (entities: [CADEntity], blockRemap: [UUID: UUID], clonedBlocks: [CADBlock]) {
         var newEntities: [CADEntity] = []
         var blockRemap: [UUID: UUID] = [:]
+        var clonedBlocks: [CADBlock] = []
 
         // First pass: collect all referenced block IDs so we can remap them.
         var referencedBlockIDs = Set<UUID>()
@@ -886,13 +1299,21 @@ public final class CADDocument {
             }
         }
 
-        // Remap block UUIDs by copying the block definitions with new handles.
-        // (The caller is expected to add these new blocks to the document.)
+        // Clone only anonymous blocks; named definitions are shared so a
+        // copied INSERT keeps referencing the same definition (and, for
+        // xrefs, the same runtime-store entry keyed by block handle).
         for origBlockID in referencedBlockIDs {
-            if blockTable[origBlockID] != nil {
-                let newBlockID = UUID()
-                blockRemap[origBlockID] = newBlockID
-            }
+            guard let orig = blockTable[origBlockID], orig.name.hasPrefix("*") else { continue }
+            let newBlockID = UUID()
+            blockRemap[origBlockID] = newBlockID
+            clonedBlocks.append(CADBlock(
+                handle: newBlockID,
+                name: orig.name,
+                geometry: orig.geometry,
+                primitiveStyles: orig.primitiveStyles,
+                primitiveXData: orig.primitiveXData,
+                dxfFlags: orig.dxfFlags,
+                isInternalTableDisplayBlock: orig.isInternalTableDisplayBlock))
         }
 
         // Second pass: duplicate each entity.
@@ -925,7 +1346,7 @@ public final class CADDocument {
             newEntities.append(entity)
         }
 
-        return (newEntities, blockRemap)
+        return (newEntities, blockRemap, clonedBlocks)
     }
 
     public func entity(for handle: UUID) -> CADEntity? {
@@ -944,6 +1365,7 @@ public final class CADDocument {
     /// text, SHX glyphs, dimension blocks, arcs, ellipses, and splines match what is displayed.
     public func renderableWorldBoundingBox(visibleLayersOnly: Bool = true) -> BoundingBox3D? {
         var bounds = CADRenderBoundsAccumulator()
+        let layersByName = visibleLayersOnly ? layersByUppercasedName() : [:]
 
         for entity in entityRegistry.values {
             guard let layer = layerTable[entity.layerID] else { continue }
@@ -1041,8 +1463,31 @@ public final class CADDocument {
             let primitiveStyles: [Int: CADPrimitiveStyle]
             let primitiveXData: [Int: [String: XDataValue]]
             if let blockID = entity.blockID {
-                guard let block = blockTable[blockID],
-                      !block.isInternalTableDisplayBlock,
+                guard let definedBlock = blockTable[blockID],
+                      !definedBlock.isInternalTableDisplayBlock else { continue }
+                // Xref fast path: cached shadow box instead of walking
+                // potentially millions of primitives on the main thread.
+                // Falls through to the walk only when visibility filtering
+                // could shrink the box.
+                if definedBlock.isXref, entity.arrayData == nil,
+                   let effective = effectiveBlock(for: blockID) {
+                    let needsWalk = visibleLayersOnly && effective.primitiveStyles.values.contains {
+                        !CADPrimitiveVisibility.isVisible(style: $0, layersByName: layersByName)
+                    }
+                    if !needsWalk {
+                        let localBox = effective.geometry.isEmpty
+                            ? CADBlock.computeBoundingBox(
+                                from: CADRendererBridge.unresolvedXrefPlaceholder(
+                                    blockName: effective.name))
+                            : effective.localBoundingBox
+                        let worldBox = BoundingBox3D(
+                            transforming: localBox, by: entity.transform)
+                        bounds.include(worldBox.min)
+                        bounds.include(worldBox.max)
+                        continue
+                    }
+                }
+                guard let block = effectiveBlock(for: blockID),
                       !block.geometry.isEmpty else { continue }
                 geometry = block.geometry
                 primitiveStyles = block.primitiveStyles
@@ -1070,6 +1515,11 @@ public final class CADDocument {
 
             for transform in transforms {
                 for (index, primitive) in geometry.enumerated() {
+                    if visibleLayersOnly,
+                       !CADPrimitiveVisibility.isVisible(
+                           style: primitiveStyles[index], layersByName: layersByName) {
+                        continue
+                    }
                     let primitiveStyle = primitiveStyles[index]
                     let backgroundScale = primitiveStyle?.textBackgroundScale
                         ?? entityBackgroundScale
@@ -1653,6 +2103,7 @@ public final class CADDocument {
         primitiveStyles: [Int: CADPrimitiveStyle]? = nil,
         primitiveXData: [Int: [String: XDataValue]]? = nil
     ) {
+        guard blockTable[handle]?.isXref != true else { return }
         guard var block = blockTable[handle] else { return }
         block.geometry = geometry
         block.primitiveStyles = (primitiveStyles ?? block.primitiveStyles).filter {
@@ -1663,6 +2114,7 @@ public final class CADDocument {
         }
         block.updateBoundingBox()
         blockTable[handle] = block
+        blockGridCache.removeValue(forKey: handle)
         let affectedHandles = entityRegistry.values
             .filter { $0.blockID == handle }
             .map(\.handle)
@@ -2130,31 +2582,38 @@ public final class CADDocument {
     @discardableResult
     public func createBlockFromEntities(handles: Set<UUID>, name: String) -> CADBlock? {
         guard !handles.isEmpty else { return nil }
+        // Block geometry cannot contain a nested INSERT, so an xref in
+        // the selection would be baked into the host file. Refuse.
+        if handles.contains(where: { handle in
+            guard let bid = entityRegistry[handle]?.blockID else { return false }
+            return blockTable[bid]?.isXref == true
+        }) {
+            print("[Xref] Selection contains an external reference — Bind it before creating a block.")
+            return nil
+        }
         guard let center = collectiveCenter(for: handles) else { return nil }
 
         pushUndo()
 
-        // Collect world-space geometry from all selected entities
-        var worldGeom: [CADPrimitive] = []
-        for handle in handles {
-            guard let entity = entityRegistry[handle] else { continue }
-            if let geom = resolvedGeometry(for: entity) {
-                let transformed = CADGeometryMath.transformPrimitives(geom, by: entity.transform)
-                worldGeom.append(contentsOf: transformed)
-            }
-        }
-        guard !worldGeom.isEmpty else {
+        // Bake the selection into block-local space (relative to the
+        // collective center), preserving per-primitive styles/xdata.
+        let selected = handles.compactMap { entityRegistry[$0] }
+        let baked = CADModelSpaceBaker.bake(
+            entities: selected,
+            layers: allLayers,
+            blocks: allBlocks,
+            basePoint: center)
+        guard !baked.geometry.isEmpty else {
             // Pop the undo entry we just pushed and bail out
             _ = undoManager.popUndo(currentSnapshot: snapshot())
             return nil
         }
 
-        // Transform all world-space geometry to block-local space (relative to center)
-        let invTransform = Transform3D.translated(by: Vector3(x: -center.x, y: -center.y, z: -center.z))
-        let localGeom = CADGeometryMath.transformPrimitives(worldGeom, by: invTransform)
-
         // Create the block definition
-        var block = CADBlock(name: name, geometry: localGeom)
+        var block = CADBlock(
+            name: name, geometry: baked.geometry,
+            primitiveStyles: baked.primitiveStyles,
+            primitiveXData: baked.primitiveXData)
         block.updateBoundingBox()
         blockTable[block.handle] = block
 
@@ -2179,11 +2638,216 @@ public final class CADDocument {
         return block
     }
 
+    /// Lazily built local spatial grids for large internal blocks
+    /// (xref shadows carry their own, built off-thread by the loader).
+    private var blockGridCache: [UUID: CADBlockSpatialGrid] = [:]
+
+    /// Spatial grid for hit/snap/rect queries over a block's effective
+    /// geometry, or nil when the block is small enough to scan.
+    public func spatialGrid(forBlock blockHandle: UUID) -> CADBlockSpatialGrid? {
+        if let grid = xrefRuntimeStore?.spatialGrid(for: blockHandle) {
+            return grid
+        }
+        if let cached = blockGridCache[blockHandle] { return cached }
+        guard let block = effectiveBlock(for: blockHandle),
+              block.geometry.count > CADBlockSpatialGrid.buildThreshold else { return nil }
+        let grid = CADBlockSpatialGrid(primitives: block.geometry)
+        blockGridCache[blockHandle] = grid
+        return grid
+    }
+
+    public func spatialGrid(for entity: CADEntity) -> CADBlockSpatialGrid? {
+        guard let bid = entity.blockID else { return nil }
+        return spatialGrid(forBlock: bid)
+    }
+
+    /// Display-side block resolution: a loaded xref's shadow block when
+    /// available, otherwise the document's own definition. Edit-side
+    /// code (BEDIT, explode, geometry update) must use `block(for:)`.
+    public func effectiveBlock(for handle: UUID) -> CADBlock? {
+        if let shadow = xrefRuntimeStore?.shadowBlock(for: handle) {
+            return shadow
+        }
+        return blockTable[handle]
+    }
+
     public func resolvedGeometry(for entity: CADEntity) -> [CADPrimitive]? {
-        if let bid = entity.blockID, let block = blockTable[bid] {
+        if let bid = entity.blockID, let block = effectiveBlock(for: bid) {
             return block.geometry
         }
         return entity.localGeometry
+    }
+
+    /// Per-primitive styles aligned with `resolvedGeometry(for:)`
+    /// (block styles for instances, empty for loose geometry).
+    public func primitiveStyles(for entity: CADEntity) -> [Int: CADPrimitiveStyle] {
+        if let bid = entity.blockID, let block = effectiveBlock(for: bid) {
+            return block.primitiveStyles
+        }
+        return [:]
+    }
+
+    public func layersByUppercasedName() -> [String: Layer] {
+        CADPrimitiveVisibility.layersByUppercasedName(layerTable.values)
+    }
+
+    /// Per-primitive visibility aligned with `resolvedGeometry(for:)`, or
+    /// nil when every primitive is trivially visible (no styled layers).
+    public func primitiveVisibility(for entity: CADEntity) -> [Bool]? {
+        guard let geometry = resolvedGeometry(for: entity), !geometry.isEmpty else { return nil }
+        let styles = primitiveStyles(for: entity)
+        guard styles.values.contains(where: { $0.effectiveLayerName != nil }) else { return nil }
+        let layersByName = layersByUppercasedName()
+        return geometry.indices.map {
+            CADPrimitiveVisibility.isVisible(style: styles[$0], layersByName: layersByName)
+        }
+    }
+
+    /// Re-derive bounds/anchors for xref instances from current
+    /// effective (shadow or placeholder) geometry. Called after xref
+    /// load/unload/reload, undo restore, paste, and viewport projection.
+    public func resyncXrefInstanceBounds(forBlock blockHandle: UUID? = nil) {
+        var changed = false
+        for (handle, entity) in entityRegistry {
+            guard let bid = entity.blockID,
+                  blockHandle == nil || bid == blockHandle,
+                  blockTable[bid]?.isXref == true,
+                  entity.arrayData == nil else { continue }
+            var copy = entity
+            if let block = effectiveBlock(for: bid), !block.geometry.isEmpty {
+                copy.localBoundingBox = block.localBoundingBox
+                copy.updateAnchorCache(from: block.geometry)
+            } else {
+                let placeholder = CADRendererBridge.unresolvedXrefPlaceholder(
+                    blockName: blockTable[bid]?.name ?? "")
+                copy.localBoundingBox = CADBlock.computeBoundingBox(from: placeholder)
+                copy.updateAnchorCache(from: placeholder)
+            }
+            entityRegistry[handle] = copy
+            changed = true
+        }
+        if changed { invalidateEntityGrid() }
+    }
+
+    /// After a media reference loads, sync instance geometry with the
+    /// real file: PDF axes scale from placeholder to true page size,
+    /// definition pixel sizes refresh. Runtime sync only — no undo
+    /// entry, no dirty flag (mirrors resyncXrefInstanceBounds).
+    public func resyncMediaInstanceBounds(forName name: String? = nil) {
+        guard let store = mediaRuntimeStore else { return }
+        var changed = false
+        for (handle, entity) in entityRegistry {
+            guard var geometry = entity.localGeometry else { continue }
+            var entityChanged = false
+            for index in geometry.indices {
+                guard case .image(_, let uAxis, let vAxis, let imageName, _, _) = geometry[index],
+                      name == nil || imageName == name,
+                      let entry = store.entry(forName: imageName),
+                      entry.status.hasShadowGeometry else { continue }
+                if entry.kind == .pdf,
+                   var params = CADPdfUnderlayMetadata.value(from: entity),
+                   let pageW = entry.pageWidthPoints, let pageH = entry.pageHeightPoints,
+                   params.pageWidthPoints > 0, params.pageHeightPoints > 0,
+                   abs(pageW - params.pageWidthPoints) > 1e-9
+                    || abs(pageH - params.pageHeightPoints) > 1e-9 {
+                    let uRatio = pageW / params.pageWidthPoints
+                    let vRatio = pageH / params.pageHeightPoints
+                    geometry[index] = geometry[index].withImageAxes(
+                        uAxis: uAxis * uRatio, vAxis: vAxis * vRatio)
+                    params.pageWidthPoints = pageW
+                    params.pageHeightPoints = pageH
+                    var copy = entity
+                    CADPdfUnderlayMetadata.set(params, on: &copy)
+                    entityRegistry[handle] = copy
+                    entityChanged = true
+                }
+                if entry.kind == .image, let asset = entry.asset,
+                   var def = imageDefinitions[imageName],
+                   def.pixelWidth != asset.pixelWidth || def.pixelHeight != asset.pixelHeight {
+                    def.pixelWidth = asset.pixelWidth
+                    def.pixelHeight = asset.pixelHeight
+                    imageDefinitions[imageName] = def
+                }
+            }
+            if entityChanged, var copy = entityRegistry[handle] {
+                copy.localGeometry = geometry
+                copy.localBoundingBox = CADBlock.computeBoundingBox(from: geometry)
+                copy.updateAnchorCache(from: geometry)
+                entityRegistry[handle] = copy
+                changed = true
+            }
+        }
+        if changed { invalidateEntityGrid() }
+    }
+
+    /// Merge dependent symbols from a loaded xref. Default VISRETAIN=1
+    /// semantics: only missing symbols are added, host overrides survive
+    /// reloads. With `resetExisting` (VISRETAIN=0), dependent layer
+    /// properties are reset from the source file. Does not push undo or
+    /// mark the document edited.
+    public func mergeXrefDependentSymbols(
+        layers: [Layer],
+        textStyles: [String: CADTextStyle],
+        dimensionStyles: [String: CADDimensionStyle],
+        leaderStyles: [String: CADLeaderStyle],
+        linetypePatterns: [String: [Double]],
+        resetExisting: Bool = false
+    ) {
+        let existingNames = Set(layerTable.values.map { $0.name.uppercased() })
+        for layer in layers {
+            if !existingNames.contains(layer.name.uppercased()) {
+                layerTable[layer.handle] = layer
+            } else if resetExisting,
+                      let existing = allLayers.first(where: {
+                          $0.name.caseInsensitiveCompare(layer.name) == .orderedSame
+                      }) {
+                var copy = layer
+                // Preserve host identity handle; adopt source properties.
+                copy = Layer(
+                    handle: existing.handle, name: existing.name,
+                    isVisible: layer.isVisible, lineWeight: layer.lineWeight,
+                    color: layer.color, lineType: layer.lineType,
+                    isPlottable: layer.isPlottable,
+                    plotStyleHandle: layer.plotStyleHandle, opacity: layer.opacity)
+                layerTable[existing.handle] = copy
+            }
+        }
+        for (key, value) in textStyles where self.textStyles[key] == nil {
+            self.textStyles[key] = value
+        }
+        for (key, value) in dimensionStyles where self.dimensionStyles[key] == nil {
+            self.dimensionStyles[key] = value
+        }
+        for (key, value) in leaderStyles where self.leaderStyles[key] == nil {
+            self.leaderStyles[key] = value
+        }
+        for (key, value) in linetypePatterns where self.linetypePatterns[key] == nil {
+            self.linetypePatterns[key] = value
+        }
+    }
+
+    /// Owning xref block name for a dependent layer name
+    /// ("SitePlan|Walls" → "SitePlan"), or nil when not dependent.
+    public func xrefOwnerBlockName(forLayerName name: String) -> String? {
+        guard let sep = name.firstIndex(of: "|") else { return nil }
+        let prefix = String(name[..<sep])
+        guard blockTable.values.contains(where: {
+            $0.isXref && $0.name.caseInsensitiveCompare(prefix) == .orderedSame
+        }) else { return nil }
+        return prefix
+    }
+
+    public func isXrefDependentLayer(_ layer: Layer) -> Bool {
+        xrefOwnerBlockName(forLayerName: layer.name) != nil
+    }
+
+    public func anyPrimitiveVisible(for entity: CADEntity, layersByName: [String: Layer]) -> Bool {
+        guard let geometry = resolvedGeometry(for: entity), !geometry.isEmpty else { return false }
+        let styles = primitiveStyles(for: entity)
+        guard styles.values.contains(where: { $0.effectiveLayerName != nil }) else { return true }
+        return geometry.indices.contains {
+            CADPrimitiveVisibility.isVisible(style: styles[$0], layersByName: layersByName)
+        }
     }
 
     public func collectiveCenter(for handles: Set<UUID>) -> Vector3? {
@@ -2351,15 +3015,22 @@ public final class CADDocument {
         currentLeaderStyleName: String = "Standard",
         linetypePatterns: [String: [Double]] = [:],
         activeLayerID: UUID? = nil,
-        imageStore: [String: CADImageAsset] = [:]
+        imageStore: [String: CADImageAsset] = [:],
+        xrefHostFolder: String? = nil,
+        unloadedXrefs: Set<UUID> = [],
+        imageDefinitions: [CADImageDefinition] = [],
+        pdfDefinitions: [CADPdfDefinition] = []
     ) {
         self.unit = unit
+        self.xrefSourceFolder = xrefHostFolder
+        self.eabUnloadedXrefHandles = unloadedXrefs
         self.textStyles = textStyles.isEmpty ? ["Standard": .standard] : textStyles
         self.dimensionStyles = dimensionStyles
         self.leaderStyles = leaderStyles.isEmpty ? ["Standard": .standard] : leaderStyles
         self.currentLeaderStyleName = self.leaderStyles.keys.first(where: { $0.caseInsensitiveCompare(currentLeaderStyleName) == .orderedSame }) ?? "Standard"
         self.linetypePatterns = linetypePatterns
         self.imageStore = imageStore
+        importMediaDefinitions(image: imageDefinitions, pdf: pdfDefinitions)
         for layer in layers { layerTable[layer.handle] = layer }
         if let activeID = activeLayerID {
             self.activeLayerID = activeID
@@ -2471,8 +3142,55 @@ public final class CADDocument {
             currentLeaderStyleName: currentLeaderStyleName,
             linetypePatterns: linetypePatterns,
             dxfRoundTripPayload: dxfRoundTripPayload ?? dxfRoundTripPayloadFallback,
-            imageAssetNames: names
+            imageAssetNames: names,
+            xrefFadePercent: xrefFadePercent,
+            imageDefinitions: imageDefinitions,
+            pdfDefinitions: pdfDefinitions,
+            availableImageAssetNames: Set(imageStore.keys)
         )
+    }
+
+    /// Snapshot for rendering / PDF / save: loaded xref shadow blocks
+    /// replace their (empty) descriptor blocks. Undo must use the pure
+    /// `snapshot()` — shadow geometry is runtime state, and the DXF/EAB
+    /// writers skip descriptor-block bodies regardless.
+    public func renderSnapshot(
+        dxfRoundTripPayloadFallback: DXFRoundTripPayload? = nil
+    ) -> CADDocumentSnapshot {
+        let base = snapshot(dxfRoundTripPayloadFallback: dxfRoundTripPayloadFallback)
+        var blocks = base.blocks
+        var merged = false
+        if let store = xrefRuntimeStore {
+            for (handle, block) in blocks where block.isXref {
+                if let shadow = store.shadowBlock(for: handle) {
+                    blocks[handle] = shadow
+                    merged = true
+                }
+            }
+        }
+        var available = base.availableImageAssetNames
+        if let mediaRuntimeStore {
+            let loadedNames = Set(mediaRuntimeStore.loadedAssets().keys)
+            if !loadedNames.isSubset(of: available) {
+                available.formUnion(loadedNames)
+                merged = true
+            }
+        }
+        guard merged else { return base }
+        return CADDocumentSnapshot(
+            layers: base.layers, blocks: blocks, entities: base.entities,
+            constraints: base.constraints, solvedTransforms: base.solvedTransforms,
+            activeLayerID: base.activeLayerID, unit: base.unit,
+            textStyles: base.textStyles, dimensionStyles: base.dimensionStyles,
+            leaderStyles: base.leaderStyles,
+            currentLeaderStyleName: base.currentLeaderStyleName,
+            linetypePatterns: base.linetypePatterns,
+            dxfRoundTripPayload: base.dxfRoundTripPayload,
+            imageAssetNames: base.imageAssetNames,
+            xrefFadePercent: base.xrefFadePercent,
+            imageDefinitions: base.imageDefinitions,
+            pdfDefinitions: base.pdfDefinitions,
+            availableImageAssetNames: available)
     }
 
     /// Build a save-specific snapshot that includes referenced image assets.
@@ -2481,9 +3199,11 @@ public final class CADDocument {
         viewName: String,
         viewKind: DXFDrawingViewKind,
         cameraState: CameraState,
-        dxfRoundTripPayloadFallback: DXFRoundTripPayload? = nil
+        dxfRoundTripPayloadFallback: DXFRoundTripPayload? = nil,
+        sourceFolderPath: String? = nil,
+        unloadedXrefHandles: Set<UUID> = []
     ) -> SaveDocumentSnapshot {
-        let docSnap = snapshot(
+        let docSnap = renderSnapshot(
             dxfRoundTripPayloadFallback: dxfRoundTripPayloadFallback)
         // Collect referenced image names from entities and blocks
         var referencedNames = docSnap.imageAssetNames
@@ -2496,11 +3216,14 @@ public final class CADDocument {
         return SaveDocumentSnapshot(
             viewName: viewName, viewKind: viewKind,
             cameraState: cameraState, docSnapshot: docSnap,
-            imageAssets: imageAssets
+            imageAssets: imageAssets,
+            sourceFolderPath: sourceFolderPath ?? xrefSourceFolder,
+            unloadedXrefHandles: unloadedXrefHandles
         )
     }
 
     public func restore(from snapshot: CADDocumentSnapshot) {
+        blockGridCache.removeAll()
         layerTable = snapshot.layers
         blockTable = snapshot.blocks
         entityRegistry = snapshot.entities
@@ -2514,8 +3237,12 @@ public final class CADDocument {
         currentLeaderStyleName = snapshot.currentLeaderStyleName
         linetypePatterns = snapshot.linetypePatterns
         dxfRoundTripPayload = snapshot.dxfRoundTripPayload
+        imageDefinitions = snapshot.imageDefinitions
+        pdfDefinitions = snapshot.pdfDefinitions
         // Prune image assets no longer referenced by any entity after restore
         pruneUnreferencedImageAssets()
+        resyncXrefInstanceBounds()
+        resyncMediaInstanceBounds()
         markEdited(regenerate: true)
         invalidateEntityGrid()   // entity set changed wholesale; rebuild lazily on next hit-test
     }
