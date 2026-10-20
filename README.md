@@ -71,7 +71,8 @@ On top of that, finding great cross-platform tools that treat macOS and Linux as
 - **DWG import/export** — Full read/write via ODA FileConverter. Blocks, layers, text styles, hatches, splines, polylines with bulge, dimensions. Native DWG round-trip.
 - **DXF import/export** — R2007 round-trip. Dimensions, splines, hatches, leaders all preserved. Layer transparency (group code 440) supported.
 - **PDF export** — Vector PDF 1.7 with Bluebeam Revu-compatible Measurement dictionary.
-- **PDF import** — Cross-platform: PDFKit on macOS, PDFium on Windows/Linux. Page selector with preview. Raster underlay at 150 DPI.
+- **PDF import** — Cross-platform: PDFKit on macOS, PDFium on Windows/Linux. Page selector with preview. Raster underlay at 150 DPI. (Import embeds a snapshot; `PDFATTACH` keeps a live link — see External References below.)
+- **External references (xrefs)** — Attach DWG/DXF drawings, raster images, and PDF pages as live references with `ATTACH`. Host files store paths only; referenced content renders from a runtime copy and never bakes into saves. Full DXF write-back (xref blocks, `IMAGEDEF`/`PDFDEFINITION`, `SPATIAL_FILTER` clips), so files round-trip with AutoCAD.
 - **EAB native format** — Fast binary save/load. zstd compression, BVH spatial index, viewport-culled partial loads.
 
 ### Swift DXF Module (SwiftDXFrw)
@@ -101,8 +102,8 @@ Zephyr's DXF pipeline runs entirely in Swift — a native port of [libdxfrw](htt
 | SPLINE | `SPL` | NURBS splines |
 | RAY | `R` | Infinite construction rays |
 | TEXT | `T` | Multi-line text with font selection, height, rotation, alignment, column width |
-| IMAGE | `IMG` | Raster image placement (PNG, JPG, etc.) |
-| PDFIMPORT | `PDFI` | PDF page underlay import with page selector |
+| IMAGE | `IMG` | Embedded raster image placement (PNG, JPG, etc.) — use `IMAGEATTACH` for a live reference |
+| PDFIMPORT | `PDFI` | Embed a PDF page as raster/vectors — use `PDFATTACH` for a live underlay |
 | TABLE | `DT` | Insert a configurable data table with rows and columns |
 | MEASURE | | Place points or blocks at measured intervals along an object |
 | DIVIDE | `DIV` | Place points or blocks at equal divisions along an object |
@@ -300,12 +301,45 @@ center, vertex, midpoint, insertion point, quadrant, nearest, perpendicular, tan
 ### Grips
 Per-vertex grips on polylines and polygons. Corner, center, midpoint, and rotation grips on selection bounding boxes. Configurable limits: `SETTINGSGRIPOBJECTMAX` (entity count threshold, default 100) and `SETTINGSGRIPMAX` (total grip squares drawn, default 1000).
 
-### Blocks
+### Blocks & External References
 - **Block edit in-place** (`BEDIT` / `BE`) — enter block editor with green banner and titlebar indicator. Save/Discard/Cancel dialog on close.
 - **BCLOSE** — close block editor with save confirmation prompt.
-- **BLOCKS panel** — block library with preview.
+- **BLOCKS panel** — block library with preview and Insert.
 - **SIMPLIFY** — swaps heavy blocks for bounding-box stand-ins during pan/zoom.
 - **MAKE BLOCK** — `BLOCK` / `BMAKE` to create a new block from selected entities.
+
+| Command | Alias | Description |
+|---|---|---|
+| INSERT | `I`, `-INSERT` | Insert an existing block, or a whole DWG/DXF/EAB file as an embedded block copy |
+| ATTACH | | Attach a drawing, raster image, or PDF as a live reference (routes by file type) |
+| XATTACH | `XA` | Attach a DWG/DXF drawing as an xref — Attachment or Overlay |
+| IMAGEATTACH | | Attach a raster image (PNG, JPG, GIF, BMP, …) as a live reference |
+| PDFATTACH | | Attach one page of a PDF as a live underlay |
+| -ATTACH | | Command-line attach: path → (page) → insertion point → scale → rotation; `?` at the page prompt lists the page count |
+| XREF | `ER`, `EXTERNALREFERENCES` | External References palette — every drawing, image, and PDF reference with live status |
+| -XREF | | Command-line xref manager: `?/Bind/Attach/Detach/Reload/Unload/Load/Path` |
+| XBIND | | Bind one xref-dependent layer (`Xref\|Layer`) into the host |
+
+#### How references work
+
+- **Attachment vs Overlay** — Attached drawings travel with the host when the host is itself referenced elsewhere; overlays don't. Nested overlays show as *Orphaned*, reference cycles as *Circular*.
+- **Paths** are saved per `REFPATHTYPE` (default `1` = relative to the host drawing). Resolution follows AutoCAD's search order: the saved path, relative to the immediate host, the drawing folder, then configured support search paths. Windows paths degrade gracefully to a filename search on macOS/Linux.
+- **Statuses** in the palette match AutoCAD's vocabulary: Loaded, Unloaded, Not Found, Unresolved, Orphaned, Unreferenced, Needs Reloading — plus Zephyr's Circular and Over Budget. Changed source files are detected in the background and flagged Needs Reloading; the status bar shows `XREF ⚠`.
+- **Delete ≠ Detach.** Deleting a placed instance leaves the reference definition in the list as *Unreferenced* (that's AutoCAD behavior too). **Detach** (palette or `-XREF`) removes the definition and all its placements. **Bind** makes a drawing permanent (`BINDTYPE 0` keeps `Name$0$Symbol` names, `1` merges like INSERT); **Embed** does the same for an image or PDF.
+- **Layers** from a referenced drawing appear as `XrefName|Layer` and behave like normal layers (freeze/off/opacity). `VISRETAIN` controls whether host overrides survive a reload. Xref geometry is dimmed by `XDWGFADECTL` (default 50) so host work stays readable.
+- **Loading is async and capped** — up to 32 loaded drawing xrefs, nesting depth 16, and 5M total primitives per tab (set `XLOADCTL` to `0` to disable the caps). Loading never dirties the drawing and never enters undo. Images/PDFs share a decoded-pixel budget.
+- **Clipping** — `CLIP` works on xrefs, images, and PDF underlays, and clips print to PDF correctly.
+
+| System variable | Default | Meaning |
+|---|---|---|
+| `REFPATHTYPE` | `1` | Saved path kind for new references: `0` none (filename only), `1` relative, `2` full |
+| `VISRETAIN` | `1` | `1` keep host layer overrides on reload, `0` reset to the referenced file's layer states |
+| `BINDTYPE` | `0` | Bind mode: `0` Bind (`$0$` names), `1` Insert (merge, host wins) |
+| `XDWGFADECTL` | `50` | Xref fade percent, `0`–`90` (display only) |
+| `XREFNOTIFY` | `1` | Background change detection for referenced files |
+| `XLOADCTL` | `2` | `0` disables the load caps; `1`/`2` keep them |
+
+Not yet: `REFEDIT` in-place editing of a referenced drawing (Bind or open the file instead), DWF/DGN underlays (they parse but don't render), and on-zoom re-rendering of PDF pages (fixed rasterization DPI). Two AutoCAD caveats apply as usual: AutoCAD displays only **DWG** xrefs — a DXF target must be converted to DWG first (saving as DWG warns you) — and the unloaded state is remembered only in EAB files, not in DWG/DXF.
 
 ### Layers
 - Full layer table with ACI color indexing.
@@ -347,6 +381,8 @@ Native AutoLISP engine with **305 builtins** — the full inventoried set, verif
   (setq i (1+ i)))
 ```
 
+Scripted command calls include `(command "INSERT" ...)` and, for images/PDFs, `(command "-ATTACH" path [page] point [scale [rotation]])`. The xref system variables (`REFPATHTYPE`, `VISRETAIN`, `BINDTYPE`, `XDWGFADECTL`, `XREFNOTIFY`, `XLOADCTL`) work through `getvar`/`setvar`, and `(tblsearch "BLOCK" name)` returns an xref's saved path (group 1) and flags (group 70).
+
 Runnable examples live in `Engine/EngineAsBuilt/Tools/lisp/examples/` (`SHAPES`, `SELCOUNT`, `REDCIRCLES`, `INPUTDEMO`) — `LOAD` one and run its command. Each is executed by `LispExamplesTests`, so they double as compatibility checks. Loaded `c:` routines stay resident for the session and run by bare name (built-ins win on collision); `setq` globals persist across `EVAL` runs too.
 
 Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, ActiveX automation, and ARX/VLX/VBA application loading.
@@ -358,10 +394,11 @@ Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, ActiveX
 - **Layer panel** — Visibility toggles, color swatches, opacity sliders, entity counts.
 - **Properties panel** — Per-entity property editing with geometry inspector.
 - **Block panel** — Block library with preview and insert.
+- **External References palette** — One list for drawing xrefs, images, and PDF underlays: status, saved vs found-at path, size/date, and Load/Unload/Reload/Repath/Detach/Bind/Embed actions. Toggle with `XREF`.
 - **Radial navigation** — Right-click radial menu for pan, zoom, fit (`NAV` to toggle).
 - **Text editor** — Modal dialog for text creation/editing with font selection, height, rotation, alignment, and MTEXT width.
 - **Toolbar** — Quick-access buttons for open, save, save-as, import-PDF, tool modes, AA toggle, nav toggle, edit block, view rotation slider with reset, and dark/light theme toggle. Collapsible to mini-toolbar.
-- **Status bar** — Coordinates, snap mode indicators, entity count, undo/redo depth.
+- **Status bar** — Coordinates, snap mode indicators, entity count, undo/redo depth, and an `XREF ⚠` warning when a reference is missing or needs reloading.
 
 ### Rendering Engine
 - **Metal** (macOS), **Direct3D 12** (Windows), and **Vulkan** (Linux) via SDL3 GPU API

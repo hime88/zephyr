@@ -104,7 +104,7 @@ final class XrefPalettePolicyTests: XCTestCase {
     func testSavedPathComputation() {
         XCTAssertEqual(
             XrefManager.savedPath(forFileAt: "/proj/refs/a.dwg", pathType: 0, hostFolder: "/proj"),
-            "/proj/refs/a.dwg")
+            "a.dwg", "REFPATHTYPE 0 = no path (AutoCAD)")
         XCTAssertEqual(
             XrefManager.savedPath(forFileAt: "/proj/refs/a.dwg", pathType: 1, hostFolder: "/proj"),
             "./refs/a.dwg")
@@ -113,7 +113,7 @@ final class XrefPalettePolicyTests: XCTestCase {
             "/proj/refs/a.dwg", "unsaved host stores full path")
         XCTAssertEqual(
             XrefManager.savedPath(forFileAt: "/proj/refs/a.dwg", pathType: 2, hostFolder: "/proj"),
-            "a.dwg")
+            "/proj/refs/a.dwg", "REFPATHTYPE 2 = full path (AutoCAD)")
     }
 
     func testAttachDetachRepathLifecycle() async throws {

@@ -4,11 +4,12 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0</project_license>
   <name>Zephyr</name>
-  <summary>Fast 2D CAD viewer and editor for DXF drawings</summary>
+  <summary>Fast 2D CAD viewer and editor for DWG and DXF drawings</summary>
   <description>
     <p>
-      Zephyr is a fast, lightweight 2D CAD application for viewing and editing DXF drawings,
-      featuring GPU-accelerated rendering, SHX font support, and EAB project files.
+      Zephyr is a fast, lightweight 2D CAD application for viewing and editing DWG and DXF drawings,
+      featuring GPU-accelerated rendering, SHX font support, external references (xrefs,
+      image/PDF underlays), AutoLISP, and EAB project files.
     </p>
   </description>
   <launchable type="desktop-id">com.zephyr.cad.desktop</launchable>

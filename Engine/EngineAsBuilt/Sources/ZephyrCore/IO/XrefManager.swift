@@ -26,8 +26,9 @@ public enum XrefManager {
     public static func savedPath(
         forFileAt absolutePath: String, pathType: Int, hostFolder: String?
     ) -> String {
+        // AutoCAD REFPATHTYPE: 0 = no path, 1 = relative, 2 = full.
         switch pathType {
-        case 2:
+        case 0:
             return XrefPathResolver.fileName(of: absolutePath)
         case 1:
             guard let hostFolder else { return absolutePath }
