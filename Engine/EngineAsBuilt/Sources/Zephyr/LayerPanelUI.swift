@@ -45,7 +45,7 @@ struct LayerPanelUI {
             ImVec2(x: 0, y: 8))
 
         var opened = true
-        var flags = Int32(ImGuiWindowFlags_NoScrollbar.rawValue)
+        var flags: Int32 = 0
         if wasDocked {
             flags |= Int32(ImGuiWindowFlags_NoTitleBar.rawValue)
         }
@@ -67,15 +67,45 @@ struct LayerPanelUI {
                     ImGuiSetCursorPosX(10)
                     ImGuiTextV("(no layers)")
                 } else {
+                    // Host layers first; xref-dependent layers grouped
+                    // under a collapsible header per owning xref.
                     // Direct iteration — avoid ImGuiListClipper due to arm64e C struct ABI mismatch.
-                    for index in 0..<layers.count {
+                    let hostLayers = layers.filter { !doc.isXrefDependentLayer($0) }
+                    for index in 0..<hostLayers.count {
                         renderLayerRow(
                             engine: engine,
                             document: doc,
-                            layer: layers[index],
+                            layer: hostLayers[index],
                             index: index,
                             rowHeight: layerRowH,
                             fontSize: fontSize)
+                    }
+                    let dependent = layers.filter { doc.isXrefDependentLayer($0) }
+                    let owners = Array(Set(dependent.compactMap {
+                        doc.xrefOwnerBlockName(forLayerName: $0.name)
+                    })).sorted()
+                    var rowIndex = hostLayers.count
+                    for owner in owners {
+                        let group = dependent.filter {
+                            doc.xrefOwnerBlockName(forLayerName: $0.name) == owner
+                        }.sorted { $0.name < $1.name }
+                        ImGuiSetCursorPosX(6)
+                        ImGuiPushStyleColor(
+                            Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textDim)
+                        ImGuiTextV("— Xref: \(owner) (\(group.count)) —")
+                        ImGuiPopStyleColor(1)
+                        if true {
+                            for layer in group {
+                                renderLayerRow(
+                                    engine: engine,
+                                    document: doc,
+                                    layer: layer,
+                                    index: 10_000 + rowIndex,
+                                    rowHeight: layerRowH,
+                                    fontSize: fontSize)
+                                rowIndex += 1
+                            }
+                        }
                     }
                 }
             }

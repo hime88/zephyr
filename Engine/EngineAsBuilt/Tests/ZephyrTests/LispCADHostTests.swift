@@ -481,7 +481,7 @@ final class LispCADHostTests: XCTestCase {
             LispScriptedCommands.scripted,
             ["LINE", "CIRCLE", "PLINE", "ARC",
              "COPY", "ROTATE", "MOVE", "ERASE", "SELECT",
-             "UNDO", "U", "REDRAW", "REGEN"])
+             "UNDO", "U", "REDRAW", "REGEN", "INSERT", "-INSERT", "-ATTACH"])
         XCTAssertEqual(
             LispScriptedCommands.disposition(for: "_.LINE"), .scripted)
         XCTAssertEqual(

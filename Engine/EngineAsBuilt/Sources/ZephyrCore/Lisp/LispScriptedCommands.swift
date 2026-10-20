@@ -37,7 +37,7 @@ enum LispScriptedCommands {
     static let scripted: Set<String> = [
         "LINE", "CIRCLE", "PLINE", "ARC",
         "COPY", "ROTATE", "MOVE", "ERASE", "SELECT",
-        "UNDO", "U", "REDRAW", "REGEN",
+        "UNDO", "U", "REDRAW", "REGEN", "INSERT", "-INSERT", "-ATTACH",
     ]
 
     static func disposition(for name: String) -> LispCommandDisposition {
@@ -95,6 +95,8 @@ enum LispScriptedCommands {
         case "MOVE": try runMove(&operands, host: host)
         case "ERASE": try runErase(&operands, host: host)
         case "SELECT": try runSelect(&operands, host: host)
+        case "INSERT", "-INSERT": try await runInsert(&operands, host: host)
+        case "-ATTACH": try runAttach(&operands, host: host)
         case "UNDO": try await runUndo(&operands, host: host)
         case "U": host.undoOnce()
         case "REDRAW": host.document.markEdited(regenerate: false)
@@ -430,6 +432,170 @@ enum LispScriptedCommands {
     }
 
     // MARK: - Modify commands (single-mutator rule: one call, one undo entry)
+
+    /// `(command "INSERT" name-or-path point [xscale [yscale [rotation]]])`
+    /// — classic file-insert semantics: a name that resolves to an
+    /// existing .dxf/.dwg file imports it as a new block definition.
+    /// Scales/rotation accept numbers or numeric strings ("1"), "" or a
+    /// missing operand takes the default (unit scale / X / 0 degrees).
+    private static func runInsert(_ operands: inout [LispValue], host: LispCADHost) async throws {
+        guard let first = operands.first, case let .string(rawName) = first, !rawName.isEmpty else {
+            throw LispError.hostError("command: INSERT needs a block name or drawing file path")
+        }
+        operands.removeFirst()
+        let document = host.document
+        let blockID: UUID
+        var defaultScale = 1.0
+        if let existing = document.allBlocks.first(where: {
+            $0.name.caseInsensitiveCompare(rawName) == .orderedSame && !$0.name.hasPrefix("*")
+        }) {
+            blockID = existing.handle
+        } else {
+            // Drawing-file insert: try the name as a path, then with
+            // drawing extensions appended (AutoCAD's library lookup).
+            let candidates = [rawName, rawName + ".dwg", rawName + ".dxf"]
+            guard let path = candidates.first(where: {
+                FileManager.default.fileExists(atPath: $0)
+            }) else {
+                throw LispError.hostError(
+                    "command: INSERT block \"\(rawName)\" not found (and no such drawing file)")
+            }
+            do {
+                let (block, scale) = try DrawingFileInsert.insertFile(at: path, into: document)
+                blockID = block.handle
+                defaultScale = scale
+            } catch let error as DrawingFileInsert.InsertError {
+                throw LispError.hostError("command: INSERT \(error)")
+            }
+        }
+        let point = try takePoint(&operands, command: "INSERT", what: "insertion point")
+        func takeScale(_ fallback: Double) -> Double {
+            skipSnaps(&operands)
+            guard let next = operands.first else { return fallback }
+            if let value = next.asDouble { operands.removeFirst(); return value }
+            if case let .string(raw) = next {
+                operands.removeFirst()
+                return Double(raw) ?? fallback
+            }
+            return fallback
+        }
+        let scaleX = takeScale(defaultScale)
+        let scaleY = takeScale(scaleX)
+        let rotation = takeScale(0)
+        let entity = CADEntity(
+            layerID: try activeLayerID(host),
+            blockID: blockID,
+            transform: DrawingFileInsert.insertionTransform(
+                point: point, scaleX: scaleX, scaleY: scaleY,
+                rotationDegrees: rotation))
+        document.addEntities([entity])
+        host.lastCreated = entity.handle
+    }
+
+
+    /// `(command "-ATTACH" path [page] point [scale [rotation]])`
+    /// for images and PDFs: creates (or reuses) a referenced-media
+    /// definition, loads it synchronously, and places one instance.
+    /// Drawings reject here — use INSERT (embed) or interactive XATTACH.
+    private static func runAttach(_ operands: inout [LispValue], host: LispCADHost) throws {
+        guard let first = operands.first, case let .string(rawPath) = first, !rawPath.isEmpty else {
+            throw LispError.hostError("command: -ATTACH needs a file path")
+        }
+        operands.removeFirst()
+        let document = host.document
+        guard FileManager.default.fileExists(atPath: rawPath) else {
+            throw LispError.hostError("command: -ATTACH file \"\(rawPath)\" not found")
+        }
+        let ext = (rawPath as NSString).pathExtension.lowercased()
+        if ext == "dwg" || ext == "dxf" {
+            throw LispError.hostError(
+                "command: -ATTACH of drawings is interactive-only (XATTACH); use INSERT to embed")
+        }
+        let store: MediaReferenceStore
+        if let existing = document.mediaRuntimeStore {
+            store = existing
+        } else {
+            store = MediaReferenceStore()
+            document.mediaRuntimeStore = store
+        }
+        let pathType = XrefSysvars.refPathType
+        let saved = XrefManager.savedPath(
+            forFileAt: rawPath, pathType: pathType, hostFolder: nil)
+
+        let name: String
+        let kind: MediaReferenceKind
+        var pageNumber = 1
+        var naturalWidth: Double
+        var naturalHeight: Double
+        if ext == "pdf" {
+            kind = .pdf
+            if let next = operands.first, let page = next.asDouble {
+                operands.removeFirst()
+                pageNumber = max(1, Int(page))
+            }
+            if let existing = document.pdfDefinitions.values.first(where: {
+                $0.savedPath == saved && $0.pageNumber == pageNumber
+            }) {
+                name = existing.name
+            } else {
+                name = MediaManager.definitionName(forFileAt: rawPath, in: document)
+                document.pdfDefinitions[name] = CADPdfDefinition(
+                    name: name, savedPath: saved, pageNumber: pageNumber)
+            }
+            naturalWidth = CADPdfUnderlayParams.placeholderPageWidth
+            naturalHeight = CADPdfUnderlayParams.placeholderPageHeight
+        } else if CADImageAsset.supportedExtensions.contains(ext) {
+            kind = .image
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: rawPath)),
+                  let dims = MediaLoader.imageDimensions(of: data) else {
+                throw LispError.hostError("command: -ATTACH could not decode image \"\(rawPath)\"")
+            }
+            if let existing = document.imageDefinitions.values.first(where: { $0.savedPath == saved }) {
+                name = existing.name
+            } else {
+                name = MediaManager.definitionName(forFileAt: rawPath, in: document)
+                document.imageDefinitions[name] = CADImageDefinition(
+                    name: name, savedPath: saved,
+                    pixelWidth: dims.width, pixelHeight: dims.height)
+            }
+            naturalWidth = Double(dims.width)
+            naturalHeight = Double(dims.height)
+        } else {
+            throw LispError.hostError(
+                "command: -ATTACH unsupported file type .\(ext) (images and PDFs only)")
+        }
+        store.ensureEntry(kind: kind, name: name, savedPath: saved, pageNumber: pageNumber)
+        let outcome = MediaLoader.performLoad(
+            kind: kind, name: name, savedPath: saved, pageNumber: pageNumber,
+            hostFolder: nil, fallbackFolder: nil, searchPaths: store.searchPaths)
+        MediaLoader.apply(outcome, name: name, store: store, documents: [document])
+        if kind == .pdf, let w = outcome.pageWidthPoints, let h = outcome.pageHeightPoints {
+            naturalWidth = w
+            naturalHeight = h
+        }
+
+        let point = try takePoint(&operands, command: "-ATTACH", what: "insertion point")
+        func takeScale(_ fallback: Double) -> Double {
+            skipSnaps(&operands)
+            guard let next = operands.first else { return fallback }
+            if let value = next.asDouble { operands.removeFirst(); return value }
+            if case let .string(raw) = next {
+                operands.removeFirst()
+                return Double(raw) ?? fallback
+            }
+            return fallback
+        }
+        let scale = takeScale(1)
+        let rotation = takeScale(0)
+        let entity = MediaManager.makeInstance(
+            name: name, kind: kind,
+            naturalWidth: naturalWidth, naturalHeight: naturalHeight,
+            center: point, scale: scale <= 0 ? 1 : scale,
+            rotationDegrees: rotation,
+            layerID: try activeLayerID(host))
+        document.addEntities([entity])
+        host.lastCreated = entity.handle
+    }
 
     private static func runCopy(_ operands: inout [LispValue], host: LispCADHost) async throws {
         let targets = try takeSelection(&operands, command: "COPY", host: host)

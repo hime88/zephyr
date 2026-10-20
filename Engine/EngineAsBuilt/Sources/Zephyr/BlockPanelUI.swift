@@ -105,6 +105,11 @@ struct BlockPanelUI {
 
                 ImGuiSameLine(0, 8)
                 ImGuiPushID(blockIdx)
+                if igSmallButton("Insert") {
+                    engine.commandProcessor.activateFeatureCommand(
+                        InsertCommand(preseededBlockName: block.name))
+                }
+                ImGuiSameLine(0, 4)
                 // Enter block editor — isolates this block's geometry for in-place editing.
                 if igSmallButton("Edit") {
                     engine.tabManager.enterBlockEditor(blockID: block.handle)

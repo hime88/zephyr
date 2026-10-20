@@ -48,18 +48,42 @@ enum PDFPrimitives {
         guard let geometry = entity.resolvedGeometry(in: document), !geometry.isEmpty
         else { return }
 
+        // Per-primitive styles (block contents): hidden style layers are
+        // skipped and style colour/lineweight win over the entity's.
+        let primStyles = document.primitiveStyles(for: entity)
+        let layersByName = document.layersByUppercasedName()
+        func styleLayer(_ index: Int) -> Layer? {
+            guard let name = primStyles[index]?.effectiveLayerName else { return nil }
+            return layersByName[name.uppercased()]
+        }
+        func resolvedColor(_ index: Int, _ prim: CADPrimitive) -> ColorRGBA {
+            if let c = primColor(prim) { return c }
+            let style = primStyles[index]
+            if let c = style?.color { return c }
+            if style?.isColorByBlock == true { return entityColor }
+            return styleLayer(index)?.color ?? entityColor
+        }
+        func resolvedLineWeightMM(_ index: Int) -> Double {
+            let style = primStyles[index]
+            if style?.isLineWeightByBlock == true { return lineWeightMM }
+            if let w = style?.lineWeight, w >= 0 { return w }
+            return styleLayer(index)?.lineWeight ?? lineWeightMM
+        }
+
         // Split: fills first (renderer parity), text handled outside the CTM.
-        var fills: [CADPrimitive] = []
-        var strokes: [CADPrimitive] = []
-        var texts: [CADPrimitive] = []
-        for prim in geometry {
+        var fills: [(Int, CADPrimitive)] = []
+        var strokes: [(Int, CADPrimitive)] = []
+        var texts: [(Int, CADPrimitive)] = []
+        for (index, prim) in geometry.enumerated() {
+            guard CADPrimitiveVisibility.isVisible(
+                style: primStyles[index], layersByName: layersByName) else { continue }
             switch prim {
             case .fillPolygon, .fillComplexPolygon, .gradient, .hatch, .hatchPath, .fillRect, .image:
-                fills.append(prim)
+                fills.append((index, prim))
             case .text:
-                texts.append(prim)
+                texts.append((index, prim))
             default:
-                strokes.append(prim)
+                strokes.append((index, prim))
             }
         }
 
@@ -69,20 +93,38 @@ enum PDFPrimitives {
         let ex = t.transformPoint(Vector3(x: 1, y: 0, z: 0)) - o
         let ey = t.transformPoint(Vector3(x: 0, y: 1, z: 0)) - o
 
+        let clip = CADClipMetadata.value(from: entity)
         if !fills.isEmpty || !strokes.isEmpty {
             cb.raw("q ")
             cb.num(ex.x); cb.num(ex.y); cb.num(ey.x); cb.num(ey.y)
             cb.num(o.x); cb.num(o.y); cb.raw("cm\n")
 
+            // Entity clip (XCLIP): local-space boundary as a PDF clip path.
+            if let clip, clip.isEnabled, clip.boundary.count >= 3 {
+                if clip.isInverted {
+                    let b = 1e7
+                    cb.num(-b); cb.num(-b); cb.num(2 * b); cb.num(2 * b); cb.raw("re ")
+                }
+                subpath(clip.boundary, close: true, to: cb)
+                cb.raw(clip.isInverted ? "W* n\n" : "W n\n")
+            }
+
             // Stroke width: target device points, expressed in the local user
             // space active at stroke time (page scale × entity scale).
             let entScale = max((ex.magnitude + ey.magnitude) / 2, 1e-9)
-            let weightPt = max(lineWeightMM, 0.05) * 72.0 / 25.4
-            cb.num(weightPt / (pageScale * entScale)); cb.raw("w\n")
+            var currentWeightMM: Double? = nil
+            func setWeightIfNeeded(_ mm: Double) {
+                guard currentWeightMM != mm else { return }
+                currentWeightMM = mm
+                let weightPt = max(mm, 0.05) * 72.0 / 25.4
+                cb.num(weightPt / (pageScale * entScale)); cb.raw("w\n")
+            }
+            setWeightIfNeeded(lineWeightMM)
 
             var currentColor: ColorRGBA? = nil
-            for prim in fills + strokes {
-                setColorIfNeeded(primColor(prim) ?? entityColor, current: &currentColor, to: cb)
+            for (index, prim) in fills + strokes {
+                setColorIfNeeded(resolvedColor(index, prim), current: &currentColor, to: cb)
+                setWeightIfNeeded(resolvedLineWeightMM(index))
                 writePrimitive(prim, to: cb)
             }
             cb.raw("Q\n")
@@ -90,9 +132,17 @@ enum PDFPrimitives {
 
         // Text rides outside the entity CTM so glyphs stay readable under
         // mirrored transforms — exactly the renderer's policy.
-        for prim in texts {
+        for (index, prim) in texts {
+            // Clip gating by insertion point (glyph-exact clipping would
+            // need the exploded strokes re-clipped per glyph run).
+            if clip?.isEnabled == true,
+               case .text(let pos, _, _, _, _, _, _, _, _) = prim,
+               !CADClipMetadata.accepts(worldPoint: t.transformPoint(pos), entity: entity) {
+                continue
+            }
             writeTextPrimitive(prim, transform: t, document: document,
-                               entityColor: entityColor, lineWeightMM: lineWeightMM,
+                               entityColor: resolvedColor(index, prim),
+                               lineWeightMM: resolvedLineWeightMM(index),
                                pageScale: pageScale, to: cb)
         }
     }

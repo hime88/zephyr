@@ -70,6 +70,10 @@ public enum CADRectSelect {
     public static func entityIntersectsRect(
         _ entity: CADEntity, rectMin: Vector3, rectMax: Vector3, document: CADDocument
     ) -> Bool {
+        let layersByName = document.layersByUppercasedName()
+        guard document.anyPrimitiveVisible(for: entity, layersByName: layersByName) else {
+            return false
+        }
         // Fast accept: if bounding box is entirely inside the rect, the
         // geometry is definitely selected.
         if let bb = entity.worldBoundingBox {
@@ -80,9 +84,28 @@ public enum CADRectSelect {
         }
 
         guard let geometry = document.resolvedGeometry(for: entity), !geometry.isEmpty else { return false }
+        let primStyles = document.primitiveStyles(for: entity)
 
-        for prim in geometry {
-            if primitiveIntersectsRect(prim, transform: entity.transform,
+        let candidates: [Int]
+        if let grid = document.spatialGrid(for: entity) {
+            // Local-space AABB of the world rect under the inverse transform.
+            let inverse = entity.transform.inverse()
+            let corners = [
+                Vector3(x: rectMin.x, y: rectMin.y, z: 0),
+                Vector3(x: rectMax.x, y: rectMin.y, z: 0),
+                Vector3(x: rectMax.x, y: rectMax.y, z: 0),
+                Vector3(x: rectMin.x, y: rectMax.y, z: 0),
+            ].map { inverse.transformPoint($0) }
+            candidates = grid.candidateIndices(
+                minX: corners.map(\.x).min() ?? 0, minY: corners.map(\.y).min() ?? 0,
+                maxX: corners.map(\.x).max() ?? 0, maxY: corners.map(\.y).max() ?? 0)
+        } else {
+            candidates = Array(geometry.indices)
+        }
+        for primIndex in candidates {
+            guard CADPrimitiveVisibility.isVisible(
+                style: primStyles[primIndex], layersByName: layersByName) else { continue }
+            if primitiveIntersectsRect(geometry[primIndex], transform: entity.transform,
                                        rectMin: rectMin, rectMax: rectMax) {
                 return true
             }
@@ -430,6 +453,8 @@ public enum CADRectSelect {
 
         switch style {
         case .window:
+            guard document.anyPrimitiveVisible(
+                for: entity, layersByName: document.layersByUppercasedName()) else { return false }
             return bb.min.x >= rx && bb.min.y >= ry &&
                    bb.max.x <= rx + rw && bb.max.y <= ry + rh
         case .crossing:

@@ -99,7 +99,11 @@ public enum EABReader {
                 currentLeaderStyleName: components.currentLeaderStyleName,
                 linetypePatterns: components.linetypePatterns,
                 activeLayerID: components.activeLayerID,
-                imageStore: components.imageStore
+                imageStore: components.imageStore,
+                xrefHostFolder: components.xrefHostFolder,
+                unloadedXrefs: components.unloadedXrefs,
+                imageDefinitions: components.imageDefinitions,
+                pdfDefinitions: components.pdfDefinitions
             )
             return [DrawingView(name: "Model", kind: .model, document: doc)]
         }
@@ -120,7 +124,11 @@ public enum EABReader {
         currentLeaderStyleName: String,
         linetypePatterns: [String: [Double]],
         activeLayerID: UUID?,
-        imageStore: [String: CADImageAsset]
+        imageStore: [String: CADImageAsset],
+        xrefHostFolder: String?,
+        unloadedXrefs: Set<UUID>,
+        imageDefinitions: [CADImageDefinition],
+        pdfDefinitions: [CADPdfDefinition]
     ) {
         let data = try Data(contentsOf: url)
         return try readDocument(from: data)
@@ -209,7 +217,11 @@ public enum EABReader {
                 currentLeaderStyleName: components.currentLeaderStyleName,
                 linetypePatterns: components.linetypePatterns,
                 activeLayerID: components.activeLayerID,
-                imageStore: components.imageStore
+                imageStore: components.imageStore,
+                xrefHostFolder: components.xrefHostFolder,
+                unloadedXrefs: components.unloadedXrefs,
+                imageDefinitions: components.imageDefinitions,
+                pdfDefinitions: components.pdfDefinitions
             )
 
             views.append(DrawingView(name: entry.name, kind: entry.kind,
@@ -245,7 +257,11 @@ public enum EABReader {
                     dimensionStyles: components.dimensionStyles,
                     linetypePatterns: components.linetypePatterns,
                     activeLayerID: components.activeLayerID,
-                    imageStore: components.imageStore
+                    imageStore: components.imageStore,
+                xrefHostFolder: components.xrefHostFolder,
+                unloadedXrefs: components.unloadedXrefs,
+                imageDefinitions: components.imageDefinitions,
+                pdfDefinitions: components.pdfDefinitions
                 )
                 views.append(DrawingView(name: "Recovered", kind: .model, document: doc,
                                          cameraState: CameraState(offsetX: 0, offsetY: 0, zoom: 1, rotation: 0)))
@@ -272,7 +288,11 @@ public enum EABReader {
         currentLeaderStyleName: String,
         linetypePatterns: [String: [Double]],
         activeLayerID: UUID?,
-        imageStore: [String: CADImageAsset]
+        imageStore: [String: CADImageAsset],
+        xrefHostFolder: String?,
+        unloadedXrefs: Set<UUID>,
+        imageDefinitions: [CADImageDefinition],
+        pdfDefinitions: [CADPdfDefinition]
     ) {
         let header = try parseHeader(from: data)
         let rawTableOffset = header.sectionTableOffset; guard rawTableOffset <= UInt64(Int.max) else { throw EABError.readError("Section table offset exceeds Int.max") }; let entries = try parseSectionTable(from: data, at: Int(rawTableOffset))
@@ -289,6 +309,11 @@ public enum EABReader {
         var linetypePatterns: [String: [Double]] = [:]
         var activeLayerID: UUID? = nil
         var loadedImageStore: [String: CADImageAsset] = [:]
+        var xrefHostFolder: String? = nil
+        var unloadedXrefs: Set<UUID> = []
+        var xrefDescriptors: [UUID: CADXrefDescriptor] = [:]
+        var imageDefinitions: [CADImageDefinition] = []
+        var pdfDefinitions: [CADPdfDefinition] = []
 
         for entry in entries {
             let reader = BinaryReader(
@@ -319,14 +344,68 @@ public enum EABReader {
                 loadedImageStore = try parseImageStore(reader)
             case .metadata:
                 activeLayerID = try parseMetadataActiveLayer(reader)
+            case .xrefs:
+                let parsed = parseXrefs(reader)
+                xrefHostFolder = parsed.hostFolder
+                unloadedXrefs = parsed.unloaded
+                xrefDescriptors = parsed.descriptors
+            case .mediaDefinitions:
+                let parsed = parseMediaDefinitions(reader)
+                imageDefinitions = parsed.image
+                pdfDefinitions = parsed.pdf
             default:
                 break  // skip unknown sections
             }
         }
 
+        blocks = blocks.map { block in
+            guard let descriptor = xrefDescriptors[block.handle] else { return block }
+            var copy = block
+            copy.xrefDescriptor = descriptor
+            return copy
+        }
         return (layers, blocks, entities, constraints, solvedTransforms, header.unit,
                 textStyles, dimensionStyles, leaderStyles, currentLeaderStyleName,
-                linetypePatterns, activeLayerID, loadedImageStore)
+                linetypePatterns, activeLayerID, loadedImageStore,
+                xrefHostFolder, unloadedXrefs, imageDefinitions, pdfDefinitions)
+    }
+
+    private static func parseXrefs(
+        _ r: BinaryReader
+    ) -> (hostFolder: String?, descriptors: [UUID: CADXrefDescriptor], unloaded: Set<UUID>) {
+        let folder = r.readString()
+        let count = safeCount(r.readUInt32(), limit: maxSafeSectionCount, label: "xrefs")
+        var descriptors: [UUID: CADXrefDescriptor] = [:]
+        var unloaded: Set<UUID> = []
+        for _ in 0..<count {
+            let handle = r.readUUID()
+            let savedPath = r.readString()
+            let isOverlay = r.readUInt8() != 0
+            let isUnloaded = r.readUInt8() != 0
+            descriptors[handle] = CADXrefDescriptor(savedPath: savedPath, isOverlay: isOverlay)
+            if isUnloaded { unloaded.insert(handle) }
+        }
+        return (folder.isEmpty ? nil : folder, descriptors, unloaded)
+    }
+
+    private static func parseMediaDefinitions(
+        _ r: BinaryReader
+    ) -> (image: [CADImageDefinition], pdf: [CADPdfDefinition]) {
+        var images: [CADImageDefinition] = []
+        let imageCount = safeCount(r.readUInt32(), limit: maxSafeSectionCount, label: "mediaDefinitions")
+        for _ in 0..<imageCount {
+            images.append(CADImageDefinition(
+                name: r.readString(), savedPath: r.readString(),
+                pixelWidth: Int(r.readUInt32()), pixelHeight: Int(r.readUInt32())))
+        }
+        var pdfs: [CADPdfDefinition] = []
+        let pdfCount = safeCount(r.readUInt32(), limit: maxSafeSectionCount, label: "mediaDefinitions")
+        for _ in 0..<pdfCount {
+            pdfs.append(CADPdfDefinition(
+                name: r.readString(), savedPath: r.readString(),
+                pageNumber: Int(r.readUInt32())))
+        }
+        return (images, pdfs)
     }
 
     private static func parseDimensionStyles(_ r: BinaryReader) throws -> [String: CADDimensionStyle] {
@@ -393,7 +472,11 @@ public enum EABReader {
         currentLeaderStyleName: String,
         linetypePatterns: [String: [Double]],
         activeLayerID: UUID?,
-        imageStore: [String: CADImageAsset]
+        imageStore: [String: CADImageAsset],
+        xrefHostFolder: String?,
+        unloadedXrefs: Set<UUID>,
+        imageDefinitions: [CADImageDefinition],
+        pdfDefinitions: [CADPdfDefinition]
     ) {
         let data = try Data(contentsOf: url)
         let header = try parseHeader(from: data)
@@ -421,6 +504,11 @@ public enum EABReader {
         var linetypePatterns: [String: [Double]] = [:]
         var activeLayerID: UUID? = nil
         var loadedImageStore: [String: CADImageAsset] = [:]
+        var xrefHostFolder: String? = nil
+        var unloadedXrefs: Set<UUID> = []
+        var xrefDescriptors: [UUID: CADXrefDescriptor] = [:]
+        var imageDefinitions: [CADImageDefinition] = []
+        var pdfDefinitions: [CADPdfDefinition] = []
 
         for entry in entries {
             let reader = BinaryReader(
@@ -455,14 +543,30 @@ public enum EABReader {
                 loadedImageStore = try parseImageStore(reader)
             case .metadata:
                 activeLayerID = try parseMetadataActiveLayer(reader)
+            case .xrefs:
+                let parsed = parseXrefs(reader)
+                xrefHostFolder = parsed.hostFolder
+                unloadedXrefs = parsed.unloaded
+                xrefDescriptors = parsed.descriptors
+            case .mediaDefinitions:
+                let parsed = parseMediaDefinitions(reader)
+                imageDefinitions = parsed.image
+                pdfDefinitions = parsed.pdf
             default:
                 break
             }
         }
 
+        blocks = blocks.map { block in
+            guard let descriptor = xrefDescriptors[block.handle] else { return block }
+            var copy = block
+            copy.xrefDescriptor = descriptor
+            return copy
+        }
         return (layers, blocks, entities, constraints, solvedTransforms, header.unit,
                 textStyles, dimensionStyles, leaderStyles, currentLeaderStyleName,
-                linetypePatterns, activeLayerID, loadedImageStore)
+                linetypePatterns, activeLayerID, loadedImageStore,
+                xrefHostFolder, unloadedXrefs, imageDefinitions, pdfDefinitions)
     }
 
     // MARK: - Header Parsing

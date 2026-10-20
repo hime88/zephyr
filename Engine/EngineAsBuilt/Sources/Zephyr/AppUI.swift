@@ -206,6 +206,13 @@ struct AppUI {
             DataTablePanelUI.render(engine: engine)
         }
 
+        // 7c. External References palette (XREF command).
+        if DocumentPanelUIPolicy.shouldRenderActiveDocumentPanel(
+            isVisible: engine.ui.xrefPanelVisible,
+            showsActiveTab: showsActiveTab) {
+            XrefPaletteUI.render(engine: engine)
+        }
+
         // 8. Command line overlay at the bottom (opened by typing any letter key).
         CommandLineUI.render(engine: engine, dw: dw, dh: dh)
 
