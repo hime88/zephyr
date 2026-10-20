@@ -119,6 +119,7 @@ public final class SnapEngine {
         cursor: Vector3,
         candidates: [CADEntity],
         resolveGeometry: ((CADEntity) -> [CADPrimitive]?)?,
+        primitiveVisibility: ((CADEntity) -> [Bool]?)? = nil,
         threshold: Double
     ) -> SnapResult? {
         var best: SnapResult? = nil
@@ -127,11 +128,13 @@ public final class SnapEngine {
         for entity in candidates {
             let geometry = resolveGeometry?(entity) ?? entity.localGeometry
             guard let geometry, !geometry.isEmpty else { continue }
+            let visibility = primitiveVisibility?(entity)
 
             let invTransform = entity.transform.inverse()
             let localCursor = invTransform.transformPoint(cursor)
 
-            for prim in geometry {
+            for (primIndex, prim) in geometry.enumerated() {
+                if let visibility, primIndex < visibility.count, !visibility[primIndex] { continue }
                 switch prim {
                 case .polyline(let path, _):
                     let points = path.tessellatedPoints()
@@ -299,12 +302,20 @@ public final class SnapEngine {
     /// (from `gridOriginX`, `gridOriginY`) are also tested. Grid snaps have
     /// lower priority than entity discrete anchors and extension snaps but
     /// higher priority than on-curve nearest points.
+    /// Local-space search radius for a world-space threshold.
+    private static func localRadius(worldRadius: Double, transform: Transform3D) -> Double {
+        let scale = transform.scale
+        return worldRadius / max(min(abs(scale.x), abs(scale.y)), 1e-9)
+    }
+
     public func nearestSnap(
         worldX: Double,
         worldY: Double,
         entities: [CADEntity],
         threshold: Double? = nil,
         resolveGeometry: ((CADEntity) -> [CADPrimitive]?)? = nil,
+        primitiveVisibility: ((CADEntity) -> [Bool]?)? = nil,
+        spatialGrid: ((CADEntity) -> CADBlockSpatialGrid?)? = nil,
         extensionSnapEnabled: Bool = false,
         extensionThresholdPx: Double = 12.0,
         pixelsPerWorldUnit: Double = 1.0,
@@ -331,7 +342,29 @@ public final class SnapEngine {
         var bestDist = thresh
 
         for entity in candidates {
-            for ap in entity.anchorPoints {
+            // Anchors carry no per-primitive index, so visibility can only
+            // suppress an entity whose primitives are ALL hidden here;
+            // gridded blocks generate per-primitive anchors instead.
+            if let visibility = primitiveVisibility?(entity), !visibility.contains(true) {
+                continue
+            }
+            let anchors: [AnchorPoint]
+            if let grid = spatialGrid?(entity),
+               let geometry = resolveGeometry?(entity) ?? entity.localGeometry, !geometry.isEmpty {
+                let localCursor = entity.transform.inverse().transformPoint(cursor)
+                let visibility = primitiveVisibility?(entity)
+                let nearby = grid.candidateIndices(
+                    near: localCursor,
+                    radius: Self.localRadius(worldRadius: thresh, transform: entity.transform))
+                    .filter { idx in
+                        guard let visibility, idx < visibility.count else { return true }
+                        return visibility[idx]
+                    }
+                anchors = CADEntity.computeAnchorPoints(from: nearby.map { geometry[$0] })
+            } else {
+                anchors = entity.anchorPoints
+            }
+            for ap in anchors {
                 let worldPos = ap.worldPosition(transform: entity.transform)
                 let dx = worldPos.x - cursor.x
                 let dy = worldPos.y - cursor.y
@@ -360,6 +393,7 @@ public final class SnapEngine {
             if let extSnap = nearestExtensionSnap(
                 cursor: cursor, candidates: candidates,
                 resolveGeometry: resolveGeometry,
+                primitiveVisibility: primitiveVisibility,
                 threshold: min(thresh, extThreshWorld))
             {
                 return extSnap
@@ -396,11 +430,19 @@ public final class SnapEngine {
         for entity in candidates {
             let geometry = resolveGeometry?(entity) ?? entity.localGeometry
             guard let geometry, !geometry.isEmpty else { continue }
+            let visibility = primitiveVisibility?(entity)
 
             let invTransform = entity.transform.inverse()
             let localCursor = invTransform.transformPoint(cursor)
 
-            for prim in geometry {
+            let primIndices: [Int] = spatialGrid?(entity).map {
+                $0.candidateIndices(
+                    near: localCursor,
+                    radius: Self.localRadius(worldRadius: thresh, transform: entity.transform))
+            } ?? Array(geometry.indices)
+            for primIndex in primIndices {
+                let prim = geometry[primIndex]
+                if let visibility, primIndex < visibility.count, !visibility[primIndex] { continue }
                 let localNearest: Vector3?
                 switch prim {
                 case .table: localNearest = nil

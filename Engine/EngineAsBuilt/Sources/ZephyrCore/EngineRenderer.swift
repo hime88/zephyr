@@ -339,8 +339,8 @@ public final class EngineRenderer {
         // (activation always re-arms the primary path, so clearing the flag
         // above is safe). The pending guard makes this bump-once per revision
         // instead of once per frame while the build is in flight.
-        if !isPrimary, ctx.builtRevision != doc.editRevision,
-           ctx.pendingRevision != doc.editRevision {
+        if !isPrimary, ctx.builtRevision != doc.renderRevision,
+           ctx.pendingRevision != doc.renderRevision {
             ctx.regenGeneration &+= 1
         }
         let wantGen = ctx.regenGeneration
@@ -351,10 +351,10 @@ public final class EngineRenderer {
         if wantGen != ctx.appliedGeneration && ctx.regenInFlight != wantGen {
             print("[Loop] regen needed for generation \(wantGen), launching task")
             ctx.regenTask?.cancel()
-            let docSnapshot = doc.snapshot()
+            let docSnapshot = doc.renderSnapshot()
             let origin = renderOrigin(for: doc)
             ctx.regenInFlight = wantGen
-            ctx.pendingRevision = doc.editRevision
+            ctx.pendingRevision = doc.renderRevision
             let simplify = simplifyComplexBlocks
             let tessDiv = splineTessellationDivisor
             ctx.regenTask = Task.detached { [weak self] in
@@ -369,7 +369,7 @@ public final class EngineRenderer {
         // show. Results from a superseded tab/edit are dropped, never displayed.
         let pendingApplied = ctx.bridge.applyPendingIfNeeded(
             forGeneration: wantGen, into: ctx.geometry,
-            spriteManager: ctx.sprites, imageStore: doc.imageStore,
+            spriteManager: ctx.sprites, imageStore: doc.effectiveImageStore,
             viewportBackground: bgTuple(background), engine: engine)
 
         if pendingApplied {
@@ -377,7 +377,7 @@ public final class EngineRenderer {
             ctx.regenInFlight = nil
             ctx.regenTask = nil
             ctx.pendingRevision = nil
-            ctx.builtRevision = doc.editRevision
+            ctx.builtRevision = doc.renderRevision
             if isPrimary {
                 engine.interaction.pendingPreviewHandles.removeAll()
                 // Rebuild entity spatial grid after geometry has been regenerated.
@@ -2586,7 +2586,8 @@ public final class EngineRenderer {
         let hc = makeImCol32(r: 64, g: 224, b: 208, a: 180)
         let lineWidth: Float = 2.0
 
-        if engine.simplifyComplexBlocks && geometry.count > 50 {
+        // Massive blocks (loaded xrefs) highlight as a frame, not a segment walk.
+        if geometry.count > 50 && (engine.simplifyComplexBlocks || geometry.count > CADBlockSpatialGrid.buildThreshold) {
             if let wbb = entity.worldBoundingBox {
                 let s0 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: cam)
                 let s1 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: cam)
@@ -2646,7 +2647,8 @@ public final class EngineRenderer {
             else { return }
 
             let drawList = igGetBackgroundDrawList(nil)
-            if engine.simplifyComplexBlocks && geometry.count > 50 {
+            // Massive blocks (loaded xrefs) highlight as a frame, not a segment walk.
+        if geometry.count > 50 && (engine.simplifyComplexBlocks || geometry.count > CADBlockSpatialGrid.buildThreshold) {
                 if let wbb = entity.worldBoundingBox {
                     let s0 = EngineCameraManager.worldToScreen(worldX: wbb.min.x, worldY: wbb.min.y, cam: cam)
                     let s1 = EngineCameraManager.worldToScreen(worldX: wbb.max.x, worldY: wbb.min.y, cam: cam)

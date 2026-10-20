@@ -146,6 +146,8 @@ public final class CADRendererBridge {
         let lineTypeScale: Double
         let geomWidth: Double
         let opacityMultiplier: Double
+        /// False when the primitive's own style layer is hidden.
+        let isVisible: Bool
     }
 
     private nonisolated static func explicitColor(of primitive: CADPrimitive) -> ColorRGBA? {
@@ -203,6 +205,25 @@ public final class CADRendererBridge {
         default:
             return primitive
         }
+    }
+
+    /// Placeholder geometry for an xref whose content is not loaded:
+    /// a 10×10 frame with diagonals, labelled with the block name.
+    /// Also gives hit-testing/grips something bounded to work with.
+    public nonisolated static func unresolvedXrefPlaceholder(blockName: String) -> [CADPrimitive] {
+        let s = 10.0
+        func pt(_ x: Double, _ y: Double) -> Vector3 { Vector3(x: x, y: y, z: 0) }
+        return [
+            .line(start: pt(0, 0), end: pt(s, 0), color: nil),
+            .line(start: pt(s, 0), end: pt(s, s), color: nil),
+            .line(start: pt(s, s), end: pt(0, s), color: nil),
+            .line(start: pt(0, s), end: pt(0, 0), color: nil),
+            .line(start: pt(0, 0), end: pt(s, s), color: nil),
+            .line(start: pt(s, 0), end: pt(0, s), color: nil),
+            .text(position: pt(0, -1.5), text: blockName, height: 1.8,
+                  rotation: 0, style: nil, alignH: 0, alignV: 0,
+                  mtextWidth: nil, color: nil),
+        ]
     }
 
     private nonisolated static func isFillPrimitive(_ primitive: CADPrimitive) -> Bool {
@@ -302,7 +323,8 @@ public final class CADRendererBridge {
             lineWeight: lineWeight,
             lineTypeScale: entityLineTypeScale * (style?.lineTypeScale ?? 1.0),
             geomWidth: style?.geomWidth ?? entityGeomWidth,
-            opacityMultiplier: opacityMultiplier)
+            opacityMultiplier: opacityMultiplier,
+            isVisible: styleLayer?.isVisible ?? true)
     }
 
     private nonisolated static func makeTextBackgroundSpec(
@@ -420,7 +442,14 @@ public final class CADRendererBridge {
             } else {
                 entityOpacity = 1.0
             }
-            let combinedLayerOpacity = layer.opacity * entityOpacity
+            // Xref fade (XDWGFADECTL): dim referenced content, display only.
+            let xrefFadeMultiplier: Double = {
+                guard snapshot.xrefFadePercent > 0,
+                      let bid = entity.blockID,
+                      snapshot.blocks[bid]?.isXref == true else { return 1.0 }
+                return 1.0 - Double(snapshot.xrefFadePercent) / 100.0
+            }()
+            let combinedLayerOpacity = layer.opacity * entityOpacity * xrefFadeMultiplier
             let effectiveColor = ColorRGBA(
                 r: entityColor.r,
                 g: entityColor.g,
@@ -593,8 +622,23 @@ public final class CADRendererBridge {
                 primitiveXData = [:]
             }
             guard var geometry = resolved else { continue }
-            
-            if simplifyComplexBlocks && geometry.count > 50 {
+
+            // Unresolved xref: framed placeholder so the reference is
+            // visible/selectable instead of silently absent. Size is in
+            // block-local units (true bounds are unknown until loaded).
+            if geometry.isEmpty, let bid = entity.blockID,
+               let block = snapshot.blocks[bid], block.xrefDescriptor != nil {
+                geometry = Self.unresolvedXrefPlaceholder(blockName: block.name)
+                primitiveStyles = [:]
+                primitiveXData = [:]
+            }
+
+            // Xrefs are exempt from SIMPLIFY collapse: a floorplan must
+            // not vanish because furniture blocks are simplified.
+            let isXrefEntity = entity.blockID.map {
+                snapshot.blocks[$0]?.isXref == true
+            } ?? false
+            if simplifyComplexBlocks && geometry.count > 50 && !isXrefEntity {
                 let simplificationBox: BoundingBox3D?
                 if entity.arrayData != nil, let blockID = entity.blockID {
                     simplificationBox = snapshot.blocks[blockID]?.localBoundingBox
@@ -679,15 +723,31 @@ public final class CADRendererBridge {
         var maxSpecHandle: UUID? = nil
 
         return await withTaskGroup(of: [EntityResult].self) { group in
-            // Chunk visible entities
+            // Chunk visible entities, balanced by primitive count so a
+            // single huge block/xref doesn't share its core with a pile
+            // of small entities while other cores idle. (One entity is
+            // never split: its Z progression is sequential.)
             if !visible.isEmpty {
                 let visibleChunks = max(1, numChunks * visible.count / (visible.count + visibleText.count))
-                let chunkSize = (visible.count + visibleChunks - 1) / visibleChunks
-                for chunkIdx in 0..<visibleChunks {
-                    let start = chunkIdx * chunkSize
-                    let end = min(start + chunkSize, visible.count)
-                    guard start < end else { continue }
-                    let chunk = Array(visible[start..<end])
+                let totalWeight = visible.reduce(0) { $0 + max(1, $1.geometry.count) }
+                let targetWeight = max(1, (totalWeight + visibleChunks - 1) / visibleChunks)
+                var chunkRanges: [Range<Int>] = []
+                var rangeStart = 0
+                var rangeWeight = 0
+                for (i, v) in visible.enumerated() {
+                    rangeWeight += max(1, v.geometry.count)
+                    if rangeWeight >= targetWeight, i + 1 < visible.count,
+                       chunkRanges.count + 1 < visibleChunks {
+                        chunkRanges.append(rangeStart..<(i + 1))
+                        rangeStart = i + 1
+                        rangeWeight = 0
+                    }
+                }
+                if rangeStart < visible.count {
+                    chunkRanges.append(rangeStart..<visible.count)
+                }
+                for range in chunkRanges {
+                    let chunk = Array(visible[range])
                     
                     group.addTask {
                         var chunkResults: [EntityResult] = []
@@ -746,6 +806,10 @@ public final class CADRendererBridge {
                                     entityGeomWidth: v.geomWidth,
                                     entityLayerOpacity: v.layerOpacity,
                                     layersByName: layersByName)
+                                if !drawStyle.isVisible {
+                                    currentZ += 0.01
+                                    continue
+                                }
                                 let primZ = Self.isFillPrimitive(primitive)
                                     ? currentZ
                                     : currentZ + 1000000.0
@@ -987,7 +1051,7 @@ public final class CADRendererBridge {
                                         entityGeomWidth: v.geomWidth,
                                         entityLayerOpacity: v.layerOpacity,
                                         layersByName: layersByName)
-                                    if let imgSpec = CADPrimitiveGenerator.computeImageSpec(
+                                    if drawStyle.isVisible, let imgSpec = CADPrimitiveGenerator.computeImageSpec(
                                         from: primitive,
                                         transform: v.transform,
                                         z: baseZ + 500000.0,
@@ -995,6 +1059,39 @@ public final class CADRendererBridge {
                                         renderOrigin: renderOrigin
                                     ) {
                                         imageSpecs.append(imgSpec)
+                                        // No pixels available (unresolved
+                                        // media reference): framed
+                                        // placeholder so the reference
+                                        // stays visible/selectable.
+                                        if !snapshot.availableImageAssetNames.contains(imgSpec.imageName),
+                                           case .image(let ins, let uAx, let vAx, _, _, _) = primitive {
+                                            let c0 = ins
+                                            let c1 = Vector3(x: ins.x + uAx.x, y: ins.y + uAx.y, z: ins.z + uAx.z)
+                                            let c2 = Vector3(x: ins.x + uAx.x + vAx.x, y: ins.y + uAx.y + vAx.y, z: ins.z + uAx.z + vAx.z)
+                                            let c3 = Vector3(x: ins.x + vAx.x, y: ins.y + vAx.y, z: ins.z + vAx.z)
+                                            for (a, b) in [(c0, c1), (c1, c2), (c2, c3), (c3, c0), (c0, c2), (c1, c3)] {
+                                                specs.append(contentsOf: CADPrimitiveGenerator.computePrimitiveSpecs(
+                                                    from: .line(start: a, end: b, color: nil),
+                                                    transform: v.transform,
+                                                    color: (drawStyle.color.r, drawStyle.color.g,
+                                                            drawStyle.color.b, drawStyle.color.a),
+                                                    z: currentZ,
+                                                    lineType: drawStyle.lineType,
+                                                    lineWeight: drawStyle.lineWeight,
+                                                    lineTypeScale: drawStyle.lineTypeScale,
+                                                    geomWidth: drawStyle.geomWidth,
+                                                    textWidthFactor: 1,
+                                                    textObliqueAngle: 0,
+                                                    textStyleFonts: snapshot.textStyleFonts,
+                                                    linetypePatterns: snapshot.linetypePatterns,
+                                                    opacityMultiplier: drawStyle.opacityMultiplier,
+                                                    penStrokeBrushSettings: v.penStrokeBrushSettings,
+                                                    penStrokeStabilizationSettings: v.penStrokeStabilizationSettings,
+                                                    penStrokeUnitScaleFromMM: snapshot.unit.scaleFromMM,
+                                                    renderOrigin: renderOrigin,
+                                                    splineTessellationDivisor: splineTessellationDivisor))
+                                            }
+                                        }
                                     }
                                 }
                             }

@@ -249,7 +249,10 @@ public enum EABWriter {
             for (name, asset) in snap.imageAssets {
                 tempDoc.imageStore[name] = asset
             }
-            let v6Data = try serialize(document: tempDoc, tracker: tracker)
+            let v6Data = try serialize(
+                document: tempDoc, tracker: tracker,
+                hostFolder: snap.sourceFolderPath,
+                unloadedXrefs: snap.unloadedXrefHandles)
             tracker.finishSection(bytes: v6Data.count)
             w.writeBytes(v6Data)
             let dataSize = UInt64(v6Data.count)
@@ -282,7 +285,10 @@ public enum EABWriter {
     }
 
     /// Serialize with optional progress tracker for background saves.
-    private static func serialize(document: CADDocument, tracker: SaveProgressTracker?) throws -> Data {
+    private static func serialize(
+        document: CADDocument, tracker: SaveProgressTracker?,
+        hostFolder: String? = nil, unloadedXrefs: Set<UUID>? = nil
+    ) throws -> Data {
         let w = BinaryWriter()
         tracker?.attach(to: w)
 
@@ -434,6 +440,25 @@ public enum EABWriter {
             tracker?.publishNow()  // images can be large
         }
 
+        // Xref descriptors (added in EAB v19)
+        if let xrefsData = serializeXrefs(
+            document: document,
+            hostFolder: hostFolder ?? document.xrefSourceFolder,
+            unloadedXrefs: unloadedXrefs ?? document.eabUnloadedXrefHandles) {
+            entries.append(EABSectionEntry(type: .xrefs, offset: UInt64(w.count),
+                                            size: UInt64(xrefsData.count), compression: .none))
+            w.writeBytes(xrefsData)
+            w.pad(to: 4)
+        }
+
+        // Referenced-media definitions (added in EAB v20)
+        if let mediaData = serializeMediaDefinitions(document: document) {
+            entries.append(EABSectionEntry(type: .mediaDefinitions, offset: UInt64(w.count),
+                                            size: UInt64(mediaData.count), compression: .none))
+            w.writeBytes(mediaData)
+            w.pad(to: 4)
+        }
+
         // 4. Write section table at end
         let tableOffset = UInt64(w.count)
         let tableData = serializeSectionTable(entries: entries)
@@ -479,6 +504,50 @@ public enum EABWriter {
     }
 
     // MARK: - Metadata
+
+    /// Xref descriptors (EAB v19): host folder fallback + one record per
+    /// descriptor block. Returns nil when the document has no xrefs.
+    private static func serializeXrefs(
+        document: CADDocument, hostFolder: String?, unloadedXrefs: Set<UUID>
+    ) -> Data? {
+        let xrefBlocks = document.allBlocks.filter { $0.xrefDescriptor != nil }
+        guard !xrefBlocks.isEmpty else { return nil }
+        let w = BinaryWriter()
+        w.writeString(hostFolder ?? "")
+        w.writeUInt32(UInt32(xrefBlocks.count))
+        for block in xrefBlocks {
+            guard let descriptor = block.xrefDescriptor else { continue }
+            w.writeUUID(block.handle)
+            w.writeString(descriptor.savedPath)
+            w.writeUInt8(descriptor.isOverlay ? 1 : 0)
+            w.writeUInt8(unloadedXrefs.contains(block.handle) ? 1 : 0)
+        }
+        return w.build()
+    }
+
+    /// Referenced-media definitions (EAB v20): paths only — decoded
+    /// pixels are runtime state and never enter the archive.
+    private static func serializeMediaDefinitions(document: CADDocument) -> Data? {
+        guard !document.imageDefinitions.isEmpty || !document.pdfDefinitions.isEmpty
+        else { return nil }
+        let w = BinaryWriter()
+        let images = document.imageDefinitions.values.sorted { $0.name < $1.name }
+        w.writeUInt32(UInt32(images.count))
+        for def in images {
+            w.writeString(def.name)
+            w.writeString(def.savedPath)
+            w.writeUInt32(UInt32(clamping: def.pixelWidth))
+            w.writeUInt32(UInt32(clamping: def.pixelHeight))
+        }
+        let pdfs = document.pdfDefinitions.values.sorted { $0.name < $1.name }
+        w.writeUInt32(UInt32(pdfs.count))
+        for def in pdfs {
+            w.writeString(def.name)
+            w.writeString(def.savedPath)
+            w.writeUInt32(UInt32(clamping: def.pageNumber))
+        }
+        return w.build()
+    }
 
     private static func serializeMetadata(document: CADDocument) -> Data {
         let w = BinaryWriter()
@@ -541,10 +610,13 @@ public enum EABWriter {
         let blocks = document.allBlocks
         w.writeUInt32(UInt32(blocks.count))
         for block in blocks {
+            // Xref shadow geometry (merged into save snapshots for
+            // render/PDF) must never be persisted into the host file.
+            let isXrefBlock = block.xrefDescriptor != nil
             w.writeUUID(block.handle)
             w.writeString(block.name)
-            w.writeUInt32(pvaOffsets[block.handle] ?? 0)
-            w.writeUInt32(pvaByteCounts[block.handle] ?? 0)
+            w.writeUInt32(isXrefBlock ? 0 : (pvaOffsets[block.handle] ?? 0))
+            w.writeUInt32(isXrefBlock ? 0 : (pvaByteCounts[block.handle] ?? 0))
             w.writeUInt32(0)  // vertexCount placeholder
             w.writeUInt32(0)  // indexCount placeholder
             // bbox
@@ -555,12 +627,14 @@ public enum EABWriter {
             w.writeFloat32(Float(block.localBoundingBox.max.y))
             w.writeFloat32(Float(block.localBoundingBox.max.z))
             // primitives (needed for round-tripping since PVA is lossy)
-            serializePrimitives(block.geometry, to: w)
+            serializePrimitives(isXrefBlock ? [] : block.geometry, to: w)
             // Per-primitive DXF styles retained for flattened blocks (EAB v9).
-            serializePrimitiveStyles(block.primitiveStyles, to: w)
-            w.writeInt32(Int32(clamping: block.dxfFlags))
+            serializePrimitiveStyles(isXrefBlock ? [:] : block.primitiveStyles, to: w)
+            w.writeInt32(Int32(clamping: block.effectiveDXFFlags))
             w.writeUInt8(block.isInternalTableDisplayBlock ? 1 : 0)
-            serializePrimitiveXData(block.primitiveXData, geometryCount: block.geometry.count, to: w)
+            serializePrimitiveXData(
+                isXrefBlock ? [:] : block.primitiveXData,
+                geometryCount: isXrefBlock ? 0 : block.geometry.count, to: w)
         }
         return w.build()
     }
@@ -803,7 +877,9 @@ public enum EABWriter {
 
         for block in document.allBlocks {
             offsets[block.handle] = UInt32(pvaData.count)
-            let blockVertices = blockGeometryToPVA(block.geometry)
+            // Never persist xref shadow geometry (see serializeBlocks).
+            let blockVertices = blockGeometryToPVA(
+                block.xrefDescriptor != nil ? [] : block.geometry)
             var blockBytes = Data()
             for v in blockVertices {
                 blockBytes.append(contentsOf: pvaVertexToBytes(v))

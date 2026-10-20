@@ -90,6 +90,16 @@ struct StatusBarUI {
             ImGuiSetCursorPosX(16)
             ImGuiTextV(statusLeft)
 
+            // Xref attention indicator (broken/stale external references).
+            if let shownTab,
+               XrefPalettePolicy.hasWarning(store: shownTab.xrefStore)
+                || XrefPalettePolicy.hasMediaWarning(store: shownTab.mediaStore) {
+                ImGuiSameLine(0, 8)
+                if igSmallButton("XREF ⚠") {
+                    engine.ui.xrefPanelVisible = true
+                }
+            }
+
             // Save failure indicator
             if let ss = saveState, case .failed = ss.status {
                 ImGuiSameLine(0, 8)

@@ -71,6 +71,14 @@ public class DXFReader {
     public var rawACDSData: [DataTableRawDXFGroup] = []
     public var blocks: [DXFBlockEntity] = []
     public var entities: [DXFEntity] = []
+    /// SPATIAL_FILTER objects keyed by handle (XCLIP definitions).
+    public var spatialFilters: [UInt32: DXFSpatialFilterEntry] = [:]
+    /// PDFDEFINITION objects keyed by handle (PDF underlay definitions).
+    public var pdfDefinitions: [UInt32: DXFPdfDefinitionEntry] = [:]
+    /// Every parsed DICTIONARY: dictionary handle → (entry name → target handle).
+    public var objectDictionaryEntries: [UInt32: [String: UInt32]] = [:]
+    /// Raw XRECORD group pairs keyed by handle (roundtrip clip data).
+    public var xrecordGroups: [UInt32: [(code: Int, value: String)]] = [:]
 
     // MARK: - Internal
 
@@ -101,7 +109,8 @@ public class DXFReader {
     }
     private var pos: Int = 0
     private var tableStylesByHandle: [UInt32: TableStyleInfo] = [:]
-    private var objectDictionaryNameByHandle: [UInt32: String] = [:]
+    /// Dictionary entry name per object handle (definition naming).
+    public private(set) var objectDictionaryNameByHandle: [UInt32: String] = [:]
     public var textCodec = DXFTextCodec()
 
     public init() {}
@@ -152,6 +161,7 @@ public class DXFReader {
         resolveTableStyles()
         resolveTableObjectGraphs()
         resolveImageReferences()
+        resolveUnderlayReferences()
         resolveMlineStyles()
         DXFProfile.mark("resolve styles/graphs/images")
         DXFProfile.dump("DXFReader total")
@@ -587,6 +597,9 @@ public class DXFReader {
         case "MULTILEADER", "MLEADER": return parseMLeader(allPairs)
         case "MLINE":    return parseMline(allPairs)
         case "IMAGE":    return parseImage(allPairs)
+        case "PDFUNDERLAY": return parseUnderlay(allPairs, eType: .pDFUNDERLAY)
+        case "DWFUNDERLAY": return parseUnderlay(allPairs, eType: .dWFUNDERLAY)
+        case "DGNUNDERLAY": return parseUnderlay(allPairs, eType: .dGNUNDERLAY)
         case "VIEWPORT": return parseViewport(allPairs)
         case "ACAD_TABLE", "TABLE": return parseTable(allPairs)
         default: return DXFEntity(eType: .uNKNOWN)
@@ -1939,6 +1952,40 @@ extension DXFReader {
             case 282: e.contrast = i(v)
             case 283: e.fade = i(v)
             case 340: e.ref = parseHandle(v)
+            case 14:
+                e.clipBoundary.append(Vector3(x: d(v), y: 0, z: 0))
+            case 24:
+                if !e.clipBoundary.isEmpty {
+                    e.clipBoundary[e.clipBoundary.count - 1].y = d(v)
+                }
+            default: break
+            }
+        }
+        return e
+    }
+
+    func parseUnderlay(_ pairs: [(Int, String)], eType: DXFEType) -> DXFUnderlayEntity {
+        let e = DXFUnderlayEntity(eType: eType)
+        applyCommon(pairs, to: e)
+        for (c, v) in pairs {
+            switch c {
+            case 340: e.ref = parseHandle(v)
+            case 10: e.basePoint.x = d(v)
+            case 20: e.basePoint.y = d(v)
+            case 30: e.basePoint.z = d(v)
+            case 41: e.scaleX = d(v)
+            case 42: e.scaleY = d(v)
+            case 43: e.scaleZ = d(v)
+            case 50: e.rotationDeg = d(v)
+            case 280: e.flags = i(v)
+            case 281: e.contrast = i(v)
+            case 282: e.fade = i(v)
+            case 11:
+                e.boundary.append(Vector3(x: d(v), y: 0, z: 0))
+            case 21:
+                if !e.boundary.isEmpty {
+                    e.boundary[e.boundary.count - 1].y = d(v)
+                }
             default: break
             }
         }
@@ -2586,6 +2633,12 @@ extension DXFReader {
                 tryParse { try parseMLeaderStyle(at: pos) }
             } else if c == 0 && v == "MLINESTYLE" {
                 tryParse { try parseMlineStyle(at: pos) }
+            } else if c == 0 && v == "SPATIAL_FILTER" {
+                tryParse { try parseSpatialFilter(at: pos) }
+            } else if c == 0 && v == "XRECORD" {
+                tryParse { try parseXRecord(at: pos) }
+            } else if c == 0 && v == "PDFDEFINITION" {
+                tryParse { try parsePdfDefinition(at: pos) }
             } else {
                 pos += 1
             }
@@ -2595,23 +2648,126 @@ extension DXFReader {
     private func parseObjectDictionary(at startIdx: Int) throws {
         var idx = startIdx + 1
         var pendingName: String?
+        var dictHandle: UInt32 = 0
         while idx < pairs.count {
             let (code, value) = pairs[idx]
             if code == 0 { break }
             idx += 1
             switch code {
+            case 5, 105:
+                if dictHandle == 0 { dictHandle = parseHandle(value) }
             case 3:
                 pendingName = decode(value)
             case 350, 360:
                 if let name = pendingName {
                     let handle = parseHandle(value)
-                    if handle != 0 { objectDictionaryNameByHandle[handle] = name }
+                    if handle != 0 {
+                        objectDictionaryNameByHandle[handle] = name
+                        if dictHandle != 0 {
+                            objectDictionaryEntries[dictHandle, default: [:]][name] = handle
+                        }
+                    }
                     pendingName = nil
                 }
             default:
                 break
             }
         }
+        pos = idx
+    }
+
+    // SPATIAL_FILTER (AcDbFilter + AcDbSpatialFilter): 70 point count,
+    // 10/20 boundary points…, 210/220/230 normal, 11/21/31 origin,
+    // 71 clip on/off, 72 front on + 40 distance, 73 back on + 41
+    // distance, then 24× group 40 (inverse insert matrix + transform
+    // matrix, column-major 4x3 each).
+    private func parseSpatialFilter(at startIdx: Int) throws {
+        var filter = DXFSpatialFilterEntry()
+        var idx = startIdx + 1
+        var currentPoint: Vector3?
+        var matrices: [Double] = []
+        var frontOn = false
+        var backOn = false
+        var inXDictionary = false
+        while idx < pairs.count {
+            let (code, value) = pairs[idx]
+            if code == 0 { break }
+            idx += 1
+            switch code {
+            case 5, 105:
+                if filter.handle == 0 { filter.handle = parseHandle(value) }
+            case 102:
+                inXDictionary = value.contains("ACAD_XDICTIONARY")
+                if value == "}" { inXDictionary = false }
+            case 360:
+                if inXDictionary { filter.extDictHandle = parseHandle(value) }
+            case 10:
+                if let p = currentPoint { filter.pointsOCS.append(p) }
+                currentPoint = Vector3(x: d(value), y: 0, z: 0)
+            case 20:
+                currentPoint?.y = d(value)
+            case 71:
+                filter.enabled = i(value) != 0
+            case 72:
+                frontOn = i(value) != 0
+            case 73:
+                backOn = i(value) != 0
+            case 40:
+                if frontOn, filter.frontDistance == nil {
+                    filter.frontDistance = d(value)
+                } else {
+                    matrices.append(d(value))
+                }
+            case 41:
+                if backOn { filter.backDistance = d(value) }
+            default:
+                break
+            }
+        }
+        if let p = currentPoint { filter.pointsOCS.append(p) }
+        if matrices.count >= 12 {
+            filter.inverseMatrix = Array(matrices.prefix(12))
+            filter.transformMatrix = Array(matrices.dropFirst(12).prefix(12))
+        }
+        if filter.handle != 0 { spatialFilters[filter.handle] = filter }
+        pos = idx
+    }
+
+    // PDFDEFINITION (AcDbPdfDefinition): 1 = filename, 2 = page name.
+    private func parsePdfDefinition(at startIdx: Int) throws {
+        var entry = DXFPdfDefinitionEntry()
+        var idx = startIdx + 1
+        while idx < pairs.count {
+            let (code, value) = pairs[idx]
+            if code == 0 { break }
+            idx += 1
+            switch code {
+            case 5, 105:
+                if entry.handle == 0 { entry.handle = parseHandle(value) }
+            case 1:
+                entry.filename = decode(value)
+            case 2:
+                entry.pageName = decode(value)
+            default:
+                break
+            }
+        }
+        if entry.handle != 0 { pdfDefinitions[entry.handle] = entry }
+        pos = idx
+    }
+
+    private func parseXRecord(at startIdx: Int) throws {
+        var handle: UInt32 = 0
+        var groups: [(code: Int, value: String)] = []
+        var idx = startIdx + 1
+        while idx < pairs.count {
+            let (code, value) = pairs[idx]
+            if code == 0 { break }
+            idx += 1
+            if (code == 5 || code == 105), handle == 0 { handle = parseHandle(value) }
+            groups.append((code, value))
+        }
+        if handle != 0 { xrecordGroups[handle] = groups }
         pos = idx
     }
 
@@ -2970,6 +3126,34 @@ extension DXFReader {
         for block in blocks { resolve(block.entities) }
     }
 
+    /// Attach filename/page/dictionary-name from PDFDEFINITION objects
+    /// onto their underlay instances (mirrors resolveImageReferences).
+    private func resolveUnderlayReferences() {
+        guard !pdfDefinitions.isEmpty else { return }
+        func resolve(_ list: [DXFEntity]) {
+            for entity in list {
+                if let underlay = entity as? DXFUnderlayEntity,
+                   let def = pdfDefinitions[underlay.ref] {
+                    underlay.filePath = def.filename
+                    underlay.pageName = def.pageName
+                    if let dictName = objectDictionaryNameByHandle[underlay.ref],
+                       !dictName.isEmpty {
+                        underlay.definitionName = dictName
+                    } else {
+                        underlay.definitionName = (def.filename as NSString)
+                            .lastPathComponent
+                            .replacingOccurrences(of: "\\", with: "/")
+                        underlay.definitionName = (underlay.definitionName as NSString)
+                            .deletingPathExtension
+                    }
+                }
+                if let block = entity as? DXFBlockEntity { resolve(block.entities) }
+            }
+        }
+        resolve(entities)
+        for block in blocks { resolve(block.entities) }
+    }
+
     private func resolveMlineStyles() {
         var byHandle: [UInt32: DXFMlineStyleEntry] = [:]
         var byName: [String: DXFMlineStyleEntry] = [:]
@@ -3036,6 +3220,7 @@ extension DXFReader {
                 break
             }
             switch c {
+            case 1:   block.xrefPath = v
             case 2:   block.name = v
             case 5:   block.handle = parseHandle(v)
             case 8:   block.layer = v

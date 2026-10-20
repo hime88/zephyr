@@ -26,6 +26,23 @@ public struct DXFDrawingView: Sendable {
     }
 }
 
+/// An external reference declared by the imported file. The importer
+/// creates the descriptor CADBlock; resolving/loading the referenced
+/// file is the XrefLoader's job (the importer does no recursive I/O).
+public struct DXFPendingXref: Sendable, Equatable {
+    public let blockHandle: UUID
+    public let blockName: String
+    public let savedPath: String
+    public let isOverlay: Bool
+
+    public init(blockHandle: UUID, blockName: String, savedPath: String, isOverlay: Bool) {
+        self.blockHandle = blockHandle
+        self.blockName = blockName
+        self.savedPath = savedPath
+        self.isOverlay = isOverlay
+    }
+}
+
 public struct DXFImportResult: Sendable {
     public let layers: [Layer]; public let blocks: [CADBlock]; public let entities: [CADEntity]
     public let textStyles: [String: CADTextStyle]; public let linetypePatterns: [String: [Double]]
@@ -36,18 +53,41 @@ public struct DXFImportResult: Sendable {
     public let leaderStyles: [String: CADLeaderStyle]
     public let views: [DXFDrawingView]
     public let roundTripPayload: DXFRoundTripPayload?
+    /// Source drawing's $INSBASE (insertion base point), converted to
+    /// Zephyr internal coordinates (Y negated, like all imported geometry).
+    public let insBase: Vector3
+    /// Source drawing's $INSUNITS code (0 = unspecified).
+    public let insUnits: Int
+    /// Xref definitions found in the source, awaiting resolution by the
+    /// XrefLoader (their CADBlocks are in `blocks` with empty geometry).
+    public let pendingXrefs: [DXFPendingXref]
+    /// Referenced-media definitions (IMAGEDEF / PDFDEFINITION).
+    public let imageDefinitions: [CADImageDefinition]
+    public let pdfDefinitions: [CADPdfDefinition]
+    /// Source unit when the $INSUNITS code maps to a Zephyr unit.
+    public var sourceUnit: CADUnit? { CADUnit(dxfINSUNITS: insUnits) }
     public init(layers: [Layer], blocks: [CADBlock], entities: [CADEntity],
                 textStyles: [String: CADTextStyle], linetypePatterns: [String: [Double]],
                 dimensionStyles: [String: CADDimensionStyle],
                 leaderStyles: [String: CADLeaderStyle] = ["Standard": .standard],
                 views: [DXFDrawingView],
-                roundTripPayload: DXFRoundTripPayload? = nil) {
+                roundTripPayload: DXFRoundTripPayload? = nil,
+                insBase: Vector3 = .zero,
+                insUnits: Int = 0,
+                pendingXrefs: [DXFPendingXref] = [],
+                imageDefinitions: [CADImageDefinition] = [],
+                pdfDefinitions: [CADPdfDefinition] = []) {
         self.layers = layers; self.blocks = blocks; self.entities = entities
         self.textStyles = textStyles; self.linetypePatterns = linetypePatterns
         self.dimensionStyles = dimensionStyles
         self.leaderStyles = leaderStyles.isEmpty ? ["Standard": .standard] : leaderStyles
         self.views = views
         self.roundTripPayload = roundTripPayload
+        self.insBase = insBase
+        self.insUnits = insUnits
+        self.pendingXrefs = pendingXrefs
+        self.imageDefinitions = imageDefinitions
+        self.pdfDefinitions = pdfDefinitions
     }
 
     public init(layers: [Layer], blocks: [CADBlock], entities: [CADEntity],
@@ -408,6 +448,66 @@ public enum DXFImporter {
         let totalBlockEntities = reader.blocks.reduce(0) { $0 + $1.entities.count }
         print("[DXFImporter] Converting: \(entityCount) entities, \(blockCount) blocks (\(totalBlockEntities) sub-entities), \(reader.layers.count) layers")
 
+        // Referenced-media definitions (IMAGEDEF / PDFDEFINITION).
+        // Built before entity conversion so image instances can be
+        // retargeted from saved paths to definition names.
+        var mediaNamesUsed = Set<String>()
+        func uniqueMediaName(_ base: String) -> String {
+            let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
+            let stem = trimmed.isEmpty ? "Reference" : trimmed
+            var candidate = stem
+            var suffix = 1
+            while !mediaNamesUsed.insert(candidate.uppercased()).inserted {
+                suffix += 1
+                candidate = "\(stem)_\(suffix)"
+            }
+            return candidate
+        }
+        func mediaStem(_ path: String) -> String {
+            let component = path.replacingOccurrences(of: "\\", with: "/")
+                .split(separator: "/").last.map(String.init) ?? path
+            return (component as NSString).deletingPathExtension
+        }
+        var imageDefinitions: [CADImageDefinition] = []
+        var imageDefNameByHandle: [UInt32: String] = [:]
+        for def in reader.imagedefs where !def.name_p.isEmpty {
+            let base = reader.objectDictionaryNameByHandle[def.handle]
+                .flatMap { $0.isEmpty ? nil : $0 } ?? mediaStem(def.name_p)
+            let name = uniqueMediaName(base)
+            imageDefinitions.append(CADImageDefinition(
+                name: name, savedPath: def.name_p,
+                pixelWidth: Int(def.u.rounded()), pixelHeight: Int(def.v.rounded())))
+            if def.handle != 0 { imageDefNameByHandle[def.handle] = name }
+        }
+        var pdfDefinitions: [CADPdfDefinition] = []
+        var pdfDefNameByHandle: [UInt32: String] = [:]
+        for (handle, def) in reader.pdfDefinitions.sorted(by: { $0.key < $1.key })
+        where !def.filename.isEmpty {
+            let base = reader.objectDictionaryNameByHandle[handle]
+                .flatMap { $0.isEmpty ? nil : $0 } ?? mediaStem(def.filename)
+            let name = uniqueMediaName(base)
+            pdfDefinitions.append(CADPdfDefinition(
+                name: name, savedPath: def.filename,
+                pageNumber: Int(def.pageName) ?? 1))
+            pdfDefNameByHandle[handle] = name
+        }
+        // Retarget instances to definition names before conversion.
+        func retargetMedia(_ list: [DXFEntity]) {
+            for entity in list {
+                if let image = entity as? DXFImageEntity,
+                   let name = imageDefNameByHandle[image.ref] {
+                    image.imageFilePath = name
+                }
+                if let underlay = entity as? DXFUnderlayEntity,
+                   let name = pdfDefNameByHandle[underlay.ref] {
+                    underlay.definitionName = name
+                }
+                if let block = entity as? DXFBlockEntity { retargetMedia(block.entities) }
+            }
+        }
+        retargetMedia(reader.entities)
+        for block in reader.blocks { retargetMedia(block.entities) }
+
         // Guard against pathological data
         guard entityCount < 10_000_000 else {
             print("[DXFImporter] ERROR: \(entityCount) entities exceeds safety limit")
@@ -635,8 +735,25 @@ public enum DXFImporter {
 
         var blocks: [CADBlock] = []
         var blockByID: [UUID: CADBlock] = [:]
+        var pendingXrefs: [DXFPendingXref] = []
         for block in reader.blocks {
             guard let handle = blockNameToID[block.name] else { continue }
+            // External reference: definition only — geometry comes from
+            // the referenced file via the XrefLoader, never baked here.
+            if let descriptor = CADXrefDescriptor(dxfFlags: block.flags, xrefPath: block.xrefPath) {
+                let cadBlock = CADBlock(
+                    handle: handle,
+                    name: block.name,
+                    geometry: [],
+                    dxfFlags: block.flags,
+                    xrefDescriptor: descriptor)
+                blocks.append(cadBlock)
+                blockByID[handle] = cadBlock
+                pendingXrefs.append(DXFPendingXref(
+                    blockHandle: handle, blockName: block.name,
+                    savedPath: descriptor.savedPath, isOverlay: descriptor.isOverlay))
+                continue
+            }
             let styledGeometry = convertBlockGeometry(named: block.name)
             let cadBlock = CADBlock(
                 handle: handle,
@@ -1177,6 +1294,9 @@ public enum DXFImporter {
                             drawOrder: drawOrder,
                             localBoundingBox: arrayData.localBoundingBox(
                                 source: block.localBoundingBox))
+                        if let clipData = Self.spatialFilterClipData(for: insert, reader: reader) {
+                            CADClipMetadata.set(clipData, on: &cadEnt)
+                        }
                         cadEnt.drawOrder = drawOrder
                         converted.append(cadEnt)
                     } else {
@@ -1193,6 +1313,9 @@ public enum DXFImporter {
                                 globalLineTypeScale: globalLineTypeScale),
                             drawOrder: drawOrder,
                             localBoundingBox: block.localBoundingBox)
+                        if let clipData = Self.spatialFilterClipData(for: insert, reader: reader) {
+                            CADClipMetadata.set(clipData, on: &cadEnt)
+                        }
                         cadEnt.drawOrder = drawOrder
                         converted.append(cadEnt)
                     }
@@ -1289,6 +1412,18 @@ public enum DXFImporter {
                     xdata: Self.entityStyleXData(
                         from: entity,
                         globalLineTypeScale: globalLineTypeScale))
+                if let underlay = entity as? DXFUnderlayEntity {
+                    var params = CADPdfUnderlayParams()
+                    params.scaleX = underlay.scaleX
+                    params.scaleY = underlay.scaleY
+                    params.rotation = -underlay.rotationDeg * .pi / 180
+                    params.contrast = underlay.contrast
+                    params.fade = underlay.fade
+                    params.isOn = underlay.flags & 2 != 0
+                    params.monochrome = underlay.flags & 4 != 0
+                    CADPdfUnderlayMetadata.set(params, on: &cadEnt)
+                    cadEnt.xdata[CADClipMetadata.underlayTypeKey] = .string("PDF")
+                }
                 cadEnt.drawOrder = drawOrder
                 converted.append(cadEnt)
             }
@@ -1438,7 +1573,13 @@ public enum DXFImporter {
 
                 for viewport in viewports {
                     let projection = viewport.modelToPaperTransform
-                    for modelEntity in modelEntities where viewport.intersects(modelEntity) {
+                    // Xref INSERTs have empty import-time bounds and
+                    // would be culled forever; always project them and
+                    // let bounds resync fix them up after loading.
+                    let xrefBlockIDs = Set(pendingXrefs.map(\.blockHandle))
+                    for modelEntity in modelEntities
+                    where viewport.intersects(modelEntity)
+                        || (modelEntity.blockID.map { xrefBlockIDs.contains($0) } ?? false) {
                         let projectedDrawOrder = modelEntity.drawOrder == Int.max
                             ? Int.max
                             : modelEntity.drawOrder + 1
@@ -1510,7 +1651,15 @@ public enum DXFImporter {
                 tables: reader.rawTables,
                 objects: reader.rawObjects,
                 nativeEntities: reader.rawNativeEntities,
-                acdsData: reader.rawACDSData))
+                acdsData: reader.rawACDSData),
+            insBase: Vector3(
+                x: reader.header.insBase.x,
+                y: -reader.header.insBase.y,
+                z: reader.header.insBase.z),
+            insUnits: reader.header.insUnits,
+            pendingXrefs: pendingXrefs,
+            imageDefinitions: imageDefinitions,
+            pdfDefinitions: pdfDefinitions)
     }
 
     private static func arrayXData(
@@ -2318,6 +2467,88 @@ public enum DXFImporter {
     private static func cadPoint(_ point: Vector3, extrusion: Vector3?) -> Vector3 {
         guard let extrusion, !isDefaultExtrusion(extrusion) else { return cadPoint(point) }
         return cadPoint(ocsToWcs(point, extrusion: extrusion))
+    }
+
+    /// Resolve an INSERT's SPATIAL_FILTER (XCLIP) through its extension
+    /// dictionary into block-local clip data (internal coordinates).
+    /// Returns nil when the insert has no spatial filter. The standard
+    /// filter takes precedence over the zephyr xdata clip (callers
+    /// attach this last).
+    private static func spatialFilterClipData(
+        for insert: DXFInsertEntity, reader: DXFReader
+    ) -> CADClipData? {
+        // Extension dictionary handle from the {ACAD_XDICTIONARY} app block.
+        var extDictHandle: UInt32 = 0
+        for block in insert.appData {
+            guard let first = block.first, first.code == 102,
+                  (first.value as? String) == "ACAD_XDICTIONARY" else { continue }
+            for pair in block where pair.code == 360 {
+                if let hex = pair.value as? String {
+                    extDictHandle = UInt32(hex, radix: 16) ?? 0
+                }
+            }
+        }
+        guard extDictHandle != 0,
+              let filterDictHandle = reader.objectDictionaryEntries[extDictHandle]?["ACAD_FILTER"],
+              let filterHandle = reader.objectDictionaryEntries[filterDictHandle]?["SPATIAL"],
+              let filter = reader.spatialFilters[filterHandle],
+              filter.pointsOCS.count >= 2 else { return nil }
+
+        func toLocal(_ points: [Vector3]) -> [Vector3] {
+            var pts = points
+            if pts.count == 2 {
+                let a = pts[0], b = pts[1]
+                pts = [a, Vector3(x: b.x, y: a.y, z: a.z), b, Vector3(x: a.x, y: b.y, z: a.z)]
+            }
+            return pts.map { p in
+                let q: Vector3
+                if filter.inverseMatrix.count == 12 {
+                    let m = filter.inverseMatrix
+                    q = Vector3(
+                        x: m[0] * p.x + m[3] * p.y + m[6] * p.z + m[9],
+                        y: m[1] * p.x + m[4] * p.y + m[7] * p.z + m[10],
+                        z: m[2] * p.x + m[5] * p.y + m[8] * p.z + m[11])
+                } else {
+                    q = p
+                }
+                // DXF Y-up to Zephyr internal (Y-negated) local space.
+                return Vector3(x: q.x, y: -q.y, z: q.z)
+            }
+        }
+
+        // Inverted clips carry the original boundary in an
+        // ACAD_XREC_ROUNDTRIP XRECORD on the filter's own dictionary.
+        // Best-effort: collect its 10/20 point groups.
+        var isInverted = false
+        var boundaryOCS = filter.pointsOCS
+        if filter.extDictHandle != 0,
+           let xrecordHandle = reader.objectDictionaryEntries[filter.extDictHandle]?["ACAD_XREC_ROUNDTRIP"],
+           let groups = reader.xrecordGroups[xrecordHandle] {
+            var points: [Vector3] = []
+            var current: Vector3?
+            for group in groups {
+                if group.code == 10 {
+                    if let c = current { points.append(c) }
+                    current = Vector3(x: Double(group.value) ?? 0, y: 0, z: 0)
+                } else if group.code == 20 {
+                    current?.y = Double(group.value) ?? 0
+                }
+            }
+            if let c = current { points.append(c) }
+            if points.count >= 3 {
+                boundaryOCS = points
+                isInverted = true
+            }
+        }
+
+        let boundary = toLocal(boundaryOCS)
+        guard boundary.count >= 3 else { return nil }
+        return CADClipData(
+            boundary: boundary,
+            isEnabled: filter.enabled,
+            isInverted: isInverted,
+            frontDepth: filter.frontDistance,
+            backDepth: filter.backDistance)
     }
 
     private static func insertTransform(_ insert: DXFInsertEntity, blockBase: Vector3, column: Int = 0, row: Int = 0) -> Transform3D {

@@ -19,6 +19,48 @@ public enum CADRenderClipper {
         inverted: Bool
     ) -> [PrimitiveSpec] {
         guard polygon.count >= 3 else { return specs }
+        // Hoisted per-call clip data: triangulation (previously recomputed
+        // per fill triangle) and the AABB/convexity fast paths below, which
+        // are output-identical to the general path.
+        var clipTrianglesCache: [[SDL_FPoint]]? = nil
+        func clipTriangles() -> [[SDL_FPoint]] {
+            if let clipTrianglesCache { return clipTrianglesCache }
+            let value = triangulate(polygon)
+            clipTrianglesCache = value
+            return value
+        }
+        let polyMinX = polygon.map(\.x).min() ?? 0
+        let polyMaxX = polygon.map(\.x).max() ?? 0
+        let polyMinY = polygon.map(\.y).min() ?? 0
+        let polyMaxY = polygon.map(\.y).max() ?? 0
+        let polygonIsConvex = isConvex(polygon)
+        func fastClippedSegment(
+            _ a: SDL_FPoint, _ b: SDL_FPoint
+        ) -> [(SDL_FPoint, SDL_FPoint)] {
+            if max(a.x, b.x) < polyMinX || min(a.x, b.x) > polyMaxX
+                || max(a.y, b.y) < polyMinY || min(a.y, b.y) > polyMaxY {
+                return inverted ? [(a, b)] : []
+            }
+            if polygonIsConvex, contains(a, polygon: polygon),
+               contains(b, polygon: polygon),
+               contains(lerp(a, b, 0.5), polygon: polygon) {
+                return inverted ? [] : [(a, b)]
+            }
+            return clippedSegment(a, b, polygon: polygon, inverted: inverted)
+        }
+        func fastClipTriangle(_ triangle: [SDL_FPoint]) -> [[SDL_FPoint]] {
+            let triMinX = triangle.map(\.x).min() ?? 0
+            let triMaxX = triangle.map(\.x).max() ?? 0
+            let triMinY = triangle.map(\.y).min() ?? 0
+            let triMaxY = triangle.map(\.y).max() ?? 0
+            if triMaxX < polyMinX || triMinX > polyMaxX
+                || triMaxY < polyMinY || triMinY > polyMaxY {
+                return inverted ? [triangle] : []
+            }
+            return clipTriangle(
+                triangle, polygon: polygon, inverted: inverted,
+                clipTriangles: clipTriangles())
+        }
         var output: [PrimitiveSpec] = []
         for spec in specs {
             switch spec.type {
@@ -34,23 +76,21 @@ public enum CADRenderClipper {
                 if spec.isHatchLine {
                     var index = 0
                     while index + 1 < spec.points.count {
-                        for pair in clippedSegment(
-                            spec.points[index], spec.points[index + 1],
-                            polygon: polygon, inverted: inverted
-                        ) {
+                        for pair in fastClippedSegment(
+                            spec.points[index], spec.points[index + 1]) {
                             output.append(copy(spec, points: [pair.0, pair.1]))
                         }
                         index += 2
                     }
                 } else if spec.points.count >= 2 {
-                    for pair in clippedSegment(spec.points[0], spec.points[1], polygon: polygon, inverted: inverted) {
+                    for pair in fastClippedSegment(spec.points[0], spec.points[1]) {
                         output.append(copy(spec, points: [pair.0, pair.1]))
                     }
                 }
             case .lines:
                 guard spec.points.count >= 2 else { continue }
                 for i in 0..<(spec.points.count - 1) {
-                    for pair in clippedSegment(spec.points[i], spec.points[i + 1], polygon: polygon, inverted: inverted) {
+                    for pair in fastClippedSegment(spec.points[i], spec.points[i + 1]) {
                         output.append(copy(spec, type: .line, points: [pair.0, pair.1], corners: []))
                     }
                 }
@@ -58,7 +98,7 @@ public enum CADRenderClipper {
                 if spec.corners.count >= 3 {
                     let path = spec.corners + [spec.corners[0]]
                     for i in 0..<(path.count - 1) {
-                        for pair in clippedSegment(path[i], path[i + 1], polygon: polygon, inverted: inverted) {
+                        for pair in fastClippedSegment(path[i], path[i + 1]) {
                             output.append(copy(spec, type: .line, points: [pair.0, pair.1], corners: []))
                         }
                     }
@@ -72,7 +112,7 @@ public enum CADRenderClipper {
                             SDL_FPoint(x: rect.x, y: rect.y)
                         ]
                         for i in 0..<(path.count - 1) {
-                            for pair in clippedSegment(path[i], path[i + 1], polygon: polygon, inverted: inverted) {
+                            for pair in fastClippedSegment(path[i], path[i + 1]) {
                                 output.append(copy(spec, type: .line, points: [pair.0, pair.1], rects: [], corners: []))
                             }
                         }
@@ -80,7 +120,7 @@ public enum CADRenderClipper {
                 }
             case .fillRect, .fillRects:
                 for triangle in sourceTriangles(spec) {
-                    let clipped = clipTriangle(triangle, polygon: polygon, inverted: inverted)
+                    let clipped = fastClipTriangle(triangle)
                     for poly in clipped where poly.count >= 3 {
                         output.append(copy(spec, type: .fillRect, points: [], rects: [], corners: triangulateFan(poly)))
                     }
@@ -95,7 +135,7 @@ public enum CADRenderClipper {
                         SDL_FPoint(x: rect.x, y: rect.y)
                     ]
                     for i in 0..<(p.count - 1) {
-                        for pair in clippedSegment(p[i], p[i + 1], polygon: polygon, inverted: inverted) {
+                        for pair in fastClippedSegment(p[i], p[i + 1]) {
                             output.append(copy(spec, type: .line, points: [pair.0, pair.1], rects: [], corners: []))
                         }
                     }
@@ -112,9 +152,10 @@ public enum CADRenderClipper {
     ) -> [TexturedTriangle] {
         guard quad.count == 4 else { return [] }
         let source = [[quad[0], quad[1], quad[2]], [quad[0], quad[2], quad[3]]]
+        let tris = triangulate(polygon)
         var result: [TexturedTriangle] = []
         for triangle in source {
-            for poly in clipTriangle(triangle, polygon: polygon, inverted: inverted) where poly.count >= 3 {
+            for poly in clipTriangle(triangle, polygon: polygon, inverted: inverted, clipTriangles: tris) where poly.count >= 3 {
                 for i in 1..<(poly.count - 1) {
                     let points = [poly[0], poly[i], poly[i + 1]]
                     result.append(TexturedTriangle(
@@ -184,9 +225,9 @@ public enum CADRenderClipper {
     private static func clipTriangle(
         _ triangle: [SDL_FPoint],
         polygon: [SDL_FPoint],
-        inverted: Bool
+        inverted: Bool,
+        clipTriangles: [[SDL_FPoint]]
     ) -> [[SDL_FPoint]] {
-        let clipTriangles = triangulate(polygon)
         if inverted {
             var pieces = [triangle]
             for clipTriangle in clipTriangles {
@@ -333,6 +374,21 @@ public enum CADRenderClipper {
         guard abs(d) > 1e-8 else { return SDL_FPoint(x: 0, y: 0) }
         let q = SDL_FPoint(x: p.x - o.x, y: p.y - o.y)
         return SDL_FPoint(x: (q.x * v.y - q.y * v.x) / d, y: (u.x * q.y - u.y * q.x) / d)
+    }
+
+    private static func isConvex(_ p: [SDL_FPoint]) -> Bool {
+        guard p.count >= 3 else { return false }
+        var sign: Float = 0
+        for i in p.indices {
+            let a = p[i]
+            let b = p[(i + 1) % p.count]
+            let c = p[(i + 2) % p.count]
+            let cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x)
+            if abs(cross) <= 1e-9 { continue }
+            if sign == 0 { sign = cross }
+            else if (cross > 0) != (sign > 0) { return false }
+        }
+        return true
     }
 
     private static func signedArea(_ p: [SDL_FPoint]) -> Float {

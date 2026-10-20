@@ -80,6 +80,19 @@ public enum CADGripSystem {
                 continue
             }
 
+            // Xref instances: insertion-point grip only — content is
+            // read-only, so per-vertex grips (which would drag through
+            // updateBlockGeometryLive) are never offered.
+            if let bid = entity.blockID, document.block(for: bid)?.isXref == true {
+                let origin = entity.transform.transformPoint(.zero)
+                let screen = EngineCameraManager.worldToScreen(
+                    worldX: origin.x, worldY: origin.y, cam: cam)
+                results.append(CADSelectionManager.CadGripInfo(
+                    handle: handle, grip: .center,
+                    screenPos: screen, worldPos: origin))
+                continue
+            }
+
             if let array = entity.arrayData, array.kind == .rectangular {
                 results.append(contentsOf: rectangularArrayGrips(
                     for: handle, entity: entity, array: array, cam: cam))

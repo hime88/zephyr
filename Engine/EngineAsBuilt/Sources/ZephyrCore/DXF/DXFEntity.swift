@@ -193,6 +193,9 @@ public enum DXFEType: String, Sendable {
     case lWPOLYLINE    = "LWPOLYLINE"
     case mLINE         = "MLINE"
     case mTEXT         = "MTEXT"
+    case pDFUNDERLAY   = "PDFUNDERLAY"
+    case dWFUNDERLAY   = "DWFUNDERLAY"
+    case dGNUNDERLAY   = "DGNUNDERLAY"
     case pOINT         = "POINT"
     case pOLYLINE      = "POLYLINE"
     case rEGION        = "REGION"
@@ -544,12 +547,54 @@ public class DXF3DFaceEntity: DXFTraceEntity {
 public class DXFBlockEntity: DXFPointEntity {
     public var name: String    // 2
     public var flags: Int      // 70
+    public var xrefPath: String  // 1 (external reference path; "" when internal)
     public var entities: [DXFEntity] = []
 
     public override init(eType: DXFEType = .bLOCK) {
         self.name = ""
         self.flags = 0
+        self.xrefPath = ""
         super.init(eType: eType)
+    }
+}
+
+/// Parsed SPATIAL_FILTER object (XCLIP definition). Points are the raw
+/// group-10/20 boundary in the filter's OCS (XREF scale 1); matrix
+/// values are the 24 group-40 values in file order (first 12 = inverse
+/// insert transform, column-major 4x3; last 12 = transform matrix).
+public struct DXFSpatialFilterEntry: Sendable {
+    public var handle: UInt32 = 0
+    public var pointsOCS: [Vector3] = []
+    public var enabled: Bool = true
+    public var frontDistance: Double?
+    public var backDistance: Double?
+    public var inverseMatrix: [Double] = []
+    public var transformMatrix: [Double] = []
+    /// Handle of the filter's own extension dictionary (roundtrip data).
+    public var extDictHandle: UInt32 = 0
+    public init() {}
+}
+
+/// Clip payload the writer emits as a SPATIAL_FILTER object graph.
+public struct DXFSpatialFilterData: Sendable {
+    public var pointsOCS: [Vector3]
+    public var enabled: Bool
+    public var frontDistance: Double?
+    public var backDistance: Double?
+    public var inverseMatrix: [Double]
+    public var transformMatrix: [Double]
+
+    public init(
+        pointsOCS: [Vector3], enabled: Bool,
+        frontDistance: Double? = nil, backDistance: Double? = nil,
+        inverseMatrix: [Double], transformMatrix: [Double]
+    ) {
+        self.pointsOCS = pointsOCS
+        self.enabled = enabled
+        self.frontDistance = frontDistance
+        self.backDistance = backDistance
+        self.inverseMatrix = inverseMatrix
+        self.transformMatrix = transformMatrix
     }
 }
 
@@ -567,6 +612,8 @@ public class DXFInsertEntity: DXFPointEntity {
     public var rowSpace: Double // 45
     public var attributesFollow: Bool // 66
     public var attributes: [DXFTextEntity]
+    /// Clip definition to emit as a SPATIAL_FILTER object graph (write side).
+    public var spatialFilter: DXFSpatialFilterData?
 
     public override init(eType: DXFEType = .iNSERT) {
         self.name = ""
@@ -930,6 +977,11 @@ public class DXFImageEntity: DXFLineEntity {
     public var brightness: Int         // 281
     public var contrast: Int           // 282
     public var fade: Int               // 283
+    /// Clipping boundary vertices (14,24), image coordinates.
+    public var clipBoundary: [Vector3] = []
+    /// IMAGEDEF dictionary key to emit (definition name). Empty =
+    /// derive from the file path (legacy behavior).
+    public var definitionName: String = ""
 
     public override init(eType: DXFEType = .iMAGE) {
         self.ref = 0
@@ -942,6 +994,54 @@ public class DXFImageEntity: DXFLineEntity {
         self.brightness = 50
         self.contrast = 50
         self.fade = 0
+        super.init(eType: eType)
+    }
+}
+
+/// Parsed PDFDEFINITION object (OBJECTS section).
+public struct DXFPdfDefinitionEntry: Sendable {
+    public var handle: UInt32 = 0
+    /// Group 1: saved file path.
+    public var filename: String = ""
+    /// Group 2: page number as string ("1", "2", …).
+    public var pageName: String = ""
+    public init() {}
+}
+
+/// Write-side PDF underlay payload (definition + instance data).
+public struct DXFUnderlayWriteData: Sendable {
+    public var filename: String
+    public var pageName: String
+    public var dictionaryKey: String
+    public init(filename: String, pageName: String, dictionaryKey: String) {
+        self.filename = filename
+        self.pageName = pageName
+        self.dictionaryKey = dictionaryKey
+    }
+}
+
+// MARK: - Underlay (PDFUNDERLAY / DWFUNDERLAY / DGNUNDERLAY)
+
+open class DXFUnderlayEntity: DXFEntity {
+    public var ref: UInt32 = 0            // 340 definition handle
+    public var basePoint = Vector3.zero   // 10,20,30 insertion (OCS)
+    public var scaleX: Double = 1         // 41
+    public var scaleY: Double = 1         // 42
+    public var scaleZ: Double = 1         // 43
+    public var rotationDeg: Double = 0    // 50
+    public var flags: Int = 2             // 280 (1 clip, 2 on, 4 mono, 8 adjust)
+    public var contrast: Int = 100        // 281
+    public var fade: Int = 0              // 282
+    /// Boundary points (11,21) in OCS, unscaled. 2 = rectangle.
+    public var boundary: [Vector3] = []
+    /// Resolved from the definition object by the reader.
+    public var definitionName: String = ""
+    public var filePath: String = ""
+    public var pageName: String = ""
+    /// Definition payload to emit on write (set by the bridge).
+    public var writeData: DXFUnderlayWriteData?
+
+    public override init(eType: DXFEType = .pDFUNDERLAY) {
         super.init(eType: eType)
     }
 }

@@ -70,6 +70,10 @@ public enum DXFEntityConverter {
             return convertMLeader(e, color: primColor)
         case .iMAGE:
             return convertImage(e, color: primColor)
+        case .pDFUNDERLAY:
+            return convertUnderlay(e)
+        case .dWFUNDERLAY, .dGNUNDERLAY:
+            return []  // unsupported underlay kinds (no renderer)
         case .xLINE:
             guard let x = e as? DXFXLineEntity else { return [] }
             let base = yflip(x.basePoint); let dir = yflip(x.secPoint)
@@ -1869,11 +1873,74 @@ public enum DXFEntityConverter {
     private static func convertImage(_ e: DXFEntity, color: ColorRGBA?) -> [CADPrimitive] {
         guard let img = e as? DXFImageEntity else { return [] }
         let ins = yflip(img.basePoint)
-        let u = yflip(img.secPoint) * (img.sizeU > 0 ? img.sizeU : 1.0)
-        let v = yflip(img.vVector) * (img.sizeV > 0 ? img.sizeV : 1.0)
+        let uPerPixel = yflip(img.secPoint)
+        let vPerPixel = yflip(img.vVector)
+        let u = uPerPixel * (img.sizeU > 0 ? img.sizeU : 1.0)
+        let v = vPerPixel * (img.sizeV > 0 ? img.sizeV : 1.0)
         let imageName = !img.imageFilePath.isEmpty ? img.imageFilePath : String(format: "%X", img.ref)
+        // Clip boundary is in pixel coordinates; map into local space.
+        var clipBoundary: [Vector3]? = nil
+        if img.clip != 0, img.clipBoundary.count >= 2 {
+            var points = img.clipBoundary
+            if points.count == 2 {
+                let a = points[0], b = points[1]
+                points = [a, Vector3(x: b.x, y: a.y, z: 0), b, Vector3(x: a.x, y: b.y, z: 0)]
+            }
+            clipBoundary = points.map { p in
+                Vector3(
+                    x: ins.x + uPerPixel.x * p.x + vPerPixel.x * p.y,
+                    y: ins.y + uPerPixel.y * p.x + vPerPixel.y * p.y,
+                    z: ins.z)
+            }
+        }
         return [.image(insertion: ins, uAxis: u, vAxis: v,
-                      imageName: imageName, clipBoundary: nil, tint: nil)]
+                      imageName: imageName, clipBoundary: clipBoundary, tint: nil)]
+    }
+
+    /// PDFUNDERLAY → image primitive over the referenced page. Page
+    /// size is unknown until the loader opens the file, so axes start
+    /// at the placeholder page size and are resynced on load.
+    private static func convertUnderlay(_ e: DXFEntity) -> [CADPrimitive] {
+        guard let u = e as? DXFUnderlayEntity, !u.definitionName.isEmpty else { return [] }
+        let params = CADPdfUnderlayParams()
+        let axes = Self.underlayAxes(
+            scaleX: u.scaleX, scaleY: u.scaleY, rotationDeg: u.rotationDeg,
+            pageWidth: params.pageWidthPoints, pageHeight: params.pageHeightPoints)
+        let ins = yflip(u.basePoint)
+        var clipBoundary: [Vector3]? = nil
+        if u.flags & 1 != 0, u.boundary.count >= 2 {
+            var points = u.boundary
+            if points.count == 2 {
+                let a = points[0], b = points[1]
+                points = [a, Vector3(x: b.x, y: a.y, z: 0), b, Vector3(x: a.x, y: b.y, z: 0)]
+            }
+            // Boundary is OCS-unscaled relative to insertion: apply
+            // scale + rotation in DXF space, then flip into internal.
+            let rad = u.rotationDeg * .pi / 180
+            let cosr = cos(rad), sinr = sin(rad)
+            clipBoundary = points.map { p in
+                let sx = p.x * u.scaleX, sy = p.y * u.scaleY
+                let dxf = Vector3(
+                    x: u.basePoint.x + sx * cosr - sy * sinr,
+                    y: u.basePoint.y + sx * sinr + sy * cosr,
+                    z: u.basePoint.z)
+                return yflip(dxf)
+            }
+        }
+        return [.image(insertion: ins, uAxis: axes.u, vAxis: axes.v,
+                      imageName: u.definitionName, clipBoundary: clipBoundary, tint: nil)]
+    }
+
+    /// Internal-space U/V axes for an underlay instance.
+    public static func underlayAxes(
+        scaleX: Double, scaleY: Double, rotationDeg: Double,
+        pageWidth: Double, pageHeight: Double
+    ) -> (u: Vector3, v: Vector3) {
+        let rad = rotationDeg * .pi / 180
+        let cosr = cos(rad), sinr = sin(rad)
+        let uDXF = Vector3(x: pageWidth * scaleX * cosr, y: pageWidth * scaleX * sinr, z: 0)
+        let vDXF = Vector3(x: -pageHeight * scaleY * sinr, y: pageHeight * scaleY * cosr, z: 0)
+        return (yflip(uDXF), yflip(vDXF))
     }
 
     // MARK: - Helpers

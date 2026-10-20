@@ -137,6 +137,12 @@ public struct DocumentTab {
     /// Runtime UI state only — never persisted to disk.
     public var isFloated: Bool = false
 
+    /// External-reference runtime state shared by all view documents.
+    public let xrefStore = XrefRuntimeStore()
+
+    /// Referenced-media (image/PDF underlay) runtime state.
+    public let mediaStore = MediaReferenceStore()
+
     public init(document: CADDocument = CADDocument(),
                 fileURL: URL? = nil,
                 displayName: String = "Untitled",
@@ -165,6 +171,10 @@ public struct DocumentTab {
         self.editingBlockID = editingBlockID
         self.parentDocument = parentDocument
         self.isFloated = isFloated
+        for view in self.drawingViews {
+            view.document.xrefRuntimeStore = xrefStore
+            view.document.mediaRuntimeStore = mediaStore
+        }
     }
 
     /// True when any model or layout view in this tab has unsaved changes.
@@ -184,7 +194,8 @@ public struct DocumentTab {
                 viewName: view.name,
                 viewKind: view.kind,
                 cameraState: view.cameraState,
-                dxfRoundTripPayloadFallback: payload
+                dxfRoundTripPayloadFallback: payload,
+                sourceFolderPath: fileURL?.deletingLastPathComponent().path
             )
         }
         return SaveTabSnapshot(
@@ -375,6 +386,7 @@ public final class TabManager {
 
         let tab = DocumentTab(document: doc, fileURL: nil, displayName: "Untitled")
         tabs.append(tab)
+        kickXrefLoads(for: tab)
         let idx = tabs.count - 1
         switchToTab(at: idx)
         return idx
@@ -417,6 +429,8 @@ public final class TabManager {
                     entities: view.entities
                 )
                 doc.textStyles = imported.textStyles
+                doc.importMediaDefinitions(
+                    image: imported.imageDefinitions, pdf: imported.pdfDefinitions)
                 doc.linetypePatterns = imported.linetypePatterns
                 doc.dimensionStyles = imported.dimensionStyles
                 doc.leaderStyles = imported.leaderStyles
@@ -440,6 +454,7 @@ public final class TabManager {
                 drawingViews: drawingViews
             )
             tabs.append(tab)
+        kickXrefLoads(for: tab)
             let idx = tabs.count - 1
             switchToTab(at: idx)
             return idx
@@ -460,6 +475,8 @@ public final class TabManager {
                 entities: view.entities
             )
             doc.textStyles = imported.textStyles
+            doc.importMediaDefinitions(
+                image: imported.imageDefinitions, pdf: imported.pdfDefinitions)
             doc.linetypePatterns = imported.linetypePatterns
             doc.dimensionStyles = imported.dimensionStyles
             doc.leaderStyles = imported.leaderStyles
@@ -484,6 +501,7 @@ public final class TabManager {
             drawingViews: drawingViews
         )
         tabs.append(tab)
+        kickXrefLoads(for: tab)
         let idx = tabs.count - 1
         switchToTab(at: idx)
         return idx
@@ -626,6 +644,31 @@ public final class TabManager {
     /// Switch to the tab at the given index.
     /// Saves the engine's current camera state to the departing tab, then restores
     /// the incoming tab's camera state before firing `onActiveTabChanged`.
+    /// Start loading any not-yet-attempted xrefs in a tab (called once
+    /// when the tab is created; later switches are no-ops for these).
+    public func kickXrefLoads(for tab: DocumentTab) {
+        let settings = UserSettings.load()
+        tab.xrefStore.apply(settings: settings)
+        let documents = tab.drawingViews.map(\.document)
+        for doc in documents { doc.xrefFadePercent = settings.xrefFadePercent }
+        // Keep the shared store wired even if a view document was swapped.
+        for doc in documents where doc.xrefRuntimeStore !== tab.xrefStore {
+            doc.xrefRuntimeStore = tab.xrefStore
+        }
+        for doc in documents where doc.mediaRuntimeStore !== tab.mediaStore {
+            doc.mediaRuntimeStore = tab.mediaStore
+        }
+        XrefLoader.loadAllPending(
+            store: tab.xrefStore,
+            documents: documents,
+            hostFolder: tab.fileURL?.deletingLastPathComponent().path)
+        tab.mediaStore.apply(settings: settings)
+        MediaLoader.loadAllPending(
+            store: tab.mediaStore,
+            documents: documents,
+            hostFolder: tab.fileURL?.deletingLastPathComponent().path)
+    }
+
     public func switchToTab(at index: Int) {
         guard index >= 0, index < tabs.count, index != activeIndex else { return }
         // Save camera + selection state to departing tab
@@ -1062,6 +1105,10 @@ public final class TabManager {
         guard var tab = activeTab else { return }
         guard tab.editingBlockID == nil else { return }
         guard let block = tab.document.block(for: blockID) else { return }
+        guard !block.isXref else {
+            print("[Xref] '\(block.name)' is an external reference — open the source file to edit it, or Bind it first.")
+            return
+        }
 
         let tempDoc = CADDocument()
         let layers = tab.document.allLayers
@@ -1198,6 +1245,7 @@ public final class TabManager {
             let bg = getBackgroundColor?()
             try PDFExporter.export(document: tab.document, to: url, backgroundColor: bg)
         } else if ext == "dwg" {
+            warnAboutDXFXrefTargets(tab: tab, url: url)
             // Save as DXF to temp, then convert to DWG via ODA FileConverter.
             guard ODADWGConverter.isAvailable else {
                 throw ODADWGConvertError.converterNotFound
@@ -1290,12 +1338,33 @@ public final class TabManager {
 
     // MARK: - Save Implementation
 
+    /// AutoCAD only displays DWG external references. When saving a
+    /// host as DWG whose xrefs point at DXF files, warn — the
+    /// references stay intact for Zephyr but will not resolve in
+    /// AutoCAD until the targets are converted to DWG.
+    private func warnAboutDXFXrefTargets(tab: DocumentTab, url: URL) {
+        guard url.pathExtension.lowercased() == "dwg" else { return }
+        var seen = Set<String>()
+        var names: [String] = []
+        for view in tab.drawingViews {
+            for block in view.document.allBlocks {
+                guard let descriptor = block.xrefDescriptor,
+                      descriptor.savedPath.lowercased().hasSuffix(".dxf"),
+                      seen.insert(block.name.uppercased()).inserted else { continue }
+                names.append(block.name)
+            }
+        }
+        guard !names.isEmpty else { return }
+        print("[Xref] Saving as DWG: xref(s) \(names.joined(separator: ", ")) reference DXF files. AutoCAD only resolves DWG xrefs — convert the target files to DWG for AutoCAD compatibility.")
+    }
+
     private func startSave(
         tab: DocumentTab,
         to url: URL,
         isAutosave: Bool,
         dxfVersion: DXFVersion
     ) {
+        if !isAutosave { warnAboutDXFXrefTargets(tab: tab, url: url) }
         let saveID = UUID()
         cancelSave(for: tab.id, reason: .restart)
         let snapshot = tab.buildSaveSnapshot()
@@ -1500,6 +1569,12 @@ public final class TabManager {
                         tabs[idx].drawingViews[viewIndex].document.markSaved(upTo: revision)
                         tabs[idx].drawingViews[viewIndex].document.markNeedsRegeneration()
                     }
+                    // The host may have moved (SaveAs): unresolved
+                    // relative xref paths get another chance.
+                    XrefLoader.retryUnresolved(
+                        store: tabs[idx].xrefStore,
+                        documents: tabs[idx].drawingViews.map(\.document),
+                        hostFolder: targetURL.deletingLastPathComponent().path)
                 }
             }
             saveStateByTabID.removeValue(forKey: tabID)
@@ -1545,6 +1620,7 @@ public final class TabManager {
             drawingViews: views
         )
         tabs.append(tab)
+        kickXrefLoads(for: tab)
         let newIndex = tabs.count - 1
         switchToTab(at: newIndex)
         return newIndex

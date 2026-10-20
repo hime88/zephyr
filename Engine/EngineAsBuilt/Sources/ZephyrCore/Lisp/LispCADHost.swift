@@ -439,15 +439,19 @@ final class LispCADHost: LispHost, @unchecked Sendable {
     }
 
     private func blockEntry(_ block: CADBlock) -> LispValue {
-        LispEntityAdapter.lispList([
+        var groups: [LispValue] = [
             LispEntityAdapter.dotted(.int(0), .string("BLOCK")),
             LispEntityAdapter.dotted(.int(2), .string(block.name)),
-            LispEntityAdapter.dotted(.int(70), .int(block.dxfFlags)),
+            LispEntityAdapter.dotted(.int(70), .int(block.effectiveDXFFlags)),
             // Blocks carry no base point in this model: origin.
             LispEntityAdapter.dotted(
                 .int(10),
                 LispEntityAdapter.pointValue(Vector3(x: 0, y: 0, z: 0))),
-        ])
+        ]
+        if let descriptor = block.xrefDescriptor {
+            groups.append(LispEntityAdapter.dotted(.int(1), .string(descriptor.savedPath)))
+        }
+        return LispEntityAdapter.lispList(groups)
     }
 
     func tableNext(_ table: String, rewind: Bool) async throws -> LispValue? {
