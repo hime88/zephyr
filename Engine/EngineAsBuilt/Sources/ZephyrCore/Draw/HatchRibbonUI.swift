@@ -19,6 +19,7 @@ public struct HatchRibbonUI {
         public var backgroundColor: ColorRGBA? = nil
         public var secondaryColor: ColorRGBA? = nil
         public var selectionMode: Int32 = 0  // 0=PickPoints, 1=SelectBoundary
+        public var islandStyle: Int32 = 0    // 0=Normal, 1=Outer, 2=Ignore
         public var showModeSection: Bool = true  // hidden during edit mode
         public var applyClicked: Bool = false
         public var closeRequested: Bool = false
@@ -26,7 +27,7 @@ public struct HatchRibbonUI {
 
         public init(fillType: Int32, patternName: String, gradientName: String = "LINEAR", scale: Float, angle: Float,
                     primaryColor: ColorRGBA?, backgroundColor: ColorRGBA?,
-                    secondaryColor: ColorRGBA?, selectionMode: Int32, showModeSection: Bool,
+                    secondaryColor: ColorRGBA?, selectionMode: Int32, islandStyle: Int32 = 0, showModeSection: Bool,
                     applyClicked: Bool = false, closeRequested: Bool = false, associative: Bool = true) {
             self.fillType = fillType
             self.patternName = patternName
@@ -37,6 +38,7 @@ public struct HatchRibbonUI {
             self.backgroundColor = backgroundColor
             self.secondaryColor = secondaryColor
             self.selectionMode = selectionMode
+            self.islandStyle = islandStyle
             self.showModeSection = showModeSection
             self.applyClicked = applyClicked
             self.closeRequested = closeRequested
@@ -45,6 +47,7 @@ public struct HatchRibbonUI {
     }
 
     public static var activeColorPopup: Int = 0  // 0=none, 1=primary, 2=background, 3=secondary
+    public static var lastUsedBackgroundColor: ColorRGBA = ColorRGBA(r: 200, g: 200, b: 200, a: 255)
     private static var patternSearchText = ""
 
     // MARK: - Public render entry point
@@ -105,7 +108,6 @@ public struct HatchRibbonUI {
         }
 
         let dl = igGetWindowDrawList()
-        let activeBg = engine.ui.theme.activeBg
         let contentW = ImGuiGetContentRegionAvail().x
 
         // --- Custom Header ---
@@ -143,39 +145,55 @@ public struct HatchRibbonUI {
         for (idx, tab) in fillTypeTabs.enumerated() {
             if idx > 0 { ImGuiSameLine(0, itemGap) }
             let isSelected = settings.fillType == Int32(tab.value)
-            
-            if isSelected {
-                ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), activeBg)
-            }
-            
-            if igButton(tab.label, ImVec2(x: segW, y: controlH)) {
+            if renderSegmentButton(
+                label: tab.label,
+                isSelected: isSelected,
+                size: ImVec2(x: segW, y: controlH),
+                engine: engine) {
                 settings.fillType = Int32(tab.value)
-            }
-            
-            if isSelected {
-                ImGuiPopStyleColor(1)
             }
         }
         
         ImGuiDummy(ImVec2(x: 0, y: 12.0 * uiScale))
 
         // --- Preview Area ---
-        let previewH: Float = 100.0 * uiScale
+        let previewH: Float = 84.0 * uiScale
         let pScreenPos = igGetCursorScreenPos()
         let pMin = ImVec2(x: pScreenPos.x, y: pScreenPos.y)
         let pMax = ImVec2(x: pMin.x + contentW, y: pMin.y + previewH)
         
-        let bgCol = settings.backgroundColor ?? ColorRGBA(r: 255, g: 255, b: 255, a: 255)
-        let bgU32 = makeCol32(bgCol.r, bgCol.g, bgCol.b, bgCol.a)
+
+
         
         if settings.fillType == 2 {
             let c1 = settings.primaryColor ?? ColorRGBA(r: 255, g: 255, b: 255, a: 255)
             let c1U32 = makeCol32(c1.r, c1.g, c1.b, c1.a)
-            ImDrawListAddRectFilled(dl, pMin, pMax, c1U32, 8.0 * uiScale, 0)
+            let c2 = settings.secondaryColor ?? ColorRGBA(
+                r: UInt8(min(255, Int(c1.r) + 60)),
+                g: UInt8(min(255, Int(c1.g) + 60)),
+                b: UInt8(min(255, Int(c1.b) + 60)),
+                a: c1.a)
+            let c2U32 = makeCol32(c2.r, c2.g, c2.b, c2.a)
+            ImDrawListAddRectFilledMultiColor(dl, pMin, pMax, c1U32, c2U32, c2U32, c1U32)
         } else {
-            ImDrawListAddRectFilled(dl, pMin, pMax, bgU32, 8.0 * uiScale, 0)
-            let fgCol = settings.primaryColor ?? ColorRGBA(r: 100, g: 100, b: 100, a: 255)
-            let fgU32 = makeCol32(fgCol.r, fgCol.g, fgCol.b, fgCol.a)
+            let previewBgU32: UInt32 = {
+                if settings.fillType == 0, let bg = settings.backgroundColor {
+                    return makeCol32(bg.r, bg.g, bg.b, bg.a)
+                }
+                return makeCol32(24, 26, 32, 255)
+            }()
+            ImDrawListAddRectFilled(dl, pMin, pMax, previewBgU32, 8.0 * uiScale, 0)
+
+            let fgU32: UInt32 = {
+                if let c = settings.primaryColor {
+                    return makeCol32(c.r, c.g, c.b, c.a)
+                }
+                if let bg = settings.backgroundColor {
+                    let lum = 0.299 * Double(bg.r) + 0.587 * Double(bg.g) + 0.114 * Double(bg.b)
+                    return lum > 140 ? makeCol32(20, 20, 20, 255) : makeCol32(240, 240, 240, 255)
+                }
+                return makeCol32(220, 220, 220, 255)
+            }()
             
             if settings.fillType == 0 {
                 renderPatternPreview(
@@ -187,7 +205,8 @@ public struct HatchRibbonUI {
                     uiScale: uiScale,
                     drawList: dl)
             } else if settings.fillType == 1 {
-                ImDrawListAddRectFilled(dl, pMin, pMax, fgU32, 8.0 * uiScale, 0)
+                let solidU32 = settings.primaryColor != nil ? fgU32 : makeCol32(220, 220, 220, 255)
+                ImDrawListAddRectFilled(dl, pMin, pMax, solidU32, 8.0 * uiScale, 0)
             }
         }
         ImDrawListAddRect(dl, pMin, pMax, makeCol32(255, 255, 255, 40), 8.0 * uiScale, 1.0 * uiScale, 0)
@@ -230,14 +249,20 @@ public struct HatchRibbonUI {
                 var hasBg = settings.backgroundColor != nil
                 if igCheckbox("Background color", &hasBg) {
                     if hasBg {
-                        settings.backgroundColor = ColorRGBA(r: 200, g: 200, b: 200, a: 255)
+                        settings.backgroundColor = lastUsedBackgroundColor
                     } else {
+                        if let current = settings.backgroundColor {
+                            lastUsedBackgroundColor = current
+                        }
                         settings.backgroundColor = nil
                     }
                 }
                 if hasBg {
                     ImGuiDummy(ImVec2(x: 0, y: 4.0 * uiScale))
                     renderColorPresetRow(id: 2, currentColor: &settings.backgroundColor, engine: engine)
+                    if let current = settings.backgroundColor {
+                        lastUsedBackgroundColor = current
+                    }
                 }
             }
         } else if settings.fillType == 2 {
@@ -299,6 +324,28 @@ public struct HatchRibbonUI {
         if igCheckbox("Associative boundary", &assoc) {
             settings.associative = assoc
         }
+
+        // Island Detection Style (Normal / Outer / Ignore)
+        ImGuiDummy(ImVec2(x: 0, y: 10.0 * uiScale))
+        ImGuiTextV("Island detection")
+        let islandTabs = [
+            (label: "Normal", value: 0, tooltip: "Normal: Hatches inward from outer boundary, alternating islands"),
+            (label: "Outer", value: 1, tooltip: "Outer: Hatches from outer boundary to first island only"),
+            (label: "Ignore", value: 2, tooltip: "Ignore: Hatches through all internal islands")
+        ]
+        let islandSegW = max(48.0 * uiScale, (contentW - itemGap * 2.0) / 3.0)
+        for (idx, tab) in islandTabs.enumerated() {
+            if idx > 0 { ImGuiSameLine(0, itemGap) }
+            let isSelected = settings.islandStyle == Int32(tab.value)
+            if renderSegmentButton(
+                label: tab.label + "##IslandStyle",
+                isSelected: isSelected,
+                size: ImVec2(x: islandSegW, y: controlH),
+                engine: engine,
+                tooltip: tab.tooltip) {
+                settings.islandStyle = Int32(tab.value)
+            }
+        }
         
         // Creation Actions
         if settings.showModeSection {
@@ -306,19 +353,21 @@ public struct HatchRibbonUI {
             
             // Pick / Boundary segmented
             let selW = max(80.0 * uiScale, (contentW - itemGap) / 2.0)
-            if settings.selectionMode == 0 {
-                ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), engine.ui.theme.activeBg)
+            if renderSegmentButton(
+                label: "+ Pick Points",
+                isSelected: settings.selectionMode == 0,
+                size: ImVec2(x: selW, y: controlH),
+                engine: engine) {
+                settings.selectionMode = 0
             }
-            if igButton("+ Pick Points", ImVec2(x: selW, y: controlH)) { settings.selectionMode = 0 }
-            if settings.selectionMode == 0 { ImGuiPopStyleColor(1) }
-            
             ImGuiSameLine(0, itemGap)
-            
-            if settings.selectionMode == 1 {
-                ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), engine.ui.theme.activeBg)
+            if renderSegmentButton(
+                label: "* Boundary",
+                isSelected: settings.selectionMode == 1,
+                size: ImVec2(x: selW, y: controlH),
+                engine: engine) {
+                settings.selectionMode = 1
             }
-            if igButton("* Boundary", ImVec2(x: selW, y: controlH)) { settings.selectionMode = 1 }
-            if settings.selectionMode == 1 { ImGuiPopStyleColor(1) }
             
             ImGuiDummy(ImVec2(x: 0, y: 12.0 * uiScale))
             
@@ -382,7 +431,7 @@ public struct HatchRibbonUI {
         }
 
         ImGuiDummy(ImVec2(x: 0, y: 6.0 * uiScale))
-        let listHeight = min(220.0 * uiScale, max(110.0 * uiScale, ImGuiGetTextLineHeightWithSpacing() * 7.0))
+        let listHeight = min(150.0 * uiScale, max(96.0 * uiScale, ImGuiGetTextLineHeightWithSpacing() * 5.0))
         if igBeginChild_Str(
             "##HatchPatternResults",
             ImVec2(x: contentWidth, y: listHeight),
@@ -531,6 +580,50 @@ public struct HatchRibbonUI {
             }
             igEndPopup()
         }
+    }
+
+    private static func renderSegmentButton(
+        label: String,
+        isSelected: Bool,
+        size: ImVec2,
+        engine: PhrostEngine,
+        tooltip: String? = nil
+    ) -> Bool {
+        let gold = engine.ui.theme.brandGold
+        let goldHover = engine.ui.theme.brandGoldHover
+        let goldActive = engine.ui.theme.brandGoldActive
+        let darkText = engine.ui.theme.rowHoverText
+
+        if isSelected {
+            ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), gold)
+            ImGuiPushStyleColor(Int32(ImGuiCol_ButtonHovered.rawValue), goldHover)
+            ImGuiPushStyleColor(Int32(ImGuiCol_ButtonActive.rawValue), goldActive)
+            ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), darkText)
+        } else {
+            ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), makeCol32(24, 46, 66, 220))
+            ImGuiPushStyleColor(Int32(ImGuiCol_ButtonHovered.rawValue), makeCol32(40, 72, 100, 255))
+            ImGuiPushStyleColor(Int32(ImGuiCol_ButtonActive.rawValue), makeCol32(30, 58, 82, 255))
+            ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textDim)
+        }
+
+        let clicked = igButton(label, size)
+        ImGuiPopStyleColor(4)
+
+        if isSelected {
+            let rMin = igGetItemRectMin()
+            let rMax = igGetItemRectMax()
+            let dl = igGetWindowDrawList()
+            let borderCol = makeCol32(255, 255, 255, 180)
+            ImDrawListAddRect(dl, rMin, rMax, borderCol, 4.0 * max(0.75, engine.effectiveUiScale), 1.0, 0)
+        }
+
+        if let tooltip, ImGuiIsItemHovered(0) {
+            ImGuiBeginTooltip()
+            ImGuiTextV(tooltip)
+            ImGuiEndTooltip()
+        }
+
+        return clicked
     }
 }
 

@@ -45,9 +45,15 @@ public final class HatchCommand: FeatureCommand {
     private var backgroundColor: ColorRGBA? = nil    // nil = None
     private var secondaryColor: ColorRGBA? = nil     // for gradients
     private var selectionMode: HatchSelectionMode = .pickPoints
+    private var islandStyle: Int32 = 0
     private var lastCreatedHatchHandle: UUID?
 
     public init() {}
+
+    internal var currentBackgroundColor: ColorRGBA? { backgroundColor }
+    internal var currentFillType: Int32 { fillType }
+    internal var currentIslandStyle: Int32 { islandStyle }
+    internal var currentPatternName: String { patternName }
 
     // MARK: - FeatureCommand conformance
 
@@ -56,11 +62,96 @@ public final class HatchCommand: FeatureCommand {
         currentMouseWorldX = 0
         currentMouseWorldY = 0
         lastCreatedHatchHandle = nil
+
+        if let handle = engine.cadSelection.lastSelectedHandle,
+           let entity = engine.document.entity(for: handle) {
+            initFromEntity(entity)
+            lastCreatedHatchHandle = handle
+        }
+
         processor.commandPrompt = "HATCH: Click inside an enclosed area to fill (Esc to cancel)."
     }
 
     public func cancel(engine: PhrostEngine, processor: CADCommandProcessor) {
+        if let handle = engine.cadSelection.lastSelectedHandle,
+           let entity = engine.document.entity(for: handle) {
+            engine.document.updateEntity(entity)
+        }
         state = .completed
+    }
+
+    internal func initFromEntity(_ entity: CADEntity) {
+        if let storedIsland = entity.xdata["dxf.hatchStyle"] {
+            switch storedIsland {
+            case .int(let v): islandStyle = Int32(v)
+            case .double(let v): islandStyle = Int32(v)
+            default: break
+            }
+        }
+
+        if let storedScale = entity.xdata["dxf.hatchScale"] {
+            switch storedScale {
+            case .double(let v): hatchScale = Float(v)
+            case .int(let v): hatchScale = Float(v)
+            default: break
+            }
+        }
+
+        if let storedAngle = entity.xdata["dxf.hatchAngle"] {
+            switch storedAngle {
+            case .double(let v): hatchAngle = Float(v)
+            case .int(let v): hatchAngle = Float(v)
+            default: break
+            }
+        }
+
+        if case .string(let key)? = entity.xdata["zephyr.hatchPatternKey"] {
+            let k = key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if !k.isEmpty { patternName = k }
+        } else if case .string(let name)? = entity.xdata["dxf.hatchPatternName"] {
+            let n = name.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if !n.isEmpty { patternName = n }
+        }
+
+        if case .string(let hex)? = entity.xdata["zephyr.hatchBackgroundColor"],
+           let bg = ColorRGBA(hex: hex) {
+            backgroundColor = bg
+        }
+
+        guard let geometry = entity.localGeometry else { return }
+
+        for prim in geometry {
+            switch prim {
+            case .gradient(_, _, let name, let angle, let c1, let c2):
+                fillType = 2
+                gradientName = name
+                hatchAngle = Float(angle)
+                primaryColor = c1
+                secondaryColor = c2
+                return
+            case .hatchPath(_, _, let pat, let scale, let angle, let color, let bg):
+                fillType = 0
+                patternName = pat.isEmpty ? patternName : pat
+                hatchScale = Float(scale)
+                hatchAngle = Float(angle)
+                primaryColor = color
+                if bg != nil { backgroundColor = bg }
+                return
+            case .hatch(_, let pat, let scale, let angle, let color, let bg):
+                fillType = 0
+                patternName = pat.isEmpty ? patternName : pat
+                hatchScale = Float(scale)
+                hatchAngle = Float(angle)
+                primaryColor = color
+                if bg != nil { backgroundColor = bg }
+                return
+            case .fillComplexPolygon(_, _, let color):
+                fillType = 1
+                primaryColor = color
+            default:
+                break
+            }
+        }
     }
 
     public var isSnappingEnabled: Bool { false }
@@ -88,7 +179,22 @@ public final class HatchCommand: FeatureCommand {
                 let worldPts = CADGeometryMath.worldPointsForPrimitive(
                     firstPrim, transform: entity.transform)
                 if worldPts.count >= 3 {
-                    return commitHatch(boundary: worldPts, holes: [],
+                    let regions: [(outer: [Vector3], holes: [[Vector3]])]
+                    if islandStyle == 2 {
+                        regions = [(worldPts, [])]
+                    } else {
+                        let holes = CADBoundaryDetector.findHoleLoops(
+                            inside: worldPts, seed: worldPts[0],
+                            document: engine.document, epsilonSq: 1e-6)
+                        if holes.isEmpty {
+                            regions = [(worldPts, [])]
+                        } else {
+                            let classified = CADBoundaryDetector.classifyLoops(
+                                [worldPts] + holes, islandStyle: Int(islandStyle))
+                            regions = classified.map { ($0.outer, $0.holes) }
+                        }
+                    }
+                    return commitHatch(regions: regions,
                                        engine: engine, processor: processor)
                 }
             }
@@ -97,13 +203,13 @@ public final class HatchCommand: FeatureCommand {
         }
 
         // ── Pick Points mode ──
-        if let region = CADBoundaryDetector.findEnclosingRegion(
+        if let regions = CADBoundaryDetector.findEnclosingRegions(
             seedX: worldX, seedY: worldY,
             document: engine.document,
+            islandStyle: Int(islandStyle),
             maxEdgeCount: 2000
-        ) {
-            return commitHatch(boundary: region.outer,
-                               holes: region.holes,
+        ), !regions.isEmpty {
+            return commitHatch(regions: regions.map { ($0.outer, $0.holes) },
                                engine: engine, processor: processor)
         } else {
             processor.commandPrompt =
@@ -125,6 +231,10 @@ public final class HatchCommand: FeatureCommand {
     ) -> CommandResult {
         switch scancode {
         case SDL_SCANCODE_ESCAPE, SDL_SCANCODE_RETURN, SDL_SCANCODE_KP_ENTER:
+            if let handle = engine.cadSelection.lastSelectedHandle,
+               let entity = engine.document.entity(for: handle) {
+                engine.document.updateEntity(entity)
+            }
             state = .completed
             return .finished
         default:
@@ -187,6 +297,37 @@ public final class HatchCommand: FeatureCommand {
                 backgroundColor: effectiveBgColor))
         }
         return prims
+    }
+
+    private func extractAllBoundaryPaths(from entity: CADEntity) -> [CADPolyline] {
+        guard let geometry = entity.localGeometry else { return [] }
+        let carriers = geometry.compactMap { prim -> CADPolyline? in
+            guard case .polyline(let path, _) = prim, path.isHatchBoundaryCarrier else { return nil }
+            return path
+        }
+        if !carriers.isEmpty { return carriers }
+
+        var paths: [CADPolyline] = []
+        for prim in geometry {
+            switch prim {
+            case .hatchPath(let boundary, let holes, _, _, _, _, _):
+                paths.append(boundary)
+                paths.append(contentsOf: holes)
+            case .hatch(let boundary, _, _, _, _, _):
+                let loops = splitConnectedHatchBoundary(boundary)
+                if loops.outer.count >= 3 { paths.append(CADPolyline(points: loops.outer, isClosed: true)) }
+                for h in loops.holes where h.count >= 3 { paths.append(CADPolyline(points: h, isClosed: true)) }
+            case .fillComplexPolygon(let outer, let holes, _):
+                if outer.count >= 3 { paths.append(CADPolyline(points: outer, isClosed: true)) }
+                for h in holes where h.count >= 3 { paths.append(CADPolyline(points: h, isClosed: true)) }
+            case .gradient(let outer, let holes, _, _, _, _):
+                if outer.count >= 3 { paths.append(CADPolyline(points: outer, isClosed: true)) }
+                for h in holes where h.count >= 3 { paths.append(CADPolyline(points: h, isClosed: true)) }
+            default:
+                break
+            }
+        }
+        return paths
     }
 
     /// Extract the outer boundary and holes from an existing hatch entity.
@@ -270,6 +411,7 @@ public final class HatchCommand: FeatureCommand {
             DXFHatchGenerator.effectiveSpacing(patternName: patternKey, scale: scale))
         entity.xdata["dxf.hatchAssociative"] = .bool(false)
         entity.xdata["dxf.hatchIsGradient"] = .bool(fillType == 2)
+        entity.xdata["dxf.hatchStyle"] = .int(Int(islandStyle))
 
         if fillType == 2 {
             let c1 = primaryColor ?? ColorRGBA(r: 128, g: 128, b: 128, a: 255)
@@ -290,6 +432,13 @@ public final class HatchCommand: FeatureCommand {
             entity.xdata.removeValue(forKey: "dxf.hatchGradientTint")
             entity.xdata.removeValue(forKey: "dxf.hatchGradientSingleColor")
             entity.xdata.removeValue(forKey: "dxf.hatchGradientStops")
+        }
+
+        if fillType == 0, let bg = backgroundColor {
+            let hex = String(format: "#%02X%02X%02X%02X", bg.r, bg.g, bg.b, bg.a)
+            entity.xdata["zephyr.hatchBackgroundColor"] = .string(hex)
+        } else {
+            entity.xdata.removeValue(forKey: "zephyr.hatchBackgroundColor")
         }
     }
 
@@ -388,16 +537,33 @@ public final class HatchCommand: FeatureCommand {
     /// Apply the current ribbon settings to the selected hatch entity in-place.
     private func applyToSelected(engine: PhrostEngine, processor: CADCommandProcessor) {
         guard let handle = engine.cadSelection.lastSelectedHandle,
-              let entity = engine.document.entity(for: handle),
-              let (boundary, holes) = extractBoundary(from: entity) else {
+              let entity = engine.document.entity(for: handle) else {
             processor.commandPrompt = "No hatch selected to apply changes to."
             return
         }
-        let newPrims = buildPrimitives(boundary: boundary, holes: holes)
+        let allBoundaryPaths = extractAllBoundaryPaths(from: entity)
+        guard !allBoundaryPaths.isEmpty else {
+            processor.commandPrompt = "No hatch boundary found to apply changes to."
+            return
+        }
+        let allLoops = allBoundaryPaths.map { $0.tessellatedPoints() }
+        let regions = CADBoundaryDetector.classifyLoops(allLoops, islandStyle: Int(islandStyle))
+        guard !regions.isEmpty else { return }
+
+        var newPrims: [CADPrimitive] = []
+        for region in regions {
+            newPrims.append(contentsOf: buildPrimitives(boundary: region.outer, holes: region.holes))
+        }
+        for path in allBoundaryPaths {
+            var carrier = path
+            carrier.isHatchBoundaryCarrier = true
+            newPrims.append(.polyline(path: carrier, color: .transparent))
+        }
+
         var updated = entity
         applyHatchXData(to: &updated)
         updated.localGeometry = newPrims
-        engine.document.updateEntity(updated)
+        engine.document.updateEntityLive(updated)
         engine.tabManager.markActiveDirty()
         processor.commandPrompt = "Hatch updated. Click inside another area or press Esc/Enter."
     }
@@ -407,7 +573,25 @@ public final class HatchCommand: FeatureCommand {
         holes: [[Vector3]] = [],
         engine: PhrostEngine, processor: CADCommandProcessor
     ) -> CommandResult {
-        let hatchPrims = buildPrimitives(boundary: boundary, holes: holes)
+        commitHatch(regions: [(boundary, holes)], engine: engine, processor: processor)
+    }
+
+    private func commitHatch(
+        regions: [(outer: [Vector3], holes: [[Vector3]])],
+        engine: PhrostEngine, processor: CADCommandProcessor
+    ) -> CommandResult {
+        var hatchPrims: [CADPrimitive] = []
+        for (boundary, holes) in regions {
+            hatchPrims.append(contentsOf: buildPrimitives(boundary: boundary, holes: holes))
+            var outerCarrier = CADPolyline(points: boundary, isClosed: true)
+            outerCarrier.isHatchBoundaryCarrier = true
+            hatchPrims.append(.polyline(path: outerCarrier, color: .transparent))
+            for hole in holes {
+                var holeCarrier = CADPolyline(points: hole, isClosed: true)
+                holeCarrier.isHatchBoundaryCarrier = true
+                hatchPrims.append(.polyline(path: holeCarrier, color: .transparent))
+            }
+        }
 
         let layerID = engine.document.activeLayerID
             ?? engine.document.allLayers.first?.handle
@@ -423,9 +607,10 @@ public final class HatchCommand: FeatureCommand {
         engine.cadSelection.clearSelection()
         engine.cadSelection.addToSelection(entity.handle)
 
-        processor.commandPrompt = holes.isEmpty
-            ? "Hatch created (\(boundary.count) boundary vertices). Click inside another area or press Esc/Enter."
-            : "Hatch created (\(boundary.count) boundary vertices, \(holes.count) hole(s)). Click inside another area or press Esc/Enter."
+        let totalHoles = regions.reduce(0) { $0 + $1.holes.count }
+        processor.commandPrompt = totalHoles == 0
+            ? "Hatch created (\(regions.count) region(s)). Click inside another area or press Esc/Enter."
+            : "Hatch created (\(regions.count) region(s), \(totalHoles) hole(s)). Click inside another area or press Esc/Enter."
         return .continue
     }
 
@@ -454,6 +639,7 @@ public final class HatchCommand: FeatureCommand {
         let previousPrimaryColor = primaryColor
         let previousBackgroundColor = backgroundColor
         let previousSecondaryColor = secondaryColor
+        let previousIslandStyle = islandStyle
 
         // Package command state into HatchRibbonUI.Settings
         var uiSettings = HatchRibbonUI.Settings(
@@ -466,6 +652,7 @@ public final class HatchCommand: FeatureCommand {
             backgroundColor: backgroundColor,
             secondaryColor: secondaryColor,
             selectionMode: (selectionMode == .selectBoundary ? 1 : 0),
+            islandStyle: islandStyle,
             showModeSection: true,
             applyClicked: false,
             closeRequested: false,
@@ -483,6 +670,7 @@ public final class HatchCommand: FeatureCommand {
         backgroundColor = uiSettings.backgroundColor
         secondaryColor = uiSettings.secondaryColor
         selectionMode = uiSettings.selectionMode == 1 ? .selectBoundary : .pickPoints
+        islandStyle = uiSettings.islandStyle
 
         let settingsChanged = previousFillType != fillType
             || previousPatternName != patternName
@@ -492,14 +680,19 @@ public final class HatchCommand: FeatureCommand {
             || previousPrimaryColor != primaryColor
             || previousBackgroundColor != backgroundColor
             || previousSecondaryColor != secondaryColor
+            || previousIslandStyle != islandStyle
 
         let shouldLiveApply = settingsChanged
-            && lastCreatedHatchHandle == engine.cadSelection.lastSelectedHandle
+            && (lastCreatedHatchHandle == engine.cadSelection.lastSelectedHandle || engine.cadSelection.lastSelectedHandle != nil)
 
         if uiSettings.applyClicked || shouldLiveApply {
             applyToSelected(engine: engine, processor: engine.commandProcessor)
         }
         if uiSettings.closeRequested {
+            if let handle = engine.cadSelection.lastSelectedHandle,
+               let entity = engine.document.entity(for: handle) {
+                engine.document.updateEntity(entity)
+            }
             state = .completed
         }
     }
