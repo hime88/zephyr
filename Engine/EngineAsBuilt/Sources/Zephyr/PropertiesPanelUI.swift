@@ -1145,9 +1145,13 @@ struct PropertiesPanelUI {
             if splineFinal, let fit = PenStrokeSplineFitter.fit(
                 vertices: vertices,
                 settings: previewStabilization) {
+                ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textDim)
                 ImGuiTextV("Final path: \(vertices.count) stored points → \(fit.fitVertices.count) fit points / \(fit.controlVertices.count) NURBS controls (degree \(fit.degree))")
+                ImGuiPopStyleColor(1)
             } else {
+                ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textDim)
                 ImGuiTextV("Final path: raw stabilized line samples")
+                ImGuiPopStyleColor(1)
             }
 
             if brushChanged || stabilizationChanged {

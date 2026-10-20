@@ -589,9 +589,32 @@ public final class PenStrokeCommand: FeatureCommand {
             | Int32(ImGuiWindowFlags_NoSavedSettings.rawValue)
             | Int32(ImGuiWindowFlags_AlwaysAutoResize.rawValue)
 
-        ImGuiPushStyleVarX(Int32(ImGuiStyleVar_WindowPadding.rawValue), 12.0 * scale)
-        ImGuiPushStyleVarY(Int32(ImGuiStyleVar_WindowPadding.rawValue), 8.0 * scale)
-        defer { ImGuiPopStyleVar(2) }
+        let theme = engine.ui.theme
+        let isDark = engine.ui.isDarkTheme
+
+        ImGuiPushStyleVar(Int32(ImGuiStyleVar_WindowRounding.rawValue), 8.0 * scale)
+        ImGuiPushStyleVar(Int32(ImGuiStyleVar_WindowBorderSize.rawValue), 1.0)
+        ImGuiPushStyleVar(Int32(ImGuiStyleVar_WindowPadding.rawValue), ImVec2(x: 14.0 * scale, y: 10.0 * scale))
+        ImGuiPushStyleVar(Int32(ImGuiStyleVar_FrameRounding.rawValue), 4.0 * scale)
+        ImGuiPushStyleVar(Int32(ImGuiStyleVar_FramePadding.rawValue), ImVec2(x: 6.0 * scale, y: 3.0 * scale))
+
+        ImGuiPushStyleColor(Int32(ImGuiCol_WindowBg.rawValue), theme.panelBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_Border.rawValue), theme.border)
+        let frameBg = isDark
+            ? ImVec4(x: 0.14, y: 0.25, z: 0.38, w: 0.70)
+            : ImVec4(x: 0.0, y: 0.0, z: 0.0, w: 0.06)
+        ImGuiPushStyleColor(Int32(ImGuiCol_FrameBg.rawValue), frameBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_FrameBgHovered.rawValue), theme.hoverBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_FrameBgActive.rawValue), theme.activeBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_SliderGrab.rawValue), theme.brandGold)
+        ImGuiPushStyleColor(Int32(ImGuiCol_SliderGrabActive.rawValue), theme.brandGoldActive)
+        ImGuiPushStyleColor(Int32(ImGuiCol_CheckMark.rawValue), theme.brandGold)
+        ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), theme.textPrimary)
+
+        defer {
+            ImGuiPopStyleColor(9)
+            ImGuiPopStyleVar(5)
+        }
 
         var opened = true
         guard igBegin("##PenStrokeBrush", &opened, flags) else {
@@ -612,7 +635,11 @@ public final class PenStrokeCommand: FeatureCommand {
         var stabilizationChanged = false
         var eraserChanged = false
 
+        if let bold = engine.ui.boldFont ?? engine.ui.commandTitleFont { ImGuiPushFont(bold, 0.0) }
+        ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), theme.brandGold)
         ImGuiTextV("Pen Brush")
+        ImGuiPopStyleColor(1)
+        if engine.ui.boldFont != nil || engine.ui.commandTitleFont != nil { ImGuiPopFont() }
         ImGuiSameLine(0, 16.0 * scale)
         ImGuiTextV("Min")
         ImGuiSameLine(0, 4.0 * scale)
@@ -628,7 +655,9 @@ public final class PenStrokeCommand: FeatureCommand {
         ImGuiPopItemWidth()
 
         ImGuiSameLine(0, 16.0 * scale)
+        ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), theme.textDim)
         ImGuiTextV("Pressure maps Min → Max")
+        ImGuiPopStyleColor(1)
 
         ImGuiTextV("Tilt")
         ImGuiSameLine(0, 4.0 * scale)
@@ -655,7 +684,9 @@ public final class PenStrokeCommand: FeatureCommand {
             stabilizationChanged = true
         }
         ImGuiSameLine(0, 12.0 * scale)
+        ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), theme.textDim)
         ImGuiTextV("Live: lines  Final: simplified rational spline")
+        ImGuiPopStyleColor(1)
 
         if ImGuiCheckbox("Erase (E)", &eraseEnabled) {
             eraserChanged = true
@@ -669,13 +700,17 @@ public final class PenStrokeCommand: FeatureCommand {
         }
         ImGuiPopItemWidth()
         ImGuiSameLine(0, 12.0 * scale)
+        ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), theme.textDim)
         ImGuiTextV("Vector eraser splits lines, paths, pen strokes, and native splines")
+        ImGuiPopStyleColor(1)
 
         if engine.interaction.penState.penActive {
             let pen = engine.interaction.penState
             ImGuiSameLine(0, 16.0 * scale)
+            ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), theme.textDim)
             ImGuiTextV(String(format: "P %.2f  Tilt %.0f°/%.0f°  Rot %.0f°",
                               pen.pressure, pen.xtilt, pen.ytilt, pen.rotation))
+            ImGuiPopStyleColor(1)
         }
 
         if changed {

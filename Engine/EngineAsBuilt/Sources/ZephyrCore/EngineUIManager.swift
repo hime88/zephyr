@@ -325,7 +325,13 @@ public final class EngineUIManager {
     // MARK: - Theme State
     
     /// Whether the current UI theme is dark (true) or light (false).
-    public var isDarkTheme: Bool = true
+    public var isDarkTheme: Bool = true {
+        didSet {
+            if oldValue != isDarkTheme && igGetCurrentContext() != nil {
+                applyTheme()
+            }
+        }
+    }
     
     /// The currently active AppTheme instance.
     public var theme: AppTheme {
@@ -517,7 +523,7 @@ public final class EngineUIManager {
     
     /// Apply the current theme to both ImGui style colors and the viewport background.
     public func applyTheme() {
-        guard let style = igGetStyle() else { return }
+        guard igGetCurrentContext() != nil, let style = igGetStyle() else { return }
 
         // Canvas/viewport background
         backgroundColor = theme.viewportBg
@@ -553,6 +559,9 @@ public final class EngineUIManager {
                 
                 colors[Int(ImGuiCol_WindowBg.rawValue)]      = theme.panelBg
                 colors[Int(ImGuiCol_Text.rawValue)]          = theme.textPrimary
+                colors[Int(ImGuiCol_SliderGrab.rawValue)]    = theme.brandGold
+                colors[Int(ImGuiCol_SliderGrabActive.rawValue)] = theme.brandGoldActive
+                colors[Int(ImGuiCol_CheckMark.rawValue)]     = theme.brandGold
             }
         }
     }
