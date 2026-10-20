@@ -94,6 +94,7 @@
       <a href="#features" style-hover="color:var(--text);">Features</a>
       <a href="#multi-window" style-hover="color:var(--text);">Windows</a>
       <a href="#compatibility" style-hover="color:var(--text);">Compatibility</a>
+      <a href="#references" style-hover="color:var(--text);">References</a>
       <a href="#proof" style-hover="color:var(--text);">Proof</a>
       <a href="#autolisp" style-hover="color:var(--text);">AutoLISP</a>
       <a href="#compare" style-hover="color:var(--text);">vs AutoCAD</a>
@@ -402,7 +403,7 @@
       Opens the files everyone else hands you.
     </h2>
     <p style="font-size:18px; line-height:1.5; max-width:680px; color:var(--text-2); margin:0 0 64px;">
-      DWG and DXF — round‑trip ready, including blocks, layers, hatches, splines/NURBS, and polylines with bulge. PDF export ships a Bluebeam‑compatible Measurement dictionary so dimensions survive the handoff.
+      DWG and DXF — round‑trip ready, including blocks, layers, hatches, splines/NURBS, polylines with bulge, and external references. PDF export ships a Bluebeam‑compatible Measurement dictionary so dimensions survive the handoff.
     </p>
     <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:16px;">
       <div style="border:1px solid var(--border-soft); border-radius:12px; padding:24px; background:var(--bg-elev);">
@@ -427,7 +428,7 @@
           <span style="font-family:'Geist Mono'; font-size:10px; padding:2px 7px; background:var(--accent); color:var(--navy); border-radius:3px;">IMPORT</span>
           <span style="font-family:'Geist Mono'; font-size:10px; padding:2px 7px; background:var(--accent); color:var(--navy); border-radius:3px;">EXPORT</span>
         </div>
-        <div style="font-size:13px; color:var(--text-2); line-height:1.5;">Vector PDF 1.7 with Bluebeam Revu‑compatible Measurement dictionary. Import pages as underlays.</div>
+        <div style="font-size:13px; color:var(--text-2); line-height:1.5;">Vector PDF 1.7 with Bluebeam Revu‑compatible Measurement dictionary. Import pages as snapshots — or attach them as live underlays that reload when the PDF changes.</div>
       </div>
       <div style="border:1px solid var(--border-soft); border-radius:12px; padding:24px; background:var(--bg-elev);">
         <div style="font-family:'Geist Mono'; font-size:32px; font-weight:500; letter-spacing:-0.02em;">EAB</div>
@@ -445,6 +446,39 @@
     <div style="margin-top:16px; padding:20px 24px; background:var(--bg-elev); border:1px solid var(--border-soft); border-radius:10px; display:flex; align-items:center; gap:16px; font-size:14px; color:var(--text-2); line-height:1.55;">
       <span style="width:6px; height:6px; border-radius:50%; background:var(--accent); flex-shrink:0;"></span>
       <span><span style="color:var(--text); font-weight:500;">AutoCAD workspace names where they fit.</span> <span style="font-family:'Geist Mono'; font-size:12px;">FILETAB</span>, <span style="font-family:'Geist Mono'; font-size:12px;">FILETABCLOSE</span>, <span style="font-family:'Geist Mono'; font-size:12px;">VPORTS</span>, <span style="font-family:'Geist Mono'; font-size:12px;">VPMAX</span>, and <span style="font-family:'Geist Mono'; font-size:12px;">VPMIN</span> follow the familiar names; Zephyr then extends panes beyond same-drawing viewports. <a href="#multi-window" style="color:var(--accent); text-decoration:underline;">See the exact commands and differences →</a></span>
+
+    <div id="references" style="margin-top:64px; scroll-margin-top:96px;">
+      <div style="max-width:820px; margin-bottom:40px;">
+        <div style="font-family:'Geist Mono'; font-size:11px; color:var(--accent); letter-spacing:0.16em; margin-bottom:14px;">EXTERNAL REFERENCES</div>
+        <h3 style="font-size:40px; line-height:1.05; letter-spacing:-0.03em; margin:0 0 18px; font-weight:600;">Reference it. Don't copy it.</h3>
+        <p style="font-size:16px; line-height:1.6; color:var(--text-2); margin:0 0 16px;">
+          Attach drawings, images, and PDFs as live references with <span style="font-family:'Geist Mono'; color:var(--text);">ATTACH</span>. Your host file stores paths only; referenced geometry renders from a runtime copy that never bakes into saves or undo. Edit the source and the palette flags it for reload.
+        </p>
+        <p style="font-size:16px; line-height:1.6; color:var(--text-2); margin:0;">
+          Deleting a placement leaves the reference listed as <span style="color:var(--text); font-weight:500;">Unreferenced</span> — same as AutoCAD. <span style="color:var(--text); font-weight:500;">Detach</span> removes it for good; <span style="color:var(--text); font-weight:500;">Bind</span> (or <span style="color:var(--text); font-weight:500;">Embed</span> for media) makes it permanent.
+        </p>
+      </div>
+
+      <div style="border:1px solid var(--border-soft); border-radius:12px; overflow:hidden; background:var(--bg);">
+        <div style="padding:18px 22px; background:var(--bg-panel); border-bottom:1px solid var(--border-soft);">
+          <div style="font-size:16px; font-weight:600;">Reference commands</div>
+          <div style="font-size:12px; color:var(--text-3); margin-top:4px;">Canonical name first; aliases in parentheses.</div>
+        </div>
+        <div style="padding:8px 22px 14px;">
+          <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">ATTACH</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">One picker for every reference type; routes drawings, images, and PDFs to the right flow.</span></div>
+          <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">XATTACH (XA)</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">Attach a DWG/DXF drawing as an xref — Attachment or Overlay, with unit-aware scale.</span></div>
+          <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">IMAGEATTACH · PDFATTACH</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">Attach a raster image or one PDF page as a live underlay. (IMAGE and PDFIMPORT still embed snapshots.)</span></div>
+          <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">INSERT (I, -INSERT)</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">Insert an existing block — or a whole DWG/DXF/EAB file as an embedded block copy.</span></div>
+          <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">XREF (ER)</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">External References palette: every reference with status — Loaded, Not Found, Needs Reloading, Unreferenced — plus Load, Unload, Reload, Repath, Detach, Bind, and Embed.</span></div>
+          <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0; border-bottom:1px solid var(--border-soft);"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">-XREF · -ATTACH</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">Command-line management: ?/Bind/Attach/Detach/Reload/Unload/Load/Path — scriptable from AutoLISP via (command …).</span></div>
+          <div style="display:grid; grid-template-columns: 1fr 1.35fr; gap:18px; padding:11px 0;"><span style="font-family:'Geist Mono'; font-size:12px; color:var(--accent);">XBIND</span><span style="font-size:13px; color:var(--text-2); line-height:1.45;">Bind a single xref-dependent layer (Xref|Layer) into the host without binding the whole drawing.</span></div>
+        </div>
+      </div>
+
+      <p style="font-size:13px; line-height:1.6; color:var(--text-3); margin:16px 2px 0;">
+        Loading is asynchronous and capped (32 drawing xrefs, depth 16, 5M primitives per tab) so a heavy reference set can't stall the canvas. Paths save relative by default (REFPATHTYPE), dependent layers arrive as Xref|Layer under VISRETAIN, and XDWGFADECTL dims reference geometry so your own linework stays readable. Clips write back as standard SPATIAL_FILTER objects.
+      </p>
+    </div>
     </div>
   </div>
 </section>
@@ -1212,8 +1246,8 @@ class Component extends DCLogic {
           body: 'Polar tracking at 15°/30°/45°/90°. Object snap tracking from acquired points. Extension snapping along existing geometry.' },
         { tag: 'GRIPS',    title: 'Direct manipulation',  cmd: 'click + drag',
           body: 'Per‑vertex grips on polylines and polygons. Corner, center, midpoint, and rotation grips on every selection bounding box.' },
-        { tag: 'BLOCKS',   title: 'Block edit in place',  cmd: 'BEDIT / BE',
-          body: 'Edit a block reference in isolation, BCLOSE to save. SIMPLIFY swaps heavy blocks for bounding‑box stand‑ins to keep pan/zoom responsive.' },
+        { tag: 'BLOCKS',   title: 'Blocks & xrefs',  cmd: 'INSERT · ATTACH · XREF',
+          body: 'Insert blocks or whole drawings, attach DWG/image/PDF references that reload when sources change, and edit blocks in place with BEDIT. SIMPLIFY keeps heavy sets responsive.' },
         { tag: 'LAYERS',   title: 'Layer move',  cmd: 'LM / LAYMOVE',
           body: 'Pick entities, type LM, autocomplete the destination layer. Full layer table with ACI color indexing and per‑layer line type / weight.' },
         { tag: 'CONSTR.',  title: '15 constraints',  cmd: 'parametric',
@@ -1231,6 +1265,8 @@ class Component extends DCLogic {
         { label: 'DWG read/write',                       zephyr: '✓',            autocad: '✓',            qcad: 'Varies' },
         { label: 'DXF R2007 round‑trip',           zephyr: '✓',            autocad: '✓',            qcad: '✓' },
         { label: 'PDF export w/ measurements',     zephyr: '✓ Bluebeam',   autocad: '✓',            qcad: 'Flat' },
+        { label: 'External references (XREF)',     zephyr: '✓',            autocad: '✓',            qcad: 'Varies' },
+        { label: 'Referenced image/PDF underlays', zephyr: '✓',            autocad: '✓',            qcad: 'Varies' },
         { label: 'AutoLISP automation',             zephyr: '✓ 305 builtins', autocad: 'Win only (LT)', qcad: '—' },
         { label: 'Quick Measure (hover)',          zephyr: '✓',            autocad: '—',            qcad: '—' },
         { label: 'Clean Speckles (by example)',    zephyr: '✓',            autocad: '—',            qcad: '—' },
