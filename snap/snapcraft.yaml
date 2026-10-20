@@ -221,7 +221,7 @@ parts:
       #    built into compile-linux.sh, and glslang-tools is a build-package).
       if [ "$CRAFT_TARGET_ARCH" = "amd64" ]; then
         curl -sSL -o dxc.tar.gz \
-          "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/linux_dxc_2026_09_28.x86_x64.tar.gz"
+          "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2407/linux_dxc_2024_07_31.x86_64.tar.gz"
         mkdir -p dxc
         tar xzf dxc.tar.gz -C dxc
         export DXC="$(find dxc -name dxc -type f | head -n 1)"

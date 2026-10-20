@@ -26,8 +26,8 @@ env:
   ZLIB_NG_VERSION: "2.3.3"
   PDFIUM_TAG: "chromium%2F7891"
   SWIFT_VERSION: "6.4.0"
-  DXC_VERSION: "v1.9.2609"
-  DXC_ASSET: "linux_dxc_2026_09_28.x86_x64.tar.gz"
+  DXC_VERSION: "v1.8.2407"
+  DXC_ASSET: "linux_dxc_2024_07_31.x86_64.tar.gz"
   DEV_ROOT: "~/dev"
 
 jobs:
@@ -72,13 +72,11 @@ jobs:
       # ------------------------------------------------------------------
       - name: Install System Dependencies
         run: |
-          # ARM64 has no DXC binary, so compile-linux.sh falls back to glslangValidator.
-          EXTRA_PKGS=""
-          if [ "${{ matrix.arch }}" = "arm64" ]; then EXTRA_PKGS="glslang-tools"; fi
           sudo apt-get update
           # shellcheck disable=SC2086
           sudo apt-get install -y \
             build-essential git cmake ninja-build pkg-config \
+            glslang-tools \
             libasound2-dev libpulse-dev libaudio-dev libjack-dev libsndio-dev \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
             libxi-dev libxss-dev libxtst-dev libxkbcommon-dev \
@@ -89,8 +87,7 @@ jobs:
             libdecor-0-dev liburing-dev \
             libvulkan-dev \
             libpng-dev libjpeg-dev libwebp-dev libtiff-dev \
-            libfreetype-dev libharfbuzz-dev \
-            $EXTRA_PKGS
+            libfreetype-dev libharfbuzz-dev
 
       # ------------------------------------------------------------------
       # 3. Install Swift
