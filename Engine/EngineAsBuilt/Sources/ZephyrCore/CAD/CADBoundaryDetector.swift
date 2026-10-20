@@ -99,13 +99,103 @@ public enum CADBoundaryDetector {
         )?.outer
     }
 
-    public static func findEnclosingRegion(
+    /// Classifies an array of closed loops into boundary regions with nested holes according to the island detection style:
+    /// - 0: Normal (alternating odd-parity nesting: even depths are hatched regions, odd depths are holes)
+    /// - 1: Outer (outermost loop at depth 0 with depth 1 holes; inner islands omitted)
+    /// - 2: Ignore (outermost loop at depth 0 with all islands ignored / 0 holes)
+    public static func classifyLoops(
+        _ loops: [[Vector3]],
+        islandStyle: Int = 0
+    ) -> [BoundaryRegion] {
+        let cleaned = loops.compactMap { loop -> (points: [Vector3], area: Double)? in
+            let c = cleanLoop(loop, epsilonSq: 1e-10)
+            guard c.count >= 3 else { return nil }
+            let a = shoelaceArea(polygon: c)
+            guard a > 1e-9 else { return nil }
+            return (c, a)
+        }
+        guard !cleaned.isEmpty else { return [] }
+
+        var parent = Array<Int?>(repeating: nil, count: cleaned.count)
+        for child in cleaned.indices {
+            let probe = interiorSamplePoint(for: cleaned[child].points)
+            var best: Int?
+            var bestArea = Double.infinity
+            for possibleParent in cleaned.indices where possibleParent != child {
+                guard cleaned[possibleParent].area > cleaned[child].area + 1e-9 else { continue }
+                let parentPoints = cleaned[possibleParent].points
+                guard pointInPolygon(probe, polygon: parentPoints)
+                    || cleaned[child].points.contains(where: { pointInPolygon($0, polygon: parentPoints) }) else { continue }
+                if cleaned[possibleParent].area < bestArea {
+                    best = possibleParent
+                    bestArea = cleaned[possibleParent].area
+                }
+            }
+            parent[child] = best
+        }
+
+        func depth(_ index: Int) -> Int {
+            var count = 0
+            var cursor = parent[index]
+            var visited = Set<Int>()
+            while let current = cursor, visited.insert(current).inserted {
+                count += 1
+                cursor = parent[current]
+            }
+            return count
+        }
+
+        let depths = cleaned.indices.map(depth)
+        var children = Array(repeating: [Int](), count: cleaned.count)
+        for index in cleaned.indices {
+            if let p = parent[index] { children[p].append(index) }
+        }
+
+        if islandStyle == 2 {
+            // Ignore: Only top-level outer boundaries (depth 0), with NO holes.
+            return cleaned.indices
+                .filter { depths[$0] == 0 }
+                .sorted { cleaned[$0].area > cleaned[$1].area }
+                .map { outerIndex in
+                    BoundaryRegion(outer: cleaned[outerIndex].points, holes: [])
+                }
+        } else if islandStyle == 1 {
+            // Outer: Only top-level outer boundaries (depth 0), with only immediate depth 1 holes.
+            return cleaned.indices
+                .filter { depths[$0] == 0 }
+                .sorted { cleaned[$0].area > cleaned[$1].area }
+                .map { outerIndex in
+                    let holeIndices = children[outerIndex]
+                        .filter { depths[$0] == 1 }
+                        .sorted { cleaned[$0].area > cleaned[$1].area }
+                    return BoundaryRegion(
+                        outer: cleaned[outerIndex].points,
+                        holes: holeIndices.map { cleaned[$0].points })
+                }
+        } else {
+            // Normal (default): Alternating odd-parity island nesting
+            return cleaned.indices
+                .filter { depths[$0] % 2 == 0 }
+                .sorted { cleaned[$0].area > cleaned[$1].area }
+                .map { outerIndex in
+                    let holeIndices = children[outerIndex]
+                        .filter { depths[$0] == depths[outerIndex] + 1 }
+                        .sorted { cleaned[$0].area > cleaned[$1].area }
+                    return BoundaryRegion(
+                        outer: cleaned[outerIndex].points,
+                        holes: holeIndices.map { cleaned[$0].points })
+                }
+        }
+    }
+
+    public static func findEnclosingRegions(
         seedX: Double, seedY: Double,
         document: CADDocument,
+        islandStyle: Int = 0,
         maxEdgeCount: Int = 500,
         timeoutMs: UInt64 = 200,
         epsilonSq: Double = 1e-6
-    ) -> BoundaryRegion? {
+    ) -> [BoundaryRegion]? {
         let seed = Vector3(x: seedX, y: seedY, z: 0)
         guard let outer = findOuterEnclosingPolygon(
             seed: seed,
@@ -117,8 +207,34 @@ public enum CADBoundaryDetector {
             return nil
         }
 
+        if islandStyle == 2 {
+            return [BoundaryRegion(outer: outer, holes: [])]
+        }
+
         let holes = findHoleLoops(inside: outer, seed: seed, document: document, epsilonSq: epsilonSq)
-        return BoundaryRegion(outer: outer, holes: holes)
+        if holes.isEmpty {
+            return [BoundaryRegion(outer: outer, holes: [])]
+        }
+
+        return classifyLoops([outer] + holes, islandStyle: islandStyle)
+    }
+
+    public static func findEnclosingRegion(
+        seedX: Double, seedY: Double,
+        document: CADDocument,
+        islandStyle: Int = 0,
+        maxEdgeCount: Int = 500,
+        timeoutMs: UInt64 = 200,
+        epsilonSq: Double = 1e-6
+    ) -> BoundaryRegion? {
+        findEnclosingRegions(
+            seedX: seedX, seedY: seedY,
+            document: document,
+            islandStyle: islandStyle,
+            maxEdgeCount: maxEdgeCount,
+            timeoutMs: timeoutMs,
+            epsilonSq: epsilonSq
+        )?.first
     }
 
     private static func findOuterEnclosingPolygon(
@@ -281,7 +397,7 @@ public enum CADBoundaryDetector {
 
     // MARK: - Helpers
 
-    private static func findHoleLoops(
+    public static func findHoleLoops(
         inside outer: [Vector3],
         seed: Vector3,
         document: CADDocument,

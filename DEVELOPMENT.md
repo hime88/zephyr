@@ -90,8 +90,9 @@ cmd.exe /c "call `"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Au
 
 ## Linux (Ubuntu)
 
-Target: Ubuntu 24.04 LTS, x64. Other recent Ubuntu releases should work with
-the same steps. On WSL2, no extra X server is needed: WSLg runs Linux GUI apps
+Target: Ubuntu 22.04 LTS / 24.04 LTS, x64 and ARM64. Release builds target
+Ubuntu 22.04 (glibc 2.35) on CI for maximum compatibility across Ubuntu 22.04+,
+Debian 12+, Fedora, Linux Mint, Pop!_OS, and Arch. On WSL2, no extra X server is needed: WSLg runs Linux GUI apps
 (X11 and Wayland) out of the box after `wsl --update`, with GPU acceleration
 via your vendor's GPU driver.
 
@@ -199,3 +200,62 @@ Notes:
 - `snap/gui/zephyr.png` is a placeholder badge until the real logo lands;
   `snap/gui/zephyr.svg` next to it is the editable source.
 ```
+
+### 5. AppImage packaging
+
+AppImage builds are produced automatically by CI (`.github/workflows/build-linux.yml`) for `x86_64` and `aarch64`. The bundle is self-contained: it includes the `Zephyr` binary, SDL3, zlib-ng, PDFium, SPIR-V shaders, fonts, patterns, plot styles, and the Swift runtime libraries.
+
+To build an AppImage locally (requires `appimagetool` and an existing `./compile-linux.sh --release` build):
+
+```bash
+# 1. Download appimagetool for your architecture (x86_64 or aarch64)
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64) TOOL_ARCH="x86_64" ;;
+  aarch64|arm64) TOOL_ARCH="aarch64" ;;
+esac
+curl -sSL -o appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${TOOL_ARCH}.AppImage"
+chmod +x appimagetool
+
+# 2. Stage AppDir
+mkdir -p Zephyr.AppDir/usr/bin Zephyr.AppDir/usr/lib Zephyr.AppDir/usr/share/applications Zephyr.AppDir/usr/share/icons/hicolor/256x256/apps Zephyr.AppDir/usr/share/icons/hicolor/scalable/apps Zephyr.AppDir/usr/share/metainfo
+cp packaging/appimage/AppRun Zephyr.AppDir/AppRun && chmod +x Zephyr.AppDir/AppRun
+cp packaging/shared/com.zephyr.cad.desktop Zephyr.AppDir/com.zephyr.cad.desktop
+cp packaging/shared/com.zephyr.cad.desktop Zephyr.AppDir/usr/share/applications/
+cp snap/gui/zephyr.png Zephyr.AppDir/com.zephyr.cad.png
+cp snap/gui/zephyr.png Zephyr.AppDir/usr/share/icons/hicolor/256x256/apps/com.zephyr.cad.png
+cp snap/gui/zephyr.svg Zephyr.AppDir/usr/share/icons/hicolor/scalable/apps/com.zephyr.cad.svg
+cp packaging/shared/com.zephyr.cad.metainfo.xml Zephyr.AppDir/usr/share/metainfo/
+# Copy build outputs from Engine/EngineAsBuilt/.build/... to Zephyr.AppDir/usr/bin/ and .so to Zephyr.AppDir/usr/lib/
+
+# 3. Create the AppImage
+ARCH="$TOOL_ARCH" ./appimagetool --appimage-extract-and-run Zephyr.AppDir "Zephyr-Linux-${ARCH}.AppImage"
+```
+
+To run the AppImage:
+```bash
+chmod +x Zephyr-Linux-x64.AppImage
+./Zephyr-Linux-x64.AppImage
+```
+
+### 6. Flatpak packaging
+
+`packaging/flatpak/com.zephyr.cad.yml` defines the Flatpak package based on the Freedesktop 24.08 runtime (`org.freedesktop.Platform//24.08` and `org.freedesktop.Sdk//24.08`). CI produces standalone `.flatpak` bundles (`Zephyr-Linux-x64.flatpak` and `Zephyr-Linux-arm64.flatpak`) for x86_64 and aarch64.
+
+To install a `.flatpak` bundle produced by CI:
+
+```bash
+flatpak install --user Zephyr-Linux-x64.flatpak
+flatpak run com.zephyr.cad
+```
+
+To build locally using `flatpak-builder` (requires a staged payload in `packaging/flatpak/payload`):
+
+```bash
+flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak install flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+
+flatpak-builder --force-clean --repo=repo build-dir packaging/flatpak/com.zephyr.cad.yml
+flatpak build-bundle repo Zephyr.flatpak com.zephyr.cad
+```
+

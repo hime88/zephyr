@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Zephyr
+GenericName=CAD
+Comment=Fast 2D CAD viewer and editor for DXF drawings
+Exec=zephyr %F
+Icon=com.zephyr.cad
+Terminal=false
+Categories=Graphics;Engineering;
+StartupWMClass=Zephyr
+Keywords=CAD;DXF;drawing;
+MimeType=image/vnd.dxf;application/dxf;

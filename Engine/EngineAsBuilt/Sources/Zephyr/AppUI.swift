@@ -625,7 +625,9 @@ struct AppUI {
         var primaryColor: ColorRGBA?
         var backgroundColor: ColorRGBA?
         var secondaryColor: ColorRGBA?
+        var islandStyle: Int32
         var regions: [HatchEditRegion]
+        var allBoundaryPaths: [CADPolyline]
     }
 
     private static func renderHatchEditingRibbonIfNeeded(entity: CADEntity, engine: PhrostEngine) {
@@ -641,6 +643,7 @@ struct AppUI {
             backgroundColor: payload.backgroundColor,
             secondaryColor: payload.secondaryColor,
             selectionMode: 0,
+            islandStyle: payload.islandStyle,
             showModeSection: false
         )
         let oldSettings = settings
@@ -654,10 +657,18 @@ struct AppUI {
         let newDXFPatternName = settings.fillType == 0
             ? DXFHatchGenerator.patternExportName(for: newPatternKey)
             : newPatternKey
+        let effectiveRegions: [HatchEditRegion] = {
+            if settings.islandStyle != payload.islandStyle, !payload.allBoundaryPaths.isEmpty {
+                let reclassified = classifyBoundaryPaths(payload.allBoundaryPaths, islandStyle: settings.islandStyle)
+                if !reclassified.isEmpty { return reclassified }
+            }
+            return payload.regions
+        }()
         let newGeometry = buildHatchGeometry(
-            regions: payload.regions,
+            regions: effectiveRegions,
             settings: settings,
-            patternName: newPatternKey)
+            patternName: newPatternKey,
+            allBoundaryPaths: payload.allBoundaryPaths)
 
         var newEntity = entity
         let originalPattern = patternNameFromXData(entity)
@@ -668,12 +679,22 @@ struct AppUI {
         newEntity.xdata["dxf.hatchAngle"] = .double(Double(settings.angle))
         newEntity.xdata["dxf.hatchSpacing"] = .double(DXFHatchGenerator.effectiveSpacing(patternName: newPatternKey, scale: Double(settings.scale)))
         newEntity.xdata["dxf.hatchIsGradient"] = .bool(settings.fillType == 2)
+        newEntity.xdata["dxf.hatchStyle"] = .int(Int(settings.islandStyle))
         let definitionType = settings.fillType == 3
             ? 0
             : DXFHatchGenerator.patternDefinitionType(for: newPatternKey)
         newEntity.xdata["dxf.hatchPatternDefinitionType"] = .int(definitionType)
         if originalPattern?.uppercased() != newDXFPatternName.uppercased() || settings.fillType != 0 {
             newEntity.xdata.removeValue(forKey: "dxf.hatchPatternLines")
+        }
+        if settings.islandStyle != payload.islandStyle || settings.fillType != payload.fillType {
+            newEntity.xdata.removeValue(forKey: "dxf.hatchRawBody")
+        }
+        if settings.fillType == 0, let bg = settings.backgroundColor {
+            let hex = String(format: "#%02X%02X%02X%02X", bg.r, bg.g, bg.b, bg.a)
+            newEntity.xdata["zephyr.hatchBackgroundColor"] = .string(hex)
+        } else {
+            newEntity.xdata.removeValue(forKey: "zephyr.hatchBackgroundColor")
         }
         if settings.fillType == 2 {
             let c1 = settings.primaryColor ?? ColorRGBA(r: 255, g: 255, b: 255, a: 255)
@@ -724,7 +745,39 @@ struct AppUI {
                   color?.a == 0 else { return nil }
             return path
         }
-        let carrierRegions = classifyBoundaryPaths(carrierPaths)
+        let storedIslandStyle = Int32(hatchIntFromXData(entity, key: "dxf.hatchStyle") ?? 0)
+        let carrierRegions = classifyBoundaryPaths(carrierPaths, islandStyle: storedIslandStyle)
+        let storedBg: ColorRGBA? = {
+            if case .string(let hex)? = entity.xdata["zephyr.hatchBackgroundColor"] {
+                return ColorRGBA(hex: hex)
+            }
+            return nil
+        }()
+
+        let allBoundaryPaths: [CADPolyline] = {
+            if !carrierPaths.isEmpty { return carrierPaths }
+            var paths: [CADPolyline] = []
+            for prim in geometry {
+                switch prim {
+                case .hatchPath(let boundary, let holes, _, _, _, _, _):
+                    paths.append(boundary)
+                    paths.append(contentsOf: holes)
+                case .hatch(let boundary, _, _, _, _, _):
+                    let loops = splitConnectedHatchBoundary(boundary)
+                    if loops.outer.count >= 3 { paths.append(CADPolyline(points: loops.outer, isClosed: true)) }
+                    for h in loops.holes where h.count >= 3 { paths.append(CADPolyline(points: h, isClosed: true)) }
+                case .fillComplexPolygon(let outer, let holes, _):
+                    if outer.count >= 3 { paths.append(CADPolyline(points: outer, isClosed: true)) }
+                    for h in holes where h.count >= 3 { paths.append(CADPolyline(points: h, isClosed: true)) }
+                case .gradient(let outer, let holes, _, _, _, _):
+                    if outer.count >= 3 { paths.append(CADPolyline(points: outer, isClosed: true)) }
+                    for h in holes where h.count >= 3 { paths.append(CADPolyline(points: h, isClosed: true)) }
+                default:
+                    break
+                }
+            }
+            return paths
+        }()
 
         let gradients = geometry.compactMap { primitive -> (outer: [Vector3], holes: [[Vector3]], name: String, angle: Double, c1: ColorRGBA, c2: ColorRGBA)? in
             guard case .gradient(let outer, let holes, let name, let angle, let c1, let c2) = primitive else { return nil }
@@ -733,13 +786,15 @@ struct AppUI {
         if let first = gradients.first {
             let regions = !carrierRegions.isEmpty
                 ? carrierRegions
-                : gradients.map {
-                    HatchEditRegion(
-                        outer: normalizedLoop($0.outer),
-                        holes: $0.holes.map { normalizedLoop($0) }.filter { $0.count >= 3 },
-                        outerPath: nil,
-                        holePaths: [])
-                }
+                : (!allBoundaryPaths.isEmpty
+                    ? classifyBoundaryPaths(allBoundaryPaths, islandStyle: storedIslandStyle)
+                    : gradients.map {
+                        HatchEditRegion(
+                            outer: normalizedLoop($0.outer),
+                            holes: $0.holes.map { normalizedLoop($0) }.filter { $0.count >= 3 },
+                            outerPath: nil,
+                            holePaths: [])
+                    })
             guard !regions.isEmpty else { return nil }
             return HatchEditPayload(
                 fillType: 2,
@@ -750,7 +805,9 @@ struct AppUI {
                 primaryColor: first.c1,
                 backgroundColor: nil,
                 secondaryColor: first.c2,
-                regions: regions)
+                islandStyle: storedIslandStyle,
+                regions: regions,
+                allBoundaryPaths: allBoundaryPaths)
         }
 
         let hatchPaths = geometry.compactMap { primitive -> (region: HatchEditRegion, pattern: String, scale: Double, angle: Double, color: ColorRGBA?, background: ColorRGBA?)? in
@@ -773,6 +830,11 @@ struct AppUI {
                 pattern, scale, angle, color, background)
         }
 
+        let complexPolygons = geometry.compactMap { primitive -> (outer: [Vector3], holes: [[Vector3]], color: ColorRGBA?)? in
+            guard case .fillComplexPolygon(let outer, let holes, let color) = primitive else { return nil }
+            return (outer, holes, color)
+        }
+
         let allHatches = hatchPaths + legacyHatches
         if let first = allHatches.first {
             let rawPattern = first.pattern.isEmpty
@@ -780,6 +842,8 @@ struct AppUI {
                 : first.pattern
             let exportedPattern = DXFHatchGenerator.patternExportName(for: rawPattern)
             let fillType: Int32 = exportedPattern == "USER" ? 3 : (exportedPattern == "SOLID" ? 1 : 0)
+            let effectiveBg = first.background ?? storedBg
+            let regions = allHatches.map { $0.region }
             return HatchEditPayload(
                 fillType: fillType,
                 patternName: exportedPattern == "SOLID" || exportedPattern == "GRADIENT" || exportedPattern == "USER" ? "ANSI31" : rawPattern,
@@ -787,19 +851,19 @@ struct AppUI {
                 scale: first.scale,
                 angle: first.angle,
                 primaryColor: first.color,
-                backgroundColor: first.background,
+                backgroundColor: effectiveBg,
                 secondaryColor: nil,
-                regions: allHatches.map { $0.region })
+                islandStyle: storedIslandStyle,
+                regions: regions,
+                allBoundaryPaths: allBoundaryPaths)
         }
 
-        let complexPolygons = geometry.compactMap { primitive -> (outer: [Vector3], holes: [[Vector3]], color: ColorRGBA?)? in
-            guard case .fillComplexPolygon(let outer, let holes, let color) = primitive else { return nil }
-            return (outer, holes, color)
-        }
         if !complexPolygons.isEmpty || isHatchEntityByXData(entity) {
             let regions: [HatchEditRegion]
             if !carrierRegions.isEmpty {
                 regions = carrierRegions
+            } else if !allBoundaryPaths.isEmpty {
+                regions = classifyBoundaryPaths(allBoundaryPaths, islandStyle: storedIslandStyle)
             } else {
                 regions = complexPolygons.map {
                     HatchEditRegion(
@@ -818,9 +882,11 @@ struct AppUI {
                 scale: hatchDoubleFromXData(entity, key: "dxf.hatchScale") ?? 1.0,
                 angle: hatchDoubleFromXData(entity, key: "dxf.hatchAngle") ?? 0.0,
                 primaryColor: complexPolygons.first?.color,
-                backgroundColor: nil,
+                backgroundColor: storedBg,
                 secondaryColor: nil,
-                regions: regions)
+                islandStyle: storedIslandStyle,
+                regions: regions,
+                allBoundaryPaths: allBoundaryPaths)
         }
 
         return nil
@@ -829,7 +895,8 @@ struct AppUI {
     private static func buildHatchGeometry(
         regions: [HatchEditRegion],
         settings: HatchRibbonUI.Settings,
-        patternName: String
+        patternName: String,
+        allBoundaryPaths: [CADPolyline] = []
     ) -> [CADPrimitive] {
         let scale = Double(settings.scale)
         let angle = Double(settings.angle)
@@ -859,12 +926,7 @@ struct AppUI {
                     color: settings.primaryColor))
 
             default:
-                if settings.fillType == 0, let background = settings.backgroundColor {
-                    primitives.append(.fillComplexPolygon(
-                        outer: cleanOuter,
-                        holes: cleanHoles,
-                        color: background))
-                }
+                let bg = settings.fillType == 0 ? settings.backgroundColor : nil
                 if let outerPath = region.outerPath {
                     primitives.append(.hatchPath(
                         boundary: outerPath,
@@ -873,7 +935,7 @@ struct AppUI {
                         scale: scale,
                         angle: angle,
                         color: settings.primaryColor,
-                        backgroundColor: nil))
+                        backgroundColor: bg))
                 } else {
                     let patternBoundary = cleanHoles.isEmpty
                         ? cleanOuter
@@ -884,28 +946,32 @@ struct AppUI {
                         scale: scale,
                         angle: angle,
                         color: settings.primaryColor,
-                        backgroundColor: nil))
+                        backgroundColor: bg))
                 }
             }
         }
 
-        if settings.fillType == 1 || settings.fillType == 2 {
-            for region in regions {
-                if var outerPath = region.outerPath {
-                    outerPath.isHatchBoundaryCarrier = true
-                    primitives.append(.polyline(path: outerPath, color: .transparent))
-                }
-                for sourceHole in region.holePaths {
-                    var holePath = sourceHole
-                    holePath.isHatchBoundaryCarrier = true
-                    primitives.append(.polyline(path: holePath, color: .transparent))
-                }
+        let carriersToSave: [CADPolyline] = {
+            if !allBoundaryPaths.isEmpty {
+                return allBoundaryPaths
             }
+            var paths: [CADPolyline] = []
+            for r in regions {
+                if let op = r.outerPath { paths.append(op) }
+                paths.append(contentsOf: r.holePaths)
+            }
+            return paths
+        }()
+
+        for sourcePath in carriersToSave {
+            var carrier = sourcePath
+            carrier.isHatchBoundaryCarrier = true
+            primitives.append(.polyline(path: carrier, color: .transparent))
         }
         return primitives
     }
 
-    private static func classifyBoundaryPaths(_ paths: [CADPolyline]) -> [HatchEditRegion] {
+    private static func classifyBoundaryPaths(_ paths: [CADPolyline], islandStyle: Int32 = 0) -> [HatchEditRegion] {
         let candidates = paths.compactMap { path -> (path: CADPolyline, points: [Vector3], area: Double)? in
             let points = normalizedLoop(path.tessellatedPoints())
             guard points.count >= 3 else { return nil }
@@ -948,19 +1014,49 @@ struct AppUI {
             if let p = parent[index] { children[p].append(index) }
         }
 
-        return candidates.indices
-            .filter { depths[$0] % 2 == 0 }
-            .sorted { candidates[$0].area > candidates[$1].area }
-            .map { outerIndex in
-                let holeIndices = children[outerIndex]
-                    .filter { depths[$0] == depths[outerIndex] + 1 }
-                    .sorted { candidates[$0].area > candidates[$1].area }
-                return HatchEditRegion(
-                    outer: candidates[outerIndex].points,
-                    holes: holeIndices.map { candidates[$0].points },
-                    outerPath: candidates[outerIndex].path,
-                    holePaths: holeIndices.map { candidates[$0].path })
-            }
+        if islandStyle == 2 {
+            // Ignore: Only top-level outer boundaries (depth 0), with NO holes.
+            return candidates.indices
+                .filter { depths[$0] == 0 }
+                .sorted { candidates[$0].area > candidates[$1].area }
+                .map { outerIndex in
+                    HatchEditRegion(
+                        outer: candidates[outerIndex].points,
+                        holes: [],
+                        outerPath: candidates[outerIndex].path,
+                        holePaths: [])
+                }
+        } else if islandStyle == 1 {
+            // Outer: Only top-level outer boundaries (depth 0), with only immediate depth 1 holes.
+            return candidates.indices
+                .filter { depths[$0] == 0 }
+                .sorted { candidates[$0].area > candidates[$1].area }
+                .map { outerIndex in
+                    let holeIndices = children[outerIndex]
+                        .filter { depths[$0] == 1 }
+                        .sorted { candidates[$0].area > candidates[$1].area }
+                    return HatchEditRegion(
+                        outer: candidates[outerIndex].points,
+                        holes: holeIndices.map { candidates[$0].points },
+                        outerPath: candidates[outerIndex].path,
+                        holePaths: holeIndices.map { candidates[$0].path })
+                }
+        } else {
+            // Normal (default): Alternating island nesting (depth % 2 == 0 are hatched, depth % 2 == 1 are holes)
+            return candidates.indices
+                .filter { depths[$0] % 2 == 0 }
+                .sorted { candidates[$0].area > candidates[$1].area }
+                .map { outerIndex in
+                    let holeIndices = children[outerIndex]
+                        .filter { depths[$0] == depths[outerIndex] + 1 }
+                        .sorted { candidates[$0].area > candidates[$1].area }
+                    return HatchEditRegion(
+                        outer: candidates[outerIndex].points,
+                        holes: holeIndices.map { candidates[$0].points },
+                        outerPath: candidates[outerIndex].path,
+                        holePaths: holeIndices.map { candidates[$0].path })
+                }
+        }
     }
 
     private static func loopProbe(_ points: [Vector3]) -> Vector3 {
@@ -1028,6 +1124,14 @@ struct AppUI {
         guard case .string(let value)? = entity.xdata["dxf.hatchGradientName"] else { return nil }
         let name = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         return name.isEmpty ? nil : name
+    }
+
+    private static func hatchIntFromXData(_ entity: CADEntity, key: String) -> Int? {
+        switch entity.xdata[key] {
+        case .int(let value)?: return value
+        case .double(let value)?: return Int(value)
+        default: return nil
+        }
     }
 
     private static func hatchDoubleFromXData(_ entity: CADEntity, key: String) -> Double? {

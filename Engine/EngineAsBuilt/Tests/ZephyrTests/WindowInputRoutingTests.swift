@@ -49,7 +49,7 @@ final class WindowInputRoutingTests: XCTestCase {
         aux.wantCaptureMouse = true
 
         var e = SDL_Event()
-        e.type = SDL_EVENT_MOUSE_MOTION.rawValue
+        e.type = UInt32(SDL_EVENT_MOUSE_MOTION.rawValue)
         e.motion.windowID = 2
         e.motion.x = 120
         e.motion.y = 80
@@ -77,13 +77,13 @@ final class WindowInputRoutingTests: XCTestCase {
         aux.wantCaptureMouse = true
 
         var forMain = SDL_Event()
-        forMain.type = SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue
+        forMain.type = UInt32(SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue)
         forMain.button.windowID = 1
         forMain.button.button = 1
         XCTAssertFalse(ui.enqueueImGuiInput(event: &forMain, for: main))
 
         var forAux = SDL_Event()
-        forAux.type = SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue
+        forAux.type = UInt32(SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue)
         forAux.button.windowID = 2
         forAux.button.button = 1
         XCTAssertTrue(ui.enqueueImGuiInput(event: &forAux, for: aux))
@@ -95,7 +95,7 @@ final class WindowInputRoutingTests: XCTestCase {
         main.wantCaptureKeyboard = true
 
         var e = SDL_Event()
-        e.type = SDL_EVENT_KEY_DOWN.rawValue
+        e.type = UInt32(SDL_EVENT_KEY_DOWN.rawValue)
         e.key.windowID = 1
         e.key.key = SDLK_A
         e.key.scancode = SDL_SCANCODE_A
@@ -115,7 +115,7 @@ final class WindowInputRoutingTests: XCTestCase {
         let ui = EngineUIManager()
 
         var e = SDL_Event()
-        e.type = SDL_EVENT_TEXT_INPUT.rawValue
+        e.type = UInt32(SDL_EVENT_TEXT_INPUT.rawValue)
         e.text.windowID = 2
         "hi".withCString { ptr in
             e.text.text = ptr
@@ -135,7 +135,7 @@ final class WindowInputRoutingTests: XCTestCase {
         let ui = EngineUIManager()
 
         var e = SDL_Event()
-        e.type = SDL_EVENT_WINDOW_FOCUS_LOST.rawValue
+        e.type = UInt32(SDL_EVENT_WINDOW_FOCUS_LOST.rawValue)
         e.window.windowID = 1
 
         XCTAssertFalse(ui.enqueueImGuiInput(event: &e, for: main))
@@ -154,7 +154,7 @@ final class WindowInputRoutingTests: XCTestCase {
         aux.hasMousePos = true
 
         var e = SDL_Event()
-        e.type = SDL_EVENT_WINDOW_MOUSE_LEAVE.rawValue
+        e.type = UInt32(SDL_EVENT_WINDOW_MOUSE_LEAVE.rawValue)
         e.window.windowID = 2
 
         _ = ui.enqueueImGuiInput(event: &e, for: aux)

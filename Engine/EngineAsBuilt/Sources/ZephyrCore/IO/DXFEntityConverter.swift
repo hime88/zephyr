@@ -589,6 +589,10 @@ public enum DXFEntityConverter {
             boundaryTransform: boundaryTransform,
             hatchAngle: angle)
 
+        let allLoopPaths = extractAllHatchLoopPaths(
+            from: h,
+            storedBoundaryTransform: boundaryTransform)
+
         if h.isGradient == 1 {
             let colors = resolvedGradientColors(for: h, fallback: color ?? .white)
             let gradientName = h.gradientName.isEmpty ? "LINEAR" : h.gradientName
@@ -604,7 +608,7 @@ public enum DXFEntityConverter {
                     color1: colors.0,
                     color2: colors.1)
             }
-            primitives.append(contentsOf: hatchBoundaryCarriers(pathRegions))
+            primitives.append(contentsOf: hatchBoundaryCarriers(paths: allLoopPaths))
             return primitives
         }
 
@@ -613,16 +617,20 @@ public enum DXFEntityConverter {
                 let loops = tessellatedRegion(region)
                 return .fillComplexPolygon(outer: loops.outer, holes: loops.holes, color: color)
             }
-            primitives.append(contentsOf: hatchBoundaryCarriers(pathRegions))
+            primitives.append(contentsOf: hatchBoundaryCarriers(paths: allLoopPaths))
             return primitives
         }
 
         let background = h.bgColor >= 0 ? DXFColorTable.aciToRGBA(h.bgColor, color24: -1) : nil
-        return pathRegions.map { region in
+        var primitives: [CADPrimitive] = pathRegions.map { region in
             .hatchPath(boundary: region.outer, holes: region.holes, pattern: pattern,
                        scale: scale, angle: angle,
                        color: color, backgroundColor: background)
         }
+        if h.hStyle != 0 {
+            primitives.append(contentsOf: hatchBoundaryCarriers(paths: allLoopPaths))
+        }
+        return primitives
     }
 
     internal static func hatchXData(from entity: DXFEntity) -> [String: XDataValue] {
@@ -639,6 +647,12 @@ public enum DXFEntityConverter {
             "dxf.hatchNonDefaultOCS": .bool(
                 hatchBoundaryTransform(for: hatch) != .identity)
         ]
+
+        if hatch.bgColor >= 0 {
+            let bg = DXFColorTable.aciToRGBA(hatch.bgColor, color24: -1)
+            let hex = String(format: "#%02X%02X%02X%02X", bg.r, bg.g, bg.b, bg.a)
+            values["zephyr.hatchBackgroundColor"] = .string(hex)
+        }
 
         if hatch.pixelSize.isFinite, hatch.pixelSize > 0 {
             values["dxf.hatchPixelSize"] = .double(hatch.pixelSize)
@@ -798,16 +812,28 @@ public enum DXFEntityConverter {
         return (outer, holes)
     }
 
-    private static func hatchBoundaryCarriers(_ regions: [HatchPathRegion]) -> [CADPrimitive] {
+    private static func hatchBoundaryCarriers(paths: [CADPolyline]) -> [CADPrimitive] {
         var primitives: [CADPrimitive] = []
-        for region in regions {
-            for sourcePath in [region.outer] + region.holes {
-                var path = sourcePath
-                path.isHatchBoundaryCarrier = true
-                primitives.append(.polyline(path: path, color: .transparent))
-            }
+        for sourcePath in paths {
+            var path = sourcePath
+            path.isHatchBoundaryCarrier = true
+            primitives.append(.polyline(path: path, color: .transparent))
         }
         return primitives
+    }
+
+    private static func extractAllHatchLoopPaths(
+        from h: DXFHatchEntity,
+        storedBoundaryTransform: Transform3D
+    ) -> [CADPolyline] {
+        h.loops.compactMap { loop in
+            guard let path = buildHatchLoopPath(
+                loop,
+                storedBoundaryTransform: storedBoundaryTransform) else { return nil }
+            let points = cleanAdjacentPoints(path.tessellatedPoints())
+            guard points.count >= 3 else { return nil }
+            return path
+        }
     }
 
     private static func extractHatchPathRegions(

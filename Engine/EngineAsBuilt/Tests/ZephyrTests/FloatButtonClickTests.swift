@@ -86,7 +86,7 @@ final class FloatButtonClickTests: XCTestCase {
 
         func auxEvent(type: SDL_EventType, button: UInt8 = 1, x: Float, y: Float) {
             var e = SDL_Event()
-            e.type = type.rawValue
+            e.type = UInt32(type.rawValue)
             switch type {
             case SDL_EVENT_MOUSE_MOTION:
                 e.motion.windowID = 3; e.motion.x = x; e.motion.y = y

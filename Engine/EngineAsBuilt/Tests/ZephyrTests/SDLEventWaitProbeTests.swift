@@ -11,7 +11,7 @@ final class SDLEventWaitProbeTests: XCTestCase {
         defer { SDL_QuitSubSystem(SDL_INIT_EVENTS) }
 
         var down = SDL_Event()
-        down.type = SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue
+        down.type = UInt32(SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue)
         down.button.windowID = 3
         down.button.button = 1
         down.button.x = 50
@@ -23,7 +23,7 @@ final class SDLEventWaitProbeTests: XCTestCase {
         var out = SDL_Event()
         XCTAssertTrue(SDL_PollEvent(&out),
                       "MOUSE_BUTTON_DOWN vanished after SDL_WaitEventTimeout(nil, 1)")
-        XCTAssertEqual(out.type, SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue)
+        XCTAssertEqual(out.type, UInt32(SDL_EVENT_MOUSE_BUTTON_DOWN.rawValue))
         XCTAssertEqual(out.button.windowID, 3)
         XCTAssertEqual(out.button.x, 50)
     }
