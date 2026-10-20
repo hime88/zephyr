@@ -1,0 +1,18 @@
+#!/bin/bash
+set -e
+
+# Resolve the directory where AppRun is located inside the mounted AppImage
+HERE="$(dirname "$(readlink -f "${0}")")"
+
+# Configure PATH
+export PATH="${HERE}/usr/bin:${PATH}"
+
+# Configure LD_LIBRARY_PATH so dynamic linker finds bundled libraries
+# (SDL3, zlib-ng, Swift runtime, ICU, PDFium)
+export LD_LIBRARY_PATH="${HERE}/usr/lib:${HERE}/usr/bin:${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# Configure XDG_DATA_DIRS for desktop entry, icons, and MIME info
+export XDG_DATA_DIRS="${HERE}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+
+# Run Zephyr with provided command line arguments
+exec "${HERE}/usr/bin/Zephyr" "$@"

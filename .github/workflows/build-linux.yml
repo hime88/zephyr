@@ -40,13 +40,21 @@ jobs:
       matrix:
         include:
           - arch: x64
-            runs-on: ubuntu-24.04
+            runs-on: ubuntu-22.04
             pdfium_asset: pdfium-linux-x64.tgz
             zip_name: Zephyr-Linux-x64.zip
+            appimage_arch: x86_64
+            appimage_name: Zephyr-Linux-x64.AppImage
+            flatpak_arch: x86_64
+            bundle_name: Zephyr-Linux-x64.flatpak
           - arch: arm64
-            runs-on: ubuntu-24.04-arm
+            runs-on: ubuntu-22.04-arm
             pdfium_asset: pdfium-linux-arm64.tgz
             zip_name: Zephyr-Linux-arm64.zip
+            appimage_arch: aarch64
+            appimage_name: Zephyr-Linux-arm64.AppImage
+            flatpak_arch: aarch64
+            bundle_name: Zephyr-Linux-arm64.flatpak
 
     defaults:
       run:
@@ -278,6 +286,138 @@ jobs:
           ls -lh "$RUNNER_TEMP/$ZIP_NAME"
 
       # ------------------------------------------------------------------
+      # 10b. Package AppImage
+      # ------------------------------------------------------------------
+      - name: Package AppImage
+        run: |
+          cd Engine/EngineAsBuilt
+          BIN_DIR="$(swift build -c "${{ inputs.configuration || 'release' }}" --show-bin-path)"
+          APPDIR="$RUNNER_TEMP/Zephyr.AppDir"
+          rm -rf "$APPDIR"
+          mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/applications" \
+                   "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
+                   "$APPDIR/usr/share/icons/hicolor/scalable/apps" \
+                   "$APPDIR/usr/share/metainfo"
+
+          # 1. Copy application executable, shaders, and assets into AppDir
+          cp -L "$BIN_DIR/Zephyr" "$APPDIR/usr/bin/"
+          chmod +x "$APPDIR/usr/bin/Zephyr"
+          ln -sf Zephyr "$APPDIR/usr/bin/zephyr"
+          cp -L "$BIN_DIR"/libSDL3*.so* "$APPDIR/usr/lib/" 2>/dev/null || true
+          cp -L "$BIN_DIR"/libSDL3*.so* "$APPDIR/usr/bin/" 2>/dev/null || true
+          cp -L "$BIN_DIR"/libz-ng.so* "$APPDIR/usr/lib/" 2>/dev/null || true
+          cp -L "$BIN_DIR"/libz-ng.so* "$APPDIR/usr/bin/" 2>/dev/null || true
+          cp -L "$BIN_DIR"/libpdfium.so "$APPDIR/usr/lib/" 2>/dev/null || true
+          cp -L "$BIN_DIR"/libpdfium.so "$APPDIR/usr/bin/" 2>/dev/null || true
+          cp -L "$BIN_DIR"/*.spv "$APPDIR/usr/bin/"
+          for asset in "Fonts" "Plot Styles" "Patterns"; do
+            if [ -d "$BIN_DIR/$asset" ]; then
+              cp -R "$BIN_DIR/$asset" "$APPDIR/usr/bin/"
+            fi
+          done
+
+          # 2. Bundle Swift runtime libraries and ICU dependencies
+          SWIFT_ROOT="$(dirname "$(dirname "$(which swift)")")"
+          SWIFT_LIB_DIR="$(find "$SWIFT_ROOT" -name "libswiftCore.so" -type f -exec dirname {} \; | head -n 1)"
+          echo "Found Swift runtime at: $SWIFT_LIB_DIR"
+          if [ -n "$SWIFT_LIB_DIR" ]; then
+            for lib in libswift*.so* libFoundation*.so* libdispatch.so* libBlocksRuntime.so* lib_FoundationICU.so*; do
+              cp -L "$SWIFT_LIB_DIR"/$lib "$APPDIR/usr/lib/" 2>/dev/null || true
+              cp -L "$SWIFT_LIB_DIR"/$lib "$APPDIR/usr/bin/" 2>/dev/null || true
+            done
+          fi
+          # Also bundle system ICU libraries for maximum distro compatibility
+          cp -L /usr/lib/*-linux-gnu/libicu*.so* "$APPDIR/usr/lib/" 2>/dev/null || true
+          cp -L /usr/lib/*-linux-gnu/libicu*.so* "$APPDIR/usr/bin/" 2>/dev/null || true
+
+          # 3. Desktop integration and metadata
+          cd "$GITHUB_WORKSPACE"
+          cp packaging/appimage/AppRun "$APPDIR/AppRun"
+          chmod +x "$APPDIR/AppRun"
+
+          cp packaging/shared/com.zephyr.cad.desktop "$APPDIR/com.zephyr.cad.desktop"
+          cp packaging/shared/com.zephyr.cad.desktop "$APPDIR/zephyr.desktop"
+          cp packaging/shared/com.zephyr.cad.desktop "$APPDIR/usr/share/applications/com.zephyr.cad.desktop"
+
+          cp snap/gui/zephyr.png "$APPDIR/com.zephyr.cad.png"
+          cp snap/gui/zephyr.png "$APPDIR/zephyr.png"
+          cp snap/gui/zephyr.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/com.zephyr.cad.png"
+          cp snap/gui/zephyr.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/com.zephyr.cad.svg"
+          ln -sf com.zephyr.cad.png "$APPDIR/.DirIcon"
+
+          cp packaging/shared/com.zephyr.cad.metainfo.xml "$APPDIR/usr/share/metainfo/com.zephyr.cad.metainfo.xml"
+
+          # 4. Download and run appimagetool
+          APPIMAGE_ARCH="${{ matrix.appimage_arch }}"
+          TOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${APPIMAGE_ARCH}.AppImage"
+          echo "Downloading appimagetool from: $TOOL_URL"
+          curl -sSL -o "$RUNNER_TEMP/appimagetool" "$TOOL_URL"
+          chmod +x "$RUNNER_TEMP/appimagetool"
+
+          echo "Extracting appimagetool..."
+          (cd "$RUNNER_TEMP" && rm -rf squashfs-root && ./appimagetool --appimage-extract >/dev/null)
+
+          echo "Building AppImage: ${{ matrix.appimage_name }}"
+          ARCH="$APPIMAGE_ARCH" "$RUNNER_TEMP/squashfs-root/AppRun" "$APPDIR" "$RUNNER_TEMP/${{ matrix.appimage_name }}"
+          ls -lh "$RUNNER_TEMP/${{ matrix.appimage_name }}"
+
+      # ------------------------------------------------------------------
+      # 10c. Prepare & Upload Staged Payload for Flatpak
+      # ------------------------------------------------------------------
+      - name: Stage Payload for Flatpak
+        run: |
+          cd Engine/EngineAsBuilt
+          BIN_DIR="$(swift build -c "${{ inputs.configuration || 'release' }}" --show-bin-path)"
+          STAGE_PAYLOAD="$RUNNER_TEMP/staged-payload-${{ matrix.arch }}"
+          rm -rf "$STAGE_PAYLOAD"
+          mkdir -p "$STAGE_PAYLOAD"
+
+          # Executable, C libs, shaders, assets
+          cp -L "$BIN_DIR/Zephyr" "$STAGE_PAYLOAD/"
+          cp -L "$BIN_DIR"/libSDL3*.so* "$STAGE_PAYLOAD/" 2>/dev/null || true
+          cp -L "$BIN_DIR"/libz-ng.so* "$STAGE_PAYLOAD/" 2>/dev/null || true
+          cp -L "$BIN_DIR"/libpdfium.so "$STAGE_PAYLOAD/" 2>/dev/null || true
+          cp -L "$BIN_DIR"/*.spv "$STAGE_PAYLOAD/"
+          for asset in "Fonts" "Plot Styles" "Patterns"; do
+            if [ -d "$BIN_DIR/$asset" ]; then
+              cp -R "$BIN_DIR/$asset" "$STAGE_PAYLOAD/"
+            fi
+          done
+
+          # Swift runtime libs
+          SWIFT_ROOT="$(dirname "$(dirname "$(which swift)")")"
+          SWIFT_LIB_DIR="$(find "$SWIFT_ROOT" -name "libswiftCore.so" -type f -exec dirname {} \; | head -n 1)"
+          if [ -n "$SWIFT_LIB_DIR" ]; then
+            for lib in libswift*.so* libFoundation*.so* libdispatch.so* libBlocksRuntime.so* lib_FoundationICU.so*; do
+              cp -L "$SWIFT_LIB_DIR"/$lib "$STAGE_PAYLOAD/" 2>/dev/null || true
+            done
+          fi
+
+          # Desktop files and icons
+          cd "$GITHUB_WORKSPACE"
+          cp packaging/shared/com.zephyr.cad.desktop "$STAGE_PAYLOAD/"
+          cp packaging/shared/com.zephyr.cad.metainfo.xml "$STAGE_PAYLOAD/"
+          cp snap/gui/zephyr.png "$STAGE_PAYLOAD/"
+          cp snap/gui/zephyr.svg "$STAGE_PAYLOAD/"
+
+          echo "Payload contents:"
+          ls -lh "$STAGE_PAYLOAD"
+
+      - name: Upload Staged Payload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: staged-linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/staged-payload-${{ matrix.arch }}
+          retention-days: 1
+
+      - name: Upload AppImage Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.appimage_name }}
+          path: ${{ runner.temp }}/${{ matrix.appimage_name }}
+          if-no-files-found: error
+
+      # ------------------------------------------------------------------
       # 11. Upload to Nightly Release
       # ------------------------------------------------------------------
       - name: Upload to Nightly Release
@@ -293,7 +433,73 @@ jobs:
             Automated nightly builds from `main` branch.
 
             See [downloads page](https://joseph-montanez.github.io/zephyr/#download) for all platforms.
-          files: ${{ runner.temp }}/${{ matrix.zip_name }}
+          files: |
+            ${{ runner.temp }}/${{ matrix.zip_name }}
+            ${{ runner.temp }}/${{ matrix.appimage_name }}
+          prerelease: true
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  flatpak:
+    name: flatpak ${{ matrix.arch }}
+    runs-on: ${{ matrix.runs-on }}
+    needs: build
+    if: (inputs.configuration || 'release') == 'release' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runs-on: ubuntu-24.04
+            flatpak_arch: x86_64
+            bundle_name: Zephyr-Linux-x64.flatpak
+          - arch: arm64
+            runs-on: ubuntu-24.04-arm
+            flatpak_arch: aarch64
+            bundle_name: Zephyr-Linux-arm64.flatpak
+
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
+      options: --privileged
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download Staged Payload
+        uses: actions/download-artifact@v4
+        with:
+          name: staged-linux-${{ matrix.arch }}
+          path: packaging/flatpak/payload
+
+      - name: Build Flatpak Bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: ${{ matrix.bundle_name }}
+          manifest-path: packaging/flatpak/com.zephyr.cad.yml
+          arch: ${{ matrix.flatpak_arch }}
+          cache: false
+
+      - name: Upload Flatpak Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.bundle_name }}
+          path: ${{ matrix.bundle_name }}
+          if-no-files-found: error
+
+      - name: Upload Flatpak to Nightly Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly Build
+          body: |
+            Automated nightly builds from `main` branch.
+
+            See [downloads page](https://joseph-montanez.github.io/zephyr/#download) for all platforms.
+          files: ${{ matrix.bundle_name }}
           prerelease: true
           make_latest: true
         env:

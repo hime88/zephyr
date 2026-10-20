@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.zephyr.cad</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0</project_license>
+  <name>Zephyr</name>
+  <summary>Fast 2D CAD viewer and editor for DXF drawings</summary>
+  <description>
+    <p>
+      Zephyr is a fast, lightweight 2D CAD application for viewing and editing DXF drawings,
+      featuring GPU-accelerated rendering, SHX font support, and EAB project files.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.zephyr.cad.desktop</launchable>
+  <url type="homepage">https://joseph-montanez.github.io/zephyr/</url>
+  <url type="bugtracker">https://github.com/joseph-montanez/zephyr/issues</url>
+  <url type="vcs-browser">https://github.com/joseph-montanez/zephyr</url>
+  <developer id="io.github.joseph_montanez">
+    <name>Joseph Montanez</name>
+  </developer>
+  <categories>
+    <category>Graphics</category>
+    <category>Engineering</category>
+  </categories>
+  <provides>
+    <mediatype>image/vnd.dxf</mediatype>
+    <mediatype>application/dxf</mediatype>
+  </provides>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="1.0" date="2026-10-19">
+      <description>
+        <p>Zephyr 1.0 release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

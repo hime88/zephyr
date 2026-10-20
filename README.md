@@ -13,12 +13,23 @@ Zephyr is a drafting app that runs natively on macOS (Metal), Windows (Direct3D 
 | macOS 12+ | Universal (Apple Silicon & Intel) | [Zephyr-macOS-Universal.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-macOS-Universal.zip) |
 | Windows 10+ | ARM64 (Snapdragon / Surface) | [Zephyr-Windows-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-arm64.zip) |
 | Windows 10+ | x64 | [Zephyr-Windows-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-x64.zip) |
-| Linux (Ubuntu 24.04+) | x64 | [Zephyr-Linux-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-x64.zip) |
-| Linux (Ubuntu 24.04+) | ARM64 | [Zephyr-Linux-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-arm64.zip) |
+| Linux (AppImage) | x64 | [Zephyr-Linux-x64.AppImage](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-x64.AppImage) |
+| Linux (AppImage) | ARM64 | [Zephyr-Linux-arm64.AppImage](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-arm64.AppImage) |
+| Linux (Flatpak) | x64 | [Zephyr-Linux-x64.flatpak](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-x64.flatpak) |
+| Linux (Flatpak) | ARM64 | [Zephyr-Linux-arm64.flatpak](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-arm64.flatpak) |
+| Linux (Portable ZIP, glibc 2.35+) | x64 | [Zephyr-Linux-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-x64.zip) |
+| Linux (Portable ZIP, glibc 2.35+) | ARM64 | [Zephyr-Linux-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-arm64.zip) |
 | Linux (Snap) | x64 | [zephyr_1.0_amd64.snap](https://github.com/joseph-montanez/zephyr/releases/download/nightly/zephyr_1.0_amd64.snap) |
 | Linux (Snap) | ARM64 | [zephyr_1.0_arm64.snap](https://github.com/joseph-montanez/zephyr/releases/download/nightly/zephyr_1.0_arm64.snap) |
 
-Snap install: `sudo snap install --dangerous <file>.snap` (details in [DEVELOPMENT.md](DEVELOPMENT.md#4-snap-packaging)).
+### Linux Distribution Compatibility
+
+| Format | Compatible Distributions & Versions | How to Run / Install |
+|---|---|---|
+| **Flatpak** | **Any Linux distribution with Flatpak installed**<br>• Ubuntu (all supported releases)<br>• Debian 11/12+<br>• Fedora (all releases)<br>• Arch Linux / Manjaro<br>• openSUSE Leap & Tumbleweed<br>• RHEL / Rocky / AlmaLinux 8/9+<br>• Linux Mint & Pop!_OS | `flatpak install --user <file>.flatpak`<br>`flatpak run com.zephyr.cad` |
+| **AppImage** | **Any Linux distribution with `glibc >= 2.35`**<br>• Ubuntu 22.04 LTS (Jammy) & 24.04 LTS (Noble)+<br>• Debian 12 (Bookworm) & 13 (Trixie)<br>• Fedora 37+ (including 38, 39, 40, 41+)<br>• Linux Mint 21+ & Pop!_OS 22.04+<br>• Arch Linux / Manjaro (all rolling)<br>• openSUSE Leap 15.5+ & Tumbleweed | `chmod +x <file>.AppImage`<br>`./<file>.AppImage` |
+| **Snap** | **Any Linux distribution with `snapd`**<br>• Ubuntu (pre-installed)<br>• Debian, Fedora, Arch, openSUSE with `snapd` installed | `sudo snap install --dangerous <file>.snap`<br>(see [DEVELOPMENT.md](DEVELOPMENT.md#4-snap-packaging)) |
+| **Portable ZIP** | **Distributions with `glibc >= 2.35`**<br>• Portable directory; requires host graphics/audio drivers | Extract and execute `./Zephyr` |
 
 ## Escape the Rent Trap
 
@@ -387,8 +398,12 @@ Same links as above — updated on every push.
 | macOS | Universal (Apple Silicon & Intel) | [Zephyr-macOS-Universal.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-macOS-Universal.zip) |
 | Windows | ARM64 | [Zephyr-Windows-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-arm64.zip) |
 | Windows | x64 | [Zephyr-Windows-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Windows-x64.zip) |
-| Linux | x64 | [Zephyr-Linux-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-x64.zip) |
-| Linux | ARM64 | [Zephyr-Linux-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-arm64.zip) |
+| Linux (AppImage) | x64 | [Zephyr-Linux-x64.AppImage](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-x64.AppImage) |
+| Linux (AppImage) | ARM64 | [Zephyr-Linux-arm64.AppImage](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-arm64.AppImage) |
+| Linux (Flatpak) | x64 | [Zephyr-Linux-x64.flatpak](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-x64.flatpak) |
+| Linux (Flatpak) | ARM64 | [Zephyr-Linux-arm64.flatpak](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-arm64.flatpak) |
+| Linux (Portable ZIP, glibc 2.35+) | x64 | [Zephyr-Linux-x64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-x64.zip) |
+| Linux (Portable ZIP, glibc 2.35+) | ARM64 | [Zephyr-Linux-arm64.zip](https://github.com/joseph-montanez/zephyr/releases/download/nightly/Zephyr-Linux-arm64.zip) |
 | Linux (Snap) | x64 | [zephyr_1.0_amd64.snap](https://github.com/joseph-montanez/zephyr/releases/download/nightly/zephyr_1.0_amd64.snap) |
 | Linux (Snap) | ARM64 | [zephyr_1.0_arm64.snap](https://github.com/joseph-montanez/zephyr/releases/download/nightly/zephyr_1.0_arm64.snap) |
 

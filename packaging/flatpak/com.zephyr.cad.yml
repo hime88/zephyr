@@ -1,0 +1,51 @@
+app-id: com.zephyr.cad
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: zephyr
+
+finish-args:
+  # Shared memory access
+  - --share=ipc
+  # Display servers (native Wayland + X11 fallback)
+  - --socket=wayland
+  - --socket=fallback-x11
+  # Audio playback
+  - --socket=pulseaudio
+  # GPU acceleration
+  - --device=dri
+  # Host filesystem access to open and save user CAD drawings
+  - --filesystem=host
+  # Desktop portals
+  - --talk-name=org.freedesktop.portal.*
+
+modules:
+  - name: zephyr
+    buildsystem: simple
+    build-commands:
+      # Target directory structure
+      - install -d /app/bin /app/lib /app/share/applications /app/share/metainfo /app/share/icons/hicolor/256x256/apps /app/share/icons/hicolor/scalable/apps
+      # Executables
+      - install -Dm755 Zephyr /app/bin/Zephyr
+      - ln -sf Zephyr /app/bin/zephyr
+      # Libraries (staged in /app/lib and next to executable for $ORIGIN)
+      - |
+        for f in *.so*; do
+          if [ -e "$f" ]; then
+            cp -d "$f" /app/lib/
+            cp -d "$f" /app/bin/
+          fi
+        done
+      # Shaders and runtime assets (located via SDL_GetBasePath())
+      - cp *.spv /app/bin/
+      - cp -R Fonts /app/bin/
+      - cp -R "Plot Styles" /app/bin/
+      - cp -R Patterns /app/bin/
+      # Desktop integration
+      - install -Dm644 com.zephyr.cad.desktop /app/share/applications/com.zephyr.cad.desktop
+      - install -Dm644 com.zephyr.cad.metainfo.xml /app/share/metainfo/com.zephyr.cad.metainfo.xml
+      - install -Dm644 zephyr.png /app/share/icons/hicolor/256x256/apps/com.zephyr.cad.png
+      - install -Dm644 zephyr.svg /app/share/icons/hicolor/scalable/apps/com.zephyr.cad.svg
+    sources:
+      - type: dir
+        path: payload
