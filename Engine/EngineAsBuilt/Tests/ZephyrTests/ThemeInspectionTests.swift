@@ -111,4 +111,77 @@ final class ThemeInspectionTests: XCTestCase {
         ui.toggleTheme()
         XCTAssertFalse(ui.isDarkTheme)
     }
+
+    func testCatppuccinThemes() {
+        let ctx = ImGuiCreateContext(nil)!
+        defer { ImGuiDestroyContext(ctx) }
+        let ui = EngineUIManager()
+        let io = ImGuiGetIO()!
+        io.pointee.DisplaySize = ImVec2(x: 1920, y: 1080)
+        io.pointee.DeltaTime = 1.0 / 60.0
+        _ = ImFontAtlas_AddFontDefault(io.pointee.Fonts, nil)
+        igImFontAtlasBuildMain(io.pointee.Fonts)
+
+        // 1. Verify all presets are registered
+        XCTAssertEqual(AppTheme.allPresets.count, 6)
+        let presetIDs = AppTheme.allPresets.map(\.id)
+        XCTAssertTrue(presetIDs.contains("dark"))
+        XCTAssertTrue(presetIDs.contains("light"))
+        XCTAssertTrue(presetIDs.contains("catppuccin-latte"))
+        XCTAssertTrue(presetIDs.contains("catppuccin-frappe"))
+        XCTAssertTrue(presetIDs.contains("catppuccin-macchiato"))
+        XCTAssertTrue(presetIDs.contains("catppuccin-mocha"))
+
+        // 2. Verify name resolution & aliases
+        XCTAssertEqual(AppTheme.theme(named: "latte")?.id, "catppuccin-latte")
+        XCTAssertEqual(AppTheme.theme(named: "Catppuccin Latte")?.id, "catppuccin-latte")
+        XCTAssertEqual(AppTheme.theme(named: "catppuccin-latte")?.id, "catppuccin-latte")
+
+        XCTAssertEqual(AppTheme.theme(named: "frappe")?.id, "catppuccin-frappe")
+        XCTAssertEqual(AppTheme.theme(named: "Frappe")?.id, "catppuccin-frappe")
+        XCTAssertEqual(AppTheme.theme(named: "FRAPPE")?.id, "catppuccin-frappe")
+        XCTAssertEqual(AppTheme.theme(named: "Frappé")?.id, "catppuccin-frappe")
+        XCTAssertEqual(AppTheme.theme(named: "catppuccin-frappe")?.id, "catppuccin-frappe")
+
+        XCTAssertEqual(AppTheme.theme(named: "macchiato")?.id, "catppuccin-macchiato")
+        XCTAssertEqual(AppTheme.theme(named: "Catppuccin Macchiato")?.id, "catppuccin-macchiato")
+
+        XCTAssertEqual(AppTheme.theme(named: "mocha")?.id, "catppuccin-mocha")
+        XCTAssertEqual(AppTheme.theme(named: "Catppuccin Mocha")?.id, "catppuccin-mocha")
+
+        // 3. Test applying Catppuccin Mocha
+        XCTAssertTrue(ui.setTheme(named: "mocha"))
+        XCTAssertEqual(ui.theme.id, "catppuccin-mocha")
+        XCTAssertTrue(ui.isDarkTheme)
+        XCTAssertEqual(ui.theme.panelBg.x, AppTheme.catppuccinMocha.panelBg.x, accuracy: 0.001)
+
+        ImGuiNewFrame()
+        let mochaWinBg = ImGuiGetStyleColorVec4(Int32(ImGuiCol_WindowBg.rawValue))!.pointee
+        let mochaText = ImGuiGetStyleColorVec4(Int32(ImGuiCol_Text.rawValue))!.pointee
+        XCTAssertEqual(mochaWinBg.x, AppTheme.catppuccinMocha.panelBg.x, accuracy: 0.001)
+        XCTAssertEqual(mochaText.x, AppTheme.catppuccinMocha.textPrimary.x, accuracy: 0.001)
+        ImGuiRender()
+
+        // 4. Test applying Catppuccin Latte (light flavor)
+        XCTAssertTrue(ui.setTheme(named: "latte"))
+        XCTAssertEqual(ui.theme.id, "catppuccin-latte")
+        XCTAssertFalse(ui.isDarkTheme)
+        XCTAssertEqual(ui.theme.panelBg.x, AppTheme.catppuccinLatte.panelBg.x, accuracy: 0.001)
+
+        // 5. Test cycling through themes
+        ui.setTheme(AppTheme.dark)
+        XCTAssertEqual(ui.theme.id, "dark")
+        ui.cycleTheme()
+        XCTAssertEqual(ui.theme.id, "light")
+        ui.cycleTheme()
+        XCTAssertEqual(ui.theme.id, "catppuccin-latte")
+        ui.cycleTheme()
+        XCTAssertEqual(ui.theme.id, "catppuccin-frappe")
+        ui.cycleTheme()
+        XCTAssertEqual(ui.theme.id, "catppuccin-macchiato")
+        ui.cycleTheme()
+        XCTAssertEqual(ui.theme.id, "catppuccin-mocha")
+        ui.cycleTheme()
+        XCTAssertEqual(ui.theme.id, "dark")
+    }
 }

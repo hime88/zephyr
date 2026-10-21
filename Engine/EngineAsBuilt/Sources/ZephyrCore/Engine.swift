@@ -740,7 +740,11 @@ public final class PhrostEngine {
 
         // Load persisted user settings and apply them to the UI manager.
         let settings = UserSettings.load()
-        self.ui.isDarkTheme = settings.isDarkTheme
+        if let theme = AppTheme.theme(named: settings.themeName) {
+            self.ui.currentTheme = theme
+        } else {
+            self.ui.isDarkTheme = settings.isDarkTheme
+        }
         self.ui.applyTheme()
         self.ui.layersPanelVisible = settings.layersPanelVisible
         self.ui.drawPaletteVisible = settings.drawPaletteVisible

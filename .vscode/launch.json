@@ -7,7 +7,7 @@
             "cwd": "${workspaceFolder}/Engine/EngineAsBuilt",
             "name": "Debug Zephyr (compile.ps1)",
             "program": "${workspaceFolder}/Engine/EngineAsBuilt/.build/aarch64-unknown-windows-msvc/debug/Zephyr.exe",
-            "preLaunchTask": "Build Zephyr Debug (MSVC ARM64)",
+            "preLaunchTask": "Build EngineAsBuilt Debug (MSVC ARM64)",
             "stopOnEntry": false
         },
         {

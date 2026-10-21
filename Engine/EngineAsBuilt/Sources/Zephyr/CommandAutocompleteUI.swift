@@ -420,42 +420,28 @@ struct CommandAutocompleteUI {
                     ImGuiPopStyleColor(1)
                     if engine.ui.commandTitleFont != nil { ImGuiPopFont() }
 
-                    // ---- Inline Dark / Light theme pills ----
+                    // ---- Inline Theme pills ----
                     // The active theme pill uses brandGold as the button
                     // background and rowHoverText as the text color. The
-                    // inactive pill is transparent with dimmed text.
-                    ImGuiSameLine(0, 8)
-                    let isDark = engine.ui.isDarkTheme
-
-                    // DARK pill
-                    if isDark {
-                        ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.rowHoverText)
-                        ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), engine.ui.theme.brandGold)
-                    } else {
-                        ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textDim)
-                        ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), ImVec4(x: 0, y: 0, z: 0, w: 0))
-                    }
+                    // inactive pills are transparent with dimmed text.
                     ImGuiPushStyleVarX(Int32(ImGuiStyleVar_FramePadding.rawValue), 4)
                     ImGuiPushStyleVarY(Int32(ImGuiStyleVar_FramePadding.rawValue), 0)
-                    ImGuiButton("DARK", ImVec2(x: 0, y: 0))
-                    ImGuiPopStyleVar(2)
-                    ImGuiPopStyleColor(2)
-
-                    ImGuiSameLine(0, 4)
-
-                    // LIGHT pill
-                    if !isDark {
-                        ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.rowHoverText)
-                        ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), engine.ui.theme.brandGold)
-                    } else {
-                        ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textDim)
-                        ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), ImVec4(x: 0, y: 0, z: 0, w: 0))
+                    for preset in AppTheme.allPresets {
+                        ImGuiSameLine(0, 4)
+                        let isActive = (engine.ui.theme.id == preset.id)
+                        if isActive {
+                            ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.rowHoverText)
+                            ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), engine.ui.theme.brandGold)
+                        } else {
+                            ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textDim)
+                            ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), ImVec4(x: 0, y: 0, z: 0, w: 0))
+                        }
+                        if ImGuiButton("\(preset.shortName)##theme_\(preset.id)", ImVec2(x: 0, y: 0)) {
+                            engine.ui.setTheme(preset.theme)
+                        }
+                        ImGuiPopStyleColor(2)
                     }
-                    ImGuiPushStyleVarX(Int32(ImGuiStyleVar_FramePadding.rawValue), 4)
-                    ImGuiPushStyleVarY(Int32(ImGuiStyleVar_FramePadding.rawValue), 0)
-                    ImGuiButton("LIGHT", ImVec2(x: 0, y: 0))
                     ImGuiPopStyleVar(2)
-                    ImGuiPopStyleColor(2)
 
                 } else {
                     // Normal command: just the canonical name.

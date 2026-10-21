@@ -119,8 +119,8 @@ $vcvarsPath = "$vsPath\VC\Auxiliary\Build\vcvarsall.bat"
 # Long-term fix on a developer machine: uninstall the older Swift toolchains.
 $swiftPlatformsRoot = "$env:LOCALAPPDATA\Programs\Swift\Platforms"
 $swiftBuildSystemFlag = @()
-if ((Test-Path $swiftPlatformsRoot) -and ((Get-ChildItem $swiftPlatformsRoot -Directory).Count -gt 1)) {
-    $platformVersions = (Get-ChildItem $swiftPlatformsRoot -Directory | Select-Object -ExpandProperty Name) -join ', '
+if ((Test-Path $swiftPlatformsRoot) -and (@(Get-ChildItem $swiftPlatformsRoot -Directory).Count -gt 1)) {
+    $platformVersions = (@(Get-ChildItem $swiftPlatformsRoot -Directory | Select-Object -ExpandProperty Name)) -join ', '
     Write-Host "Multiple Swift Platform SDKs found ($platformVersions) - using --build-system native" -ForegroundColor Yellow
     $swiftBuildSystemFlag = @("--build-system", "native")
 }

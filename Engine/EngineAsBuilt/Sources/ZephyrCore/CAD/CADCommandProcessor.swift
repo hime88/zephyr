@@ -1085,18 +1085,28 @@ public final class CADCommandProcessor {
             clearCommand()
         // --- Layer commands ---
         // --- Theme ---
-        case "THEME", "DARKMODE", "LIGHTMODE":
-            engine?.ui.toggleTheme()
+        case "THEME":
+            engine?.ui.cycleTheme()
+            if let eng = engine {
+                let themes = AppTheme.allPresets.map(\.displayName).joined(separator: ", ")
+                print("[CAD] Theme set to: \(eng.ui.theme.name). Available themes: \(themes)")
+            }
+            clearCommand()
+        case "DARKMODE":
+            engine?.ui.setTheme(AppTheme.dark)
+            clearCommand()
+        case "LIGHTMODE":
+            engine?.ui.setTheme(AppTheme.light)
             clearCommand()
         case _ where upper.hasPrefix("THEME "):
             let arg = String(upper.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-            switch arg {
-            case "DARK":
-                if let eng = engine, !eng.ui.isDarkTheme { eng.ui.toggleTheme() }
-            case "LIGHT":
-                if let eng = engine, eng.ui.isDarkTheme { eng.ui.toggleTheme() }
-            default:
-                print("[CAD] Usage: THEME DARK|LIGHT  or  DARKMODE / LIGHTMODE")
+            if let eng = engine {
+                if eng.ui.setTheme(named: arg) {
+                    print("[CAD] Theme set to: \(eng.ui.theme.name)")
+                } else {
+                    let available = AppTheme.allPresets.map(\.displayName).joined(separator: ", ")
+                    print("[CAD] Unknown theme '\(arg)'. Available themes: \(available)")
+                }
             }
             clearCommand()
         case "LANGUAGE", "LANG", "UILANGUAGE", "FONTLANG":

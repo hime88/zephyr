@@ -15,6 +15,7 @@ import Foundation
 public struct UserSettings: Codable, Sendable {
     // MARK: - Theme
     public var isDarkTheme: Bool
+    public var themeName: String
 
     // MARK: - Panel Visibility
     public var layersPanelVisible: Bool
@@ -52,6 +53,7 @@ public struct UserSettings: Codable, Sendable {
     /// below suppresses the synthesized one).
     public init(
         isDarkTheme: Bool,
+        themeName: String? = nil,
         layersPanelVisible: Bool,
         drawPaletteVisible: Bool,
         blockPanelVisible: Bool,
@@ -71,6 +73,7 @@ public struct UserSettings: Codable, Sendable {
         xrefBindType: Int = 0
     ) {
         self.isDarkTheme = isDarkTheme
+        self.themeName = themeName ?? (isDarkTheme ? "dark" : "light")
         self.layersPanelVisible = layersPanelVisible
         self.drawPaletteVisible = drawPaletteVisible
         self.blockPanelVisible = blockPanelVisible
@@ -93,6 +96,7 @@ public struct UserSettings: Codable, Sendable {
     // MARK: - Default instance
     public static let `default` = UserSettings(
         isDarkTheme: true,
+        themeName: "dark",
         layersPanelVisible: false,
         drawPaletteVisible: false,
         blockPanelVisible: false,
@@ -112,6 +116,8 @@ public struct UserSettings: Codable, Sendable {
         let fallback = Self.default
         isDarkTheme = try box.decodeIfPresent(Bool.self, forKey: .isDarkTheme)
             ?? fallback.isDarkTheme
+        themeName = try box.decodeIfPresent(String.self, forKey: .themeName)
+            ?? (isDarkTheme ? "dark" : "light")
         layersPanelVisible = try box.decodeIfPresent(Bool.self, forKey: .layersPanelVisible)
             ?? fallback.layersPanelVisible
         drawPaletteVisible = try box.decodeIfPresent(Bool.self, forKey: .drawPaletteVisible)
@@ -154,6 +160,7 @@ public struct UserSettings: Codable, Sendable {
     public static func capture(ui: EngineUIManager) -> UserSettings {
         UserSettings(
             isDarkTheme: ui.isDarkTheme,
+            themeName: ui.theme.id,
             layersPanelVisible: ui.layersPanelVisible,
             drawPaletteVisible: ui.drawPaletteVisible,
             blockPanelVisible: ui.blockPanelVisible,

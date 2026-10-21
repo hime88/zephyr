@@ -334,18 +334,31 @@ public final class EngineUIManager {
     
     // MARK: - Theme State
     
-    /// Whether the current UI theme is dark (true) or light (false).
-    public var isDarkTheme: Bool = true {
+    /// The currently active AppTheme instance.
+    public var currentTheme: AppTheme = AppTheme.dark {
         didSet {
-            if oldValue != isDarkTheme && igGetCurrentContext() != nil {
+            if igGetCurrentContext() != nil {
                 applyTheme()
             }
         }
     }
-    
-    /// The currently active AppTheme instance.
+
+    /// The currently active AppTheme instance (alias for currentTheme).
     public var theme: AppTheme {
-        return isDarkTheme ? AppTheme.dark : AppTheme.light
+        get { currentTheme }
+        set { currentTheme = newValue }
+    }
+
+    /// Whether the current UI theme is dark (true) or light (false).
+    /// Maintained for backwards compatibility. Setting this sets the theme
+    /// to AppTheme.dark or AppTheme.light.
+    public var isDarkTheme: Bool {
+        get { currentTheme.isDark }
+        set {
+            if newValue != currentTheme.isDark {
+                currentTheme = newValue ? AppTheme.dark : AppTheme.light
+            }
+        }
     }
     
     /// User/theme viewport background color (normalized 0-1).
@@ -548,20 +561,13 @@ public final class EngineUIManager {
         withUnsafeMutablePointer(to: &style.pointee.Colors) { tuplePtr in
             tuplePtr.withMemoryRebound(to: ImVec4.self, capacity: Int(ImGuiCol_COUNT.rawValue)) { colors in
                 
-                // Generic mappings for both themes based on semantic colors
-                if isDarkTheme {
-                    colors[Int(ImGuiCol_Button.rawValue)]         = theme.border
-                    colors[Int(ImGuiCol_FrameBg.rawValue)]        = ImVec4(x: 0.14, y: 0.25, z: 0.38, w: 0.70)
-                    colors[Int(ImGuiCol_FrameBgHovered.rawValue)] = theme.hoverBg
-                    colors[Int(ImGuiCol_FrameBgActive.rawValue)]  = theme.activeBg
-                } else {
-                    colors[Int(ImGuiCol_Button.rawValue)]         = ImVec4(x: 0.88, y: 0.92, z: 0.96, w: 1.00)
-                    colors[Int(ImGuiCol_FrameBg.rawValue)]        = ImVec4(x: 0.88, y: 0.92, z: 0.96, w: 0.80)
-                    colors[Int(ImGuiCol_FrameBgHovered.rawValue)] = ImVec4(x: 0.80, y: 0.87, z: 0.93, w: 0.90)
-                    colors[Int(ImGuiCol_FrameBgActive.rawValue)]  = theme.activeBg
-                }
-                colors[Int(ImGuiCol_ButtonHovered.rawValue)] = theme.brandGoldHover
-                colors[Int(ImGuiCol_ButtonActive.rawValue)]  = theme.brandGoldActive
+                colors[Int(ImGuiCol_Button.rawValue)]         = theme.buttonBg
+                colors[Int(ImGuiCol_ButtonHovered.rawValue)]  = theme.brandGoldHover
+                colors[Int(ImGuiCol_ButtonActive.rawValue)]   = theme.brandGoldActive
+
+                colors[Int(ImGuiCol_FrameBg.rawValue)]        = theme.frameBg
+                colors[Int(ImGuiCol_FrameBgHovered.rawValue)] = isDarkTheme ? theme.hoverBg : ImVec4(x: 0.80, y: 0.87, z: 0.93, w: 0.90)
+                colors[Int(ImGuiCol_FrameBgActive.rawValue)]  = theme.activeBg
 
                 colors[Int(ImGuiCol_Header.rawValue)]        = theme.border
                 colors[Int(ImGuiCol_HeaderHovered.rawValue)] = theme.brandGoldHover
@@ -573,6 +579,7 @@ public final class EngineUIManager {
 
                 colors[Int(ImGuiCol_TitleBg.rawValue)]       = theme.topChromeBg
                 colors[Int(ImGuiCol_TitleBgActive.rawValue)] = theme.topChromeBg
+                colors[Int(ImGuiCol_PopupBg.rawValue)]       = theme.panelBg
                 
                 colors[Int(ImGuiCol_Separator.rawValue)]     = theme.border
                 colors[Int(ImGuiCol_Border.rawValue)]        = theme.borderDim
@@ -587,11 +594,44 @@ public final class EngineUIManager {
         }
     }
 
-    /// Toggle between dark and light theme.
-    public func toggleTheme() {
-        isDarkTheme.toggle()
+    /// Switch to a theme by name/identifier, returning true if found.
+    @discardableResult
+    public func setTheme(named name: String) -> Bool {
+        if let newTheme = AppTheme.theme(named: name) {
+            setTheme(newTheme)
+            return true
+        }
+        return false
+    }
+
+    /// Switch to a specific AppTheme instance.
+    public func setTheme(_ newTheme: AppTheme) {
+        currentTheme = newTheme
         displayPaletteGeneration &+= 1
         applyTheme()
+    }
+
+    /// Cycle to the next available theme in sequence.
+    public func cycleTheme() {
+        let next = AppTheme.nextTheme(after: currentTheme)
+        setTheme(next)
+    }
+
+    /// Toggle between dark and light theme.
+    public func toggleTheme() {
+        if isDarkTheme {
+            if currentTheme.id.hasPrefix("catppuccin") {
+                setTheme(AppTheme.catppuccinLatte)
+            } else {
+                setTheme(AppTheme.light)
+            }
+        } else {
+            if currentTheme.id == AppTheme.catppuccinLatte.id {
+                setTheme(AppTheme.catppuccinMocha)
+            } else {
+                setTheme(AppTheme.dark)
+            }
+        }
     }
     
     // MARK: - ImGui Rendering

@@ -451,13 +451,15 @@ struct AppUI {
         ImGuiSpacing()
 
         ImGuiTextV("Appearance")
-        var themeChoice: Int32 = engine.ui.isDarkTheme ? 0 : 1
-        if ImGuiRadioButton("Dark", &themeChoice, 0) {
-            if !engine.ui.isDarkTheme { engine.ui.toggleTheme() }
-        }
-        ImGuiSameLine(0, 12)
-        if ImGuiRadioButton("Light", &themeChoice, 1) {
-            if engine.ui.isDarkTheme { engine.ui.toggleTheme() }
+        let presets = AppTheme.allPresets
+        for (idx, preset) in presets.enumerated() {
+            let isCurrent = (engine.ui.theme.id == preset.id)
+            if ImGuiRadioButton(preset.displayName, isCurrent) {
+                engine.ui.setTheme(preset.theme)
+            }
+            if (idx + 1) % 3 != 0 && idx < presets.count - 1 {
+                ImGuiSameLine(0, 12)
+            }
         }
         ImGuiSpacing()
         ImGuiSeparator()

@@ -258,7 +258,8 @@ struct ToolbarUI {
 
             // Right-aligned controls: view rotation slider and theme toggle.
             let hideBtnWidth: Float = 28
-            let rightX = dw - hideBtnWidth - 8
+            let themeBtnWidth: Float = 140
+            let rightX = dw - hideBtnWidth - themeBtnWidth - 8
 
             let sliderWidth: Float = 130
             let sliderX = rightX - sliderWidth - 20
@@ -284,10 +285,15 @@ struct ToolbarUI {
                 ImGuiSetCursorPosX(rightX)
             }
 
-            // Dark/Light theme toggle button.
-            let themeLabel = engine.ui.isDarkTheme ? "Light Mode" : "Dark Mode"
+            // Theme cycle button.
+            let themeLabel = engine.ui.theme.name
             if igSmallButton(themeLabel) {
-                engine.ui.toggleTheme()
+                engine.ui.cycleTheme()
+            }
+            if ImGuiIsItemHovered(0) {
+                ImGuiBeginTooltip()
+                ImGuiTextV("Current theme: \(engine.ui.theme.name)\nClick to cycle themes")
+                ImGuiEndTooltip()
             }
             ImGuiSameLine(0, 8)
 
