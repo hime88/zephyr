@@ -459,8 +459,55 @@ enum LispScriptedCommands {
         }
     }
 
+    static let knownGradientNames: Set<String> = [
+        "LINEAR", "CYLINDER", "INVCYLINDER", "SPHERICAL",
+        "HEMISPHERICAL", "CURVED", "INVCURVED", "INVSPHERICAL", "INVHEMISPHERICAL",
+    ]
+
+    static let gradientIndexToName: [Int: String] = [
+        1: "LINEAR",
+        2: "CYLINDER",
+        3: "INVCYLINDER",
+        4: "SPHERICAL",
+        5: "HEMISPHERICAL",
+        6: "CURVED",
+        7: "INVCURVED",
+        8: "INVSPHERICAL",
+        9: "INVHEMISPHERICAL",
+    ]
+
+    static func normalizedGradientName(_ raw: String) -> String? {
+        var name = canonicalName(raw)
+        if let idx = Int(name), let mapped = gradientIndexToName[idx] {
+            return mapped
+        }
+        if name.hasPrefix("GRADIENT_") {
+            name = String(name.dropFirst("GRADIENT_".count))
+        } else if name.hasPrefix("GR_") {
+            name = String(name.dropFirst("GR_".count))
+        }
+        switch name {
+        case "CYLINDRICAL": return "CYLINDER"
+        case "INVCYLINDRICAL": return "INVCYLINDER"
+        case "GRADIENT", "GRAD": return "LINEAR"
+        default:
+            if knownGradientNames.contains(name) {
+                return name
+            }
+            let upper = canonicalName(raw)
+            if upper.hasPrefix("GR_") || upper.hasPrefix("GRAD") {
+                return name.isEmpty ? "LINEAR" : name
+            }
+            return nil
+        }
+    }
+
     static func parseTrueColor(_ text: String) -> ColorRGBA? {
-        let parts = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        var cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.uppercased().hasPrefix("RGB:") {
+            cleaned = String(cleaned.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+        }
+        let parts = cleaned.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         guard parts.count == 3,
               let r = Int(parts[0]),
               let g = Int(parts[1]),
@@ -476,12 +523,17 @@ enum LispScriptedCommands {
                 if let str = takeStringOperand(&operands) {
                     return parseTrueColor(str)
                 }
+                return nil
             case .word("BYLAYER"): return nil
             case .word("BYBLOCK"): return nil
             case .word(let word):
+                if word.contains(",") || word.hasPrefix("RGB:") {
+                    return parseTrueColor(word)
+                }
                 if let aci = Int(word), (1...255).contains(aci) {
                     return DXFColorTable.aciToRGBA(Int32(aci), color24: -1)
                 }
+                return nil
             case .enter: return nil
             }
         }
@@ -494,7 +546,9 @@ enum LispScriptedCommands {
                 }
             case .string(let str), .symbol(let str):
                 operands.removeFirst()
-                if str.contains(",") { return parseTrueColor(str) }
+                if str.contains(",") || str.uppercased().hasPrefix("RGB:") {
+                    return parseTrueColor(str)
+                }
                 if let aci = Int(str), (1...255).contains(aci) {
                     return DXFColorTable.aciToRGBA(Int32(aci), color24: -1)
                 }
@@ -503,6 +557,30 @@ enum LispScriptedCommands {
             }
         }
         return nil
+    }
+
+    static func parseOptionalColorOperand(_ operands: inout [LispValue]) -> ColorRGBA? {
+        guard let first = operands.first else { return nil }
+        switch first {
+        case .string(let raw), .symbol(let raw):
+            let word = canonicalName(raw)
+            if word == "T" || word == "TRUECOLOR" {
+                operands.removeFirst()
+                guard let str = takeStringOperand(&operands) else { return nil }
+                return parseTrueColor(str)
+            }
+            if word == "C2" || word == "BG" || word == "BACKGROUND" {
+                operands.removeFirst()
+                return try? parseColorOperand(&operands)
+            }
+            if raw.contains(",") || word.hasPrefix("RGB:") {
+                operands.removeFirst()
+                return parseTrueColor(raw)
+            }
+            return nil
+        default:
+            return nil
+        }
     }
 
     private static func extractBoundaryVertices(entity: CADEntity) -> [Vector3] {
@@ -723,32 +801,130 @@ enum LispScriptedCommands {
         }
     }
 
+    private static let hatchOptionKeywords: Set<String> = [
+        "P", "PATTERN", "G", "GRADIENT", "CO", "COLOR",
+        "C2", "BG", "BACKGROUND", "A", "ANGLE", "S", "SCALE",
+    ]
+
+    private static func gradientStopsJSON(_ first: ColorRGBA, _ second: ColorRGBA) -> String {
+        let rgb1 = (Int(first.r) << 16) | (Int(first.g) << 8) | Int(first.b)
+        let rgb2 = (Int(second.r) << 16) | (Int(second.g) << 8) | Int(second.b)
+        return "[{\"aci\":0,\"position\":0,\"rgb\":\(rgb1)},{\"aci\":0,\"position\":1,\"rgb\":\(rgb2)}]"
+    }
+
     private static func runHatch(_ operands: inout [LispValue], host: LispCADHost) async throws {
         var pattern = "SOLID"
+        var isGradient = false
         var color1: ColorRGBA?
         var color2: ColorRGBA?
         var angle = 0.0
         var scale = 1.0
         var doneOptions = false
 
+        // Consult HP* / GF* system variables as initial defaults if configured via (setvar ...)
+        if case let .string(hpName)? = await host.getSystemVar("HPNAME"), !hpName.isEmpty {
+            if let grad = normalizedGradientName(hpName) {
+                isGradient = true
+                pattern = grad
+            } else {
+                pattern = canonicalName(hpName)
+            }
+        }
+        if let hpScale = (await host.getSystemVar("HPSCALE"))?.asDouble, hpScale > 0 {
+            scale = hpScale
+        }
+        if let hpAng = (await host.getSystemVar("HPANG"))?.asDouble, hpAng != 0 {
+            angle = hpAng
+        }
+        if let gfVal = await host.getSystemVar("GFNAME") {
+            switch gfVal {
+            case .int(let idx) where idx > 0:
+                if let grad = gradientIndexToName[idx] {
+                    isGradient = true
+                    pattern = grad
+                }
+            case .string(let s) where !s.isEmpty:
+                if let grad = normalizedGradientName(s) {
+                    isGradient = true
+                    pattern = grad
+                }
+            default:
+                break
+            }
+        }
+        if case let .string(c1Str)? = await host.getSystemVar("GFCLR1"), !c1Str.isEmpty {
+            color1 = parseTrueColor(c1Str) ?? Int(c1Str).flatMap {
+                (1...255).contains($0) ? DXFColorTable.aciToRGBA(Int32($0), color24: -1) : nil
+            }
+        }
+        if case let .string(c2Str)? = await host.getSystemVar("GFCLR2"), !c2Str.isEmpty {
+            color2 = parseTrueColor(c2Str) ?? Int(c2Str).flatMap {
+                (1...255).contains($0) ? DXFColorTable.aciToRGBA(Int32($0), color24: -1) : nil
+            }
+        }
+        if let gfAng = (await host.getSystemVar("GFANG"))?.asDouble, gfAng != 0 {
+            angle = gfAng
+        }
+
         while !operands.isEmpty, !doneOptions {
             guard let kw = takeKeyword(&operands) else { break }
             switch kw {
             case .enter:
+                if let next = operands.first,
+                   case let .string(nextRaw) = next,
+                   hatchOptionKeywords.contains(canonicalName(nextRaw))
+                {
+                    // "" closed a sub-prompt (e.g. _CO); continue reading -HATCH options.
+                    continue
+                }
                 doneOptions = true
             case .word("P"), .word("PATTERN"):
                 if let name = takeStringOperand(&operands) {
-                    pattern = canonicalName(name)
+                    if let grad = normalizedGradientName(name) {
+                        isGradient = true
+                        pattern = grad
+                    } else {
+                        isGradient = false
+                        pattern = canonicalName(name)
+                    }
+                }
+            case .word("G"), .word("GRADIENT"):
+                isGradient = true
+                if pattern == "SOLID" { pattern = "LINEAR" }
+                if let first = operands.first {
+                    switch first {
+                    case .string(let s), .symbol(let s):
+                        let word = canonicalName(s)
+                        if !word.isEmpty, !hatchOptionKeywords.contains(word),
+                           let grad = normalizedGradientName(s)
+                        {
+                            operands.removeFirst()
+                            pattern = grad
+                        }
+                    case .int(let i):
+                        if let grad = gradientIndexToName[i] {
+                            operands.removeFirst()
+                            pattern = grad
+                        }
+                    default:
+                        break
+                    }
+                }
+                if let c = parseOptionalColorOperand(&operands) {
+                    if color1 == nil {
+                        color1 = c
+                        if let c2 = parseOptionalColorOperand(&operands) { color2 = c2 }
+                    } else if color2 == nil {
+                        color2 = c
+                    }
                 }
             case .word("CO"), .word("COLOR"):
                 color1 = try parseColorOperand(&operands)
-                if pattern.hasPrefix("GR_") || pattern.hasPrefix("GRADIENT") {
-                    if let nextKw = takeKeyword(&operands), case .word("T") = nextKw {
-                        if let str = takeStringOperand(&operands) {
-                            color2 = parseTrueColor(str)
-                        }
-                    }
+                if let c2 = parseOptionalColorOperand(&operands) {
+                    color2 = c2
                 }
+            case .word("C2"), .word("BG"), .word("BACKGROUND"):
+                color2 = try parseColorOperand(&operands)
             case .word("A"), .word("ANGLE"):
                 angle = (try? takeNumberOrNumericString(&operands, command: "-HATCH", what: "angle")) ?? 0.0
             case .word("S"), .word("SCALE"):
@@ -764,28 +940,45 @@ enum LispScriptedCommands {
         }
         _ = takeKeyword(&operands)
 
-        var prims: [CADPrimitive] = []
+        let layerID = try activeLayerID(host)
+        var entities: [CADEntity] = []
         let defaultHatchColor = await currentColor(host)
+        let useGradient = isGradient || normalizedGradientName(pattern) != nil
+        let gradName = normalizedGradientName(pattern) ?? "LINEAR"
+        let angleRad = angle * Double.pi / 180
+
         for handle in targets.sorted(by: { $0.uuidString < $1.uuidString }) {
             guard let entity = host.document.entity(for: handle) else { continue }
             let boundary = extractBoundaryVertices(entity: entity)
             guard boundary.count >= 3 else { continue }
             let hatchColor = color1 ?? defaultHatchColor
-            if pattern.hasPrefix("GR_") || pattern.hasPrefix("GRAD") {
+            if useGradient {
                 let c1 = color1 ?? ColorRGBA.white
                 let c2 = color2 ?? ColorRGBA.black
-                prims.append(.gradient(
-                    outer: boundary, holes: [], gradientName: pattern,
-                    angle: angle * Double.pi / 180, color1: c1, color2: c2))
+                let prim = CADPrimitive.gradient(
+                    outer: boundary, holes: [], gradientName: gradName,
+                    angle: angleRad, color1: c1, color2: c2)
+                var newEntity = CADEntity(layerID: layerID, localGeometry: [prim])
+                newEntity.xdata["dxf.hatchIsGradient"] = .bool(true)
+                newEntity.xdata["dxf.hatchGradientName"] = .string(gradName)
+                newEntity.xdata["dxf.hatchGradientAngle"] = .double(angleRad)
+                newEntity.xdata["dxf.hatchGradientSingleColor"] = .bool(false)
+                newEntity.xdata["dxf.hatchGradientTint"] = .double(0.0)
+                newEntity.xdata["dxf.hatchGradientStops"] = .string(gradientStopsJSON(c1, c2))
+                entities.append(newEntity)
             } else if pattern == "SOLID" {
-                prims.append(.fillPolygon(points: boundary, color: hatchColor))
+                let prim = CADPrimitive.fillPolygon(points: boundary, color: hatchColor)
+                entities.append(CADEntity(layerID: layerID, localGeometry: [prim]))
             } else {
-                prims.append(.hatch(
+                let prim = CADPrimitive.hatch(
                     boundary: boundary, pattern: pattern, scale: scale,
-                    angle: angle * Double.pi / 180, color: hatchColor))
+                    angle: angleRad, color: hatchColor)
+                entities.append(CADEntity(layerID: layerID, localGeometry: [prim]))
             }
         }
-        try await addPrimitives(prims, host: host)
+        guard !entities.isEmpty else { return }
+        host.document.addEntities(entities)
+        host.lastCreated = entities.last?.handle
     }
 
     private static func runText(_ operands: inout [LispValue], host: LispCADHost) async throws {

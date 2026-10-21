@@ -331,10 +331,19 @@ enum LispEntityAdapter {
             return hatchPairs(
                 boundary: outer.map { world($0, t) },
                 pattern: "SOLID", scale: 1, angle: 0)
-        case let .gradient(outer, _, _, _, _, _):
-            return hatchPairs(
+        case let .gradient(outer, _, name, angle, c1, c2):
+            var pairs = hatchPairs(
                 boundary: outer.map { world($0, t) },
                 pattern: "SOLID", scale: 1, angle: 0)
+            let rgb1 = (Int(c1.r) << 16) | (Int(c1.g) << 8) | Int(c1.b)
+            let rgb2 = (Int(c2.r) << 16) | (Int(c2.g) << 8) | Int(c2.b)
+            pairs.append(dotted(.int(450), .int(1)))
+            pairs.append(dotted(.int(452), .int(0)))
+            pairs.append(dotted(.int(460), .real(angle)))
+            pairs.append(dotted(.int(470), .string(name.isEmpty ? "LINEAR" : name)))
+            pairs.append(dotted(.int(421), .int(rgb1)))
+            pairs.append(dotted(.int(421), .int(rgb2)))
+            return pairs
         case let .ray(start, direction, _):
             return [
                 dotted(.int(10), pointValue(world(start, t))),
@@ -532,6 +541,13 @@ enum LispEntityAdapter {
     }
 
     private static func colorFromAssoc(_ assoc: DxfAssoc, name: String) throws -> ColorRGBA? {
+        if let rgb = assoc.int(420), rgb >= 0 {
+            return ColorRGBA(
+                r: UInt8((rgb >> 16) & 0xFF),
+                g: UInt8((rgb >> 8) & 0xFF),
+                b: UInt8(rgb & 0xFF),
+                a: 255)
+        }
         guard let aci = assoc.int(62) else { return nil }
         if aci == 256 || aci == 0 { return nil } // BYLAYER (0 accepted as layer color).
         guard aci >= 1, aci <= 255 else {
@@ -632,9 +648,42 @@ enum LispEntityAdapter {
             }
             return .fillPolygon(points: corners, color: color)
         case "HATCH":
-            let boundary = assoc.points(10)
+            var boundary = assoc.points(10)
+            let extra11 = assoc.points(11)
+            if boundary.count == 1, !extra11.isEmpty {
+                boundary.append(contentsOf: extra11)
+            } else if let vertexCount = assoc.int(93), vertexCount >= 3, boundary.count == vertexCount + 1 {
+                // Standard DXF HATCH has a header (10 0 0 0) elevation point before the loop vertices.
+                boundary.removeFirst()
+            }
             guard !boundary.isEmpty else {
                 throw LispError.hostError("\(name): HATCH needs (10 . boundary-point) groups")
+            }
+            let isGradient = (assoc.int(450) ?? 0) == 1 || assoc.string(470) != nil
+            if isGradient {
+                let rawGradName = assoc.string(470) ?? assoc.string(2) ?? "LINEAR"
+                let gradName = LispScriptedCommands.normalizedGradientName(rawGradName) ?? "LINEAR"
+                // DXF group 460 is gradient angle in radians; fallback to group 52 (degrees).
+                let angleRad = assoc.double(460) ?? ((assoc.double(52) ?? 0) * Double.pi / 180)
+                let trueColors = assoc.all(421).compactMap { v -> ColorRGBA? in
+                    guard let rgb = v.asDouble.map({ Int($0) }), rgb >= 0 else { return nil }
+                    return ColorRGBA(
+                        r: UInt8((rgb >> 16) & 0xFF),
+                        g: UInt8((rgb >> 8) & 0xFF),
+                        b: UInt8(rgb & 0xFF),
+                        a: 255)
+                }
+                let aciColors = assoc.all(63).compactMap { v -> ColorRGBA? in
+                    guard let aci = v.asDouble.map({ Int($0) }), (1...255).contains(aci) else { return nil }
+                    return DXFColorTable.aciToRGBA(Int32(aci), color24: -1)
+                }
+                let c1 = trueColors.first ?? aciColors.first ?? color ?? ColorRGBA.white
+                let c2 = (trueColors.count > 1 ? trueColors[1] : nil)
+                    ?? (aciColors.count > 1 ? aciColors[1] : nil)
+                    ?? ColorRGBA.black
+                return .gradient(
+                    outer: boundary, holes: [], gradientName: gradName,
+                    angle: angleRad, color1: c1, color2: c2)
             }
             return .hatch(
                 boundary: boundary, pattern: assoc.string(2) ?? "SOLID",

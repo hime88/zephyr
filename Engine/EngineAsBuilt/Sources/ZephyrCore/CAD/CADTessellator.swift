@@ -291,28 +291,27 @@ public enum CADTessellator {
         let cosA = cos(-angle)
         let sinA = sin(-angle)
 
-        // Find overall bounding box for normalization
-        var allX: [Float] = []
-        var allY: [Float] = []
+        // Project polygon vertices onto the gradient axis to normalize [minProj, maxProj] -> [0, 1]
+        var minProj = Double.infinity
+        var maxProj = -Double.infinity
         for island in islands {
             for pt in island.outer {
-                allX.append(pt.x); allY.append(pt.y)
+                let p = Double(pt.x) * cosA + Double(pt.y) * sinA
+                if p < minProj { minProj = p }
+                if p > maxProj { maxProj = p }
             }
         }
-        guard let minX = allX.min(), let maxX = allX.max(),
-              let minY = allY.min(), let maxY = allY.max() else { return [] }
-        let spanX = maxX - minX
-        let spanY = maxY - minY
-        let diag = max(sqrt(spanX*spanX + spanY*spanY), 1e-6)
+        guard minProj.isFinite, maxProj.isFinite else { return [] }
+        let span = max(maxProj - minProj, 1e-6)
 
         let gradientData = RenderPrimitive.GradientData(
             color1: color1,
             color2: color2,
             angleCos: cosA,
             angleSin: sinA,
-            minX: Double(minX),
-            minY: Double(minY),
-            diag: Double(diag)
+            minX: minProj * cosA,
+            minY: minProj * sinA,
+            diag: span
         )
 
         var allSpecs: [PrimitiveSpec] = []

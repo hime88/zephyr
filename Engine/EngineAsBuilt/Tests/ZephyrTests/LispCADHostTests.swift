@@ -611,7 +611,7 @@ final class LispCADHostTests: XCTestCase {
             #"(command "_.-HATCH" "_P" "SOLID" "_CO" "T" "255,0,0" "" "_L" "")"#,
             host: host, env: &env)
         XCTAssertEqual(host.document.allEntities.count, 2)
-        guard let prim = host.document.allEntities.last?.localGeometry?.first else {
+        guard let prim = host.lastCreated.flatMap({ host.document.entity(for: $0) })?.localGeometry?.first else {
             return XCTFail("HATCH should create an entity with geometry")
         }
         guard case let .fillPolygon(pts, _) = prim else {
@@ -651,5 +651,68 @@ final class LispCADHostTests: XCTestCase {
               case .line = prim else {
             return XCTFail("expected line")
         }
+    }
+
+    func testCommandHatchGradientsAndEntmake() async throws {
+        let host = makeHost()
+        var env = LispEnvironment()
+        _ = try await eval(
+            #"(setq r1 (progn (command "_.RECTANG" '(0 0 0) '(10 10 0)) (entlast)))"#,
+            host: host, env: &env)
+
+        // 1. Pattern-name style (_P "GR_LINEAR" and _P "LINEAR")
+        _ = try await eval(
+            #"(command "_-HATCH" "_P" "GR_LINEAR" "_CO" "T" "22,53,77" "T" "11,25,37" "_Angle" "45" "" r1 "")"#,
+            host: host, env: &env)
+        guard let g1 = host.lastCreated.flatMap({ host.document.entity(for: $0) })?.localGeometry?.first,
+              case let .gradient(_, _, name1, angle1, c1_1, c1_2) = g1 else {
+            return XCTFail("expected gradient primitive from _P GR_LINEAR")
+        }
+        XCTAssertEqual(name1, "LINEAR")
+        XCTAssertEqual(angle1, 45.0 * .pi / 180.0, accuracy: 1e-6)
+        XCTAssertEqual(c1_1, ColorRGBA(r: 22, g: 53, b: 77, a: 255))
+        XCTAssertEqual(c1_2, ColorRGBA(r: 11, g: 25, b: 37, a: 255))
+
+        // 2. Main-prompt _G option
+        _ = try await eval(
+            #"(command "_-HATCH" "_G" "LINEAR" "_CO" "T" "45,107,152" "T" "22,53,77" "_A" 30 "" r1 "")"#,
+            host: host, env: &env)
+        guard let g2 = host.lastCreated.flatMap({ host.document.entity(for: $0) })?.localGeometry?.first,
+              case let .gradient(_, _, name2, angle2, c2_1, c2_2) = g2 else {
+            return XCTFail("expected gradient primitive from _G LINEAR")
+        }
+        XCTAssertEqual(name2, "LINEAR")
+        XCTAssertEqual(angle2, 30.0 * .pi / 180.0, accuracy: 1e-6)
+        XCTAssertEqual(c2_1, ColorRGBA(r: 45, g: 107, b: 152, a: 255))
+        XCTAssertEqual(c2_2, ColorRGBA(r: 22, g: 53, b: 77, a: 255))
+
+        // 3. System variables (GFNAME / GFCLR1 / GFCLR2 / GFANG)
+        _ = try await eval(#"(setvar "GFNAME" 1)"#, host: host, env: &env)
+        _ = try await eval(#"(setvar "GFCLR1" "RGB:250,186,3")"#, host: host, env: &env)
+        _ = try await eval(#"(setvar "GFCLR2" "RGB:22,53,77")"#, host: host, env: &env)
+        _ = try await eval(#"(setvar "GFANG" 60.0)"#, host: host, env: &env)
+        _ = try await eval(#"(command "_-HATCH" "" r1 "")"#, host: host, env: &env)
+        guard let g3 = host.lastCreated.flatMap({ host.document.entity(for: $0) })?.localGeometry?.first,
+              case let .gradient(_, _, name3, angle3, c3_1, c3_2) = g3 else {
+            return XCTFail("expected gradient primitive from GF* sysvars")
+        }
+        XCTAssertEqual(name3, "LINEAR")
+        XCTAssertEqual(angle3, 60.0 * .pi / 180.0, accuracy: 1e-6)
+        XCTAssertEqual(c3_1, ColorRGBA(r: 250, g: 186, b: 3, a: 255))
+        XCTAssertEqual(c3_2, ColorRGBA(r: 22, g: 53, b: 77, a: 255))
+
+        // 4. DXF entmake with 450/460/470/421 codes
+        _ = try await eval(
+            #"(entmake '((0 . "HATCH") (2 . "SOLID") (70 . 1) (10 0 0 0) (10 10 0 0) (10 10 10 0) (450 . 1) (452 . 0) (460 . 0.785398) (470 . "LINEAR") (421 . 1455437) (421 . 727333)))"#,
+            host: host, env: &env)
+        guard let g4 = host.lastCreated.flatMap({ host.document.entity(for: $0) })?.localGeometry?.first,
+              case let .gradient(outer4, _, name4, angle4, c4_1, c4_2) = g4 else {
+            return XCTFail("expected gradient primitive from entmake HATCH")
+        }
+        XCTAssertEqual(outer4.count, 3)
+        XCTAssertEqual(name4, "LINEAR")
+        XCTAssertEqual(angle4, 0.785398, accuracy: 1e-6)
+        XCTAssertEqual(c4_1, ColorRGBA(r: 22, g: 53, b: 77, a: 255))
+        XCTAssertEqual(c4_2, ColorRGBA(r: 11, g: 25, b: 37, a: 255))
     }
 }
