@@ -349,9 +349,6 @@ Not yet: `REFEDIT` in-place editing of a referenced drawing (Bind or open the fi
 - **Sortable Layers panel** — Run `LAYERSORT` (for example `LAYERSORT COLOR DESC`, `LAYERSORT USED`, or `LAYERSORT REVERSE`) to sort by name, state, color, linetype, lineweight, opacity, plot, or used; it opens the Layers panel so the new order is visible. Repeating a key toggles direction. The panel also has **On/Color/Name** sort buttons, a **Sort** menu, and a name search box. Sort choice persists across sessions, not in the drawing.
 - Layer move command (`LAYERMOVE` / `LM`) — modal dialog with filterable layer list.
 
-### Constraints (15 types)
-Coincident, parallel, perpendicular, tangent, concentric, horizontal, vertical, equal, distance, angle, fix, midpoint, collinear, symmetric, offset. Numeric solver with cached transforms.
-
 ### SHX Shape Font Interpreter
 Full byte-code interpreter for AutoCAD `.shx` shape fonts. Text renders as pure vectors at any zoom — no bitmap degradation.
 
@@ -426,6 +423,15 @@ Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, ActiveX
 | STYLE | `ST` | Create, edit, and manage text styles (font file, height, width, oblique) |
 | OFFSETGAPTYPE | | Polyline offset corner style for `OFFSET`: `0` extend (sharp corners), `1` fillet (arc radius = offset distance), `2` chamfer |
 | LANGUAGE | `LANG` | Set the UI font glyph profile without translating UI text (e.g. `LANGUAGE cjk` for Chinese/Japanese/Korean glyphs) |
+
+## Roadmap
+
+Features planned or in active development to be programmed:
+
+- **Parametric Constraints & Numerical Solver** — 15 geometric and dimensional constraint types (coincident, parallel, perpendicular, tangent, concentric, horizontal, vertical, equal, distance, angle, fix, midpoint, collinear, symmetric, offset). Core data models (`CADConstraint`) and `.eab` file serialization are implemented; the numerical constraint solver, interactive commands (`GEOMCONSTRAINT`, `DIMCONSTRAINT`, `PARAMETRIC`), and constraint indicator glyphs are to be programmed.
+- **In-Place Reference Editing (`REFEDIT`)** — In-place editing of referenced drawings and blocks.
+- **Underlay Enhancements** — Rendering support for DWF/DGN underlays and on-zoom vector re-rendering for PDF attachments.
+- **Extended AutoLISP (Tier 2)** — DCL dialogs, reactors, and ActiveX automation.
 
 ## Nightly Builds
 
