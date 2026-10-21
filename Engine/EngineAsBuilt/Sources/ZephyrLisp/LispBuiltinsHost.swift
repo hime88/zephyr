@@ -97,7 +97,7 @@ enum HostBuiltins {
     }
 
     private static func splitKeywords(_ text: String) -> [String] {
-        text.split(separator: " ").map { $0.uppercased() }
+        text.split(separator: " ").map { String($0) }
     }
 
     /// Takes and clears the pending initget (each get* consumes it).
@@ -200,7 +200,7 @@ enum HostBuiltins {
             }
             // Without initget keywords, any text is accepted as-is.
             guard !control.keywords.isEmpty else { return .string(line) }
-            let matches = control.keywords.filter { $0.hasPrefix(typed) }
+            let matches = control.keywords.filter { $0.uppercased().hasPrefix(typed) }
             if matches.count == 1 { return .string(matches[0]) }
             await host.write("Invalid keyword. Options: \(control.keywords.joined(separator: "/"))\n")
         }

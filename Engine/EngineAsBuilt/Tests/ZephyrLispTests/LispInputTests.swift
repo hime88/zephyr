@@ -54,12 +54,12 @@ final class LispInputTests: XCTestCase {
         host.lines = ["y"]
         let matched = try await evalString(
             "(progn (initget \"Yes No\") (getkword))", env: &env, host: host)
-        XCTAssertEqual(matched, .string("YES"))
+        XCTAssertEqual(matched, .string("Yes"))
 
         host.lines = ["bogus", "n"]
         let reprompted = try await evalString(
             "(progn (initget \"Yes No\") (getkword))", env: &env, host: host)
-        XCTAssertEqual(reprompted, .string("NO"))
+        XCTAssertEqual(reprompted, .string("No"))
         XCTAssertTrue(host.output.contains("Invalid keyword"))
 
         // No keywords: any text passes through as typed.

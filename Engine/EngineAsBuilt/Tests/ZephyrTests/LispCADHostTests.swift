@@ -481,7 +481,8 @@ final class LispCADHostTests: XCTestCase {
             LispScriptedCommands.scripted,
             ["LINE", "CIRCLE", "PLINE", "ARC",
              "COPY", "ROTATE", "MOVE", "ERASE", "SELECT",
-             "UNDO", "U", "REDRAW", "REGEN", "INSERT", "-INSERT", "-ATTACH"])
+             "UNDO", "U", "REDRAW", "REGEN", "INSERT", "-INSERT", "-ATTACH",
+             "RECTANG", "RECTANGLE", "CHPROP", "CHANGE", "-HATCH", "HATCH", "TEXT", "-TEXT", "DTEXT"])
         XCTAssertEqual(
             LispScriptedCommands.disposition(for: "_.LINE"), .scripted)
         XCTAssertEqual(
@@ -533,5 +534,89 @@ final class LispCADHostTests: XCTestCase {
         } else {
             XCTFail("nentselp first element is an ename, got \(String(describing: passive))")
         }
+    }
+
+    func testCommandRectang() async throws {
+        let host = makeHost()
+        var env = LispEnvironment()
+        _ = try await eval(
+            #"(command "_.RECTANG" '(0 0 0) '(10 20 0))"#,
+            host: host, env: &env)
+        XCTAssertEqual(host.document.allEntities.count, 1)
+        guard let ent = host.document.allEntities.first,
+              let prim = ent.localGeometry?.first else {
+            return XCTFail("RECTANG should create an entity with geometry")
+        }
+        guard case let .polyline(path, _) = prim else {
+            return XCTFail("RECTANG should create a polyline primitive")
+        }
+        XCTAssertTrue(path.isClosed)
+        XCTAssertEqual(path.vertices.count, 4)
+    }
+
+    func testCommandChprop() async throws {
+        let host = makeHost()
+        var env = LispEnvironment()
+        _ = try await eval(#"(command "_.LINE" '(0 0 0) '(10 0 0) "")"#, host: host, env: &env)
+        _ = try await eval(#"(command "_.CHPROP" "_L" "" "_C" "1" "")"#, host: host, env: &env)
+        guard let ent = host.document.allEntities.first,
+              let prim = ent.localGeometry?.first else {
+            return XCTFail("entity should exist with geometry")
+        }
+        guard case let .line(_, _, color) = prim else {
+            return XCTFail("primitive should be line")
+        }
+        XCTAssertEqual(color, ColorRGBA.red)
+    }
+
+    func testCommandPlineAndArcEnhanced() async throws {
+        let host = makeHost()
+        var env = LispEnvironment()
+        _ = try await eval(
+            #"(command "_.PLINE" '(0 0 0) "_W" 0.5 0.5 '(5 0 0) "_A" '(5 5 0) "_L" '(0 5 0) "_C")"#,
+            host: host, env: &env)
+        XCTAssertEqual(host.document.allEntities.count, 1)
+
+        _ = try await eval(
+            #"(command "_.ARC" '(0 0 0) "_E" '(10 0 0) "_R" 5.0)"#,
+            host: host, env: &env)
+        XCTAssertEqual(host.document.allEntities.count, 2)
+    }
+
+    func testCommandText() async throws {
+        let host = makeHost()
+        var env = LispEnvironment()
+        _ = try await eval(
+            #"(command "_.TEXT" '(0 0 0) 2.5 0.0 "Hello World")"#,
+            host: host, env: &env)
+        XCTAssertEqual(host.document.allEntities.count, 1)
+        guard let ent = host.document.allEntities.first,
+              let prim = ent.localGeometry?.first else {
+            return XCTFail("TEXT should create an entity with geometry")
+        }
+        guard case let .text(_, text, height, _, _, _, _, _, _) = prim else {
+            return XCTFail("primitive should be .text")
+        }
+        XCTAssertEqual(text, "Hello World")
+        XCTAssertEqual(height, 2.5)
+    }
+
+    func testCommandHatch() async throws {
+        let host = makeHost()
+        var env = LispEnvironment()
+        _ = try await eval(
+            #"(command "_.RECTANG" '(0 0 0) '(10 10 0))"#,
+            host: host, env: &env)
+        _ = try await eval(
+            #"(command "_.-HATCH" "_P" "SOLID" "_CO" "T" "255,0,0" "" "_L" "")"#,
+            host: host, env: &env)
+        XCTAssertEqual(host.document.allEntities.count, 2)
+        guard let prim = host.document.allEntities.last?.localGeometry?.first else {
+            return XCTFail("HATCH should create an entity with geometry")
+        }
+        guard case let .fillPolygon(pts, _) = prim else {
+            return XCTFail("HATCH should create a fillPolygon primitive, got \(prim)")
+        }
+        XCTAssertEqual(pts.count, 4)
     }
 }

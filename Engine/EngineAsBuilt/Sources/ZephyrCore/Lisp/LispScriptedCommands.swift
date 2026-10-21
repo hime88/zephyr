@@ -38,6 +38,7 @@ enum LispScriptedCommands {
         "LINE", "CIRCLE", "PLINE", "ARC",
         "COPY", "ROTATE", "MOVE", "ERASE", "SELECT",
         "UNDO", "U", "REDRAW", "REGEN", "INSERT", "-INSERT", "-ATTACH",
+        "RECTANG", "RECTANGLE", "CHPROP", "CHANGE", "-HATCH", "HATCH", "TEXT", "-TEXT", "DTEXT",
     ]
 
     static func disposition(for name: String) -> LispCommandDisposition {
@@ -90,6 +91,10 @@ enum LispScriptedCommands {
         case "CIRCLE": try await runCircle(&operands, host: host)
         case "PLINE": try await runPline(&operands, host: host)
         case "ARC": try await runArc(&operands, host: host)
+        case "RECTANG", "RECTANGLE": try await runRectang(&operands, host: host)
+        case "CHPROP", "CHANGE": try runChprop(&operands, host: host)
+        case "-HATCH", "HATCH": try await runHatch(&operands, host: host)
+        case "TEXT", "-TEXT", "DTEXT": try await runText(&operands, host: host)
         case "COPY": try await runCopy(&operands, host: host)
         case "ROTATE": try runRotate(&operands, host: host)
         case "MOVE": try runMove(&operands, host: host)
@@ -207,9 +212,9 @@ enum LispScriptedCommands {
                 operands.removeFirst()
                 if raw == "" { explicitEnd = true; break }
                 switch canonicalName(raw) {
-                case "L":
-                    if let last = host.lastCreated { out.insert(last) }
-                case "P":
+                case "L", "LAST":
+                    if let last = host.lastCreated ?? host.document.allEntities.last?.handle { out.insert(last) }
+                case "P", "PREVIOUS":
                     out.formUnion(host.previousSelection)
                 case "ALL":
                     out.formUnion(host.document.allEntities.map(\.handle))
@@ -350,10 +355,130 @@ enum LispScriptedCommands {
             host: host)
     }
 
+    static func takeNumberOrNumericString(
+        _ operands: inout [LispValue], command: String, what: String
+    ) throws -> Double {
+        skipSnaps(&operands)
+        guard let first = operands.first else {
+            throw LispError.hostError("command: \(command) needs \(what)")
+        }
+        if let value = first.asDouble {
+            operands.removeFirst()
+            return value
+        }
+        if case let .string(raw) = first, let value = Double(raw.trimmingCharacters(in: .whitespaces)) {
+            operands.removeFirst()
+            return value
+        }
+        throw LispError.hostError("command: \(command) needs \(what)")
+    }
+
+    static func takeStringOperand(_ operands: inout [LispValue]) -> String? {
+        guard let first = operands.first else { return nil }
+        operands.removeFirst()
+        switch first {
+        case .string(let s): return s
+        case .symbol(let s): return s
+        case .int(let i): return "\(i)"
+        case .real(let r): return "\(r)"
+        default: return nil
+        }
+    }
+
+    static func parseTrueColor(_ text: String) -> ColorRGBA? {
+        let parts = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count == 3,
+              let r = Int(parts[0]),
+              let g = Int(parts[1]),
+              let b = Int(parts[2]) else { return nil }
+        let clamp = { (v: Int) -> UInt8 in UInt8(max(0, min(255, v))) }
+        return ColorRGBA(r: clamp(r), g: clamp(g), b: clamp(b), a: 255)
+    }
+
+    static func parseColorOperand(_ operands: inout [LispValue]) throws -> ColorRGBA? {
+        if let kw = takeKeyword(&operands) {
+            switch kw {
+            case .word("T"), .word("TRUECOLOR"):
+                if let str = takeStringOperand(&operands) {
+                    return parseTrueColor(str)
+                }
+            case .word("BYLAYER"): return nil
+            case .word("BYBLOCK"): return nil
+            case .word(let word):
+                if let aci = Int(word), (1...255).contains(aci) {
+                    return DXFColorTable.aciToRGBA(Int32(aci), color24: -1)
+                }
+            case .enter: return nil
+            }
+        }
+        if let first = operands.first {
+            switch first {
+            case .int(let aci):
+                operands.removeFirst()
+                if (1...255).contains(aci) {
+                    return DXFColorTable.aciToRGBA(Int32(aci), color24: -1)
+                }
+            case .string(let str), .symbol(let str):
+                operands.removeFirst()
+                if str.contains(",") { return parseTrueColor(str) }
+                if let aci = Int(str), (1...255).contains(aci) {
+                    return DXFColorTable.aciToRGBA(Int32(aci), color24: -1)
+                }
+            default:
+                break
+            }
+        }
+        return nil
+    }
+
+    private static func extractBoundaryVertices(entity: CADEntity) -> [Vector3] {
+        guard let first = entity.localGeometry?.first else { return [] }
+        let t = entity.transform
+        switch first {
+        case .polyline(let path, _):
+            return path.vertices.map { t.transformPoint($0.position) }
+        case .polygon(let pts, _), .fillPolygon(let pts, _):
+            return pts.map { t.transformPoint($0) }
+        case .rect(let origin, let size, _), .fillRect(let origin, let size, _):
+            return [
+                origin,
+                Vector3(x: origin.x + size.x, y: origin.y, z: origin.z),
+                Vector3(x: origin.x + size.x, y: origin.y + size.y, z: origin.z),
+                Vector3(x: origin.x, y: origin.y + size.y, z: origin.z),
+            ].map { t.transformPoint($0) }
+        case .hatch(let boundary, _, _, _, _, _):
+            return boundary.map { t.transformPoint($0) }
+        case .hatchPath(let boundary, _, _, _, _, _, _):
+            return boundary.vertices.map { t.transformPoint($0.position) }
+        default:
+            return []
+        }
+    }
+
+    private static func runRectang(_ operands: inout [LispValue], host: LispCADHost) async throws {
+        let p1 = try takePoint(&operands, command: "RECTANG", what: "first corner")
+        let p2 = try takePoint(&operands, command: "RECTANG", what: "other corner")
+        _ = takeKeyword(&operands)
+        let vertices = [
+            CADPolylineVertex(position: Vector3(x: p1.x, y: p1.y, z: p1.z)),
+            CADPolylineVertex(position: Vector3(x: p2.x, y: p1.y, z: p1.z)),
+            CADPolylineVertex(position: Vector3(x: p2.x, y: p2.y, z: p2.z)),
+            CADPolylineVertex(position: Vector3(x: p1.x, y: p2.y, z: p2.z)),
+        ]
+        let poly = CADPolyline(vertices: vertices, isClosed: true)
+        try await addPrimitives(
+            [.polyline(path: poly, color: await currentColor(host))],
+            host: host)
+    }
+
     private static func runPline(_ operands: inout [LispValue], host: LispCADHost) async throws {
         var vertices: [CADPolylineVertex] = []
         var closed = false
         var done = false
+        var currentStartWidth = 0.0
+        var currentEndWidth = 0.0
+        var isArcMode = false
+
         while !operands.isEmpty, !done {
             if let keyword = takeKeyword(&operands) {
                 switch keyword {
@@ -361,12 +486,16 @@ enum LispScriptedCommands {
                 case .word("C"):
                     closed = true
                     done = true
+                case .word("W"):
+                    currentStartWidth = try takeNumberOrNumericString(&operands, command: "PLINE", what: "start width")
+                    currentEndWidth = try takeNumberOrNumericString(&operands, command: "PLINE", what: "end width")
+                case .word("H"):
+                    currentStartWidth = (try takeNumberOrNumericString(&operands, command: "PLINE", what: "start half-width")) * 2
+                    currentEndWidth = (try takeNumberOrNumericString(&operands, command: "PLINE", what: "end half-width")) * 2
                 case .word("A"):
-                    throw LispError.hostError(
-                        "command: PLINE arc segments are not supported from Lisp")
-                case .word("W"), .word("H"):
-                    throw LispError.hostError(
-                        "command: PLINE width is not supported from Lisp (use entmake LWPOLYLINE 40/41 groups)")
+                    isArcMode = true
+                case .word("L"):
+                    isArcMode = false
                 case .word(let word):
                     throw LispError.hostError(
                         "command: PLINE does not support keyword \"\(word)\"")
@@ -375,8 +504,24 @@ enum LispScriptedCommands {
                 continue
             }
             let point = try takePoint(&operands, command: "PLINE", what: "a vertex")
+            if isArcMode, !vertices.isEmpty {
+                let prev = vertices[vertices.count - 1].position
+                let dx = point.x - prev.x, dy = point.y - prev.y
+                let chordAngle = atan2(dy, dx)
+                let prevDirAngle: Double
+                if vertices.count >= 2 {
+                    let p0 = vertices[vertices.count - 2].position
+                    prevDirAngle = atan2(prev.y - p0.y, prev.x - p0.x)
+                } else {
+                    prevDirAngle = chordAngle
+                }
+                var alpha = chordAngle - prevDirAngle
+                while alpha > Double.pi { alpha -= 2 * Double.pi }
+                while alpha < -Double.pi { alpha += 2 * Double.pi }
+                vertices[vertices.count - 1].bulge = tan(alpha / 2)
+            }
             vertices.append(CADPolylineVertex(
-                position: point, bulge: 0, startWidth: 0, endWidth: 0))
+                position: point, bulge: 0, startWidth: currentStartWidth, endWidth: currentEndWidth))
         }
         guard vertices.count >= 2 else {
             throw LispError.hostError("command: PLINE needs at least two vertices")
@@ -389,7 +534,7 @@ enum LispScriptedCommands {
     }
 
     private static func runArc(_ operands: inout [LispValue], host: LispCADHost) async throws {
-        // Forms: 3-point (p1 p2 p3), or C center start end.
+        // Forms: 3-point (p1 p2 p3), C center start end, or start E end R radius.
         if let keyword = takeKeyword(&operands) {
             switch keyword {
             case .word("C"):
@@ -400,6 +545,7 @@ enum LispScriptedCommands {
                 guard radius > 0 else {
                     throw LispError.hostError("command: ARC center and start coincide")
                 }
+                _ = takeKeyword(&operands)
                 try await addPrimitives(
                     [.arc(
                         center: center, radius: radius,
@@ -410,18 +556,51 @@ enum LispScriptedCommands {
                 return
             case .word(let word):
                 throw LispError.hostError(
-                    "command: ARC does not support keyword \"\(word)\" " +
-                        "(supported: 3-point, or C center/start/end)")
+                    "command: ARC does not support keyword \"\(word)\"")
             case .enter:
                 throw LispError.hostError("command: ARC needs points")
             }
         }
         let a = try takePoint(&operands, command: "ARC", what: "a start point")
+        if let keyword = takeKeyword(&operands) {
+            switch keyword {
+            case .word("E"):
+                let end = try takePoint(&operands, command: "ARC", what: "an end point")
+                if let opt = takeKeyword(&operands), case .word("R") = opt {
+                    let r = try takeNumberOrNumericString(&operands, command: "ARC", what: "a radius")
+                    let d = distance3(a, end)
+                    guard d > 1e-9 else {
+                        throw LispError.hostError("command: ARC start and end points coincide")
+                    }
+                    let radius = max(abs(r), d / 2)
+                    let mid = Vector3(x: (a.x + end.x) / 2, y: (a.y + end.y) / 2, z: (a.z + end.z) / 2)
+                    let h = max(0, radius * radius - (d / 2) * (d / 2)).squareRoot()
+                    let ux = (end.x - a.x) / d
+                    let uy = (end.y - a.y) / d
+                    let nx = -uy
+                    let ny = ux
+                    let center = Vector3(x: mid.x + h * nx, y: mid.y + h * ny, z: mid.z)
+                    _ = takeKeyword(&operands)
+                    try await addPrimitives(
+                        [.arc(
+                            center: center, radius: radius,
+                            startAngle: atan2(a.y - center.y, a.x - center.x),
+                            endAngle: atan2(end.y - center.y, end.x - center.x),
+                            color: await currentColor(host))],
+                        host: host)
+                    return
+                }
+                throw LispError.hostError("command: ARC End requires Radius (_R)")
+            default:
+                break
+            }
+        }
         let b = try takePoint(&operands, command: "ARC", what: "a second point")
         let c = try takePoint(&operands, command: "ARC", what: "an end point")
         guard let solved = circumcenter(a, b, c) else {
             throw LispError.hostError("command: ARC points are collinear")
         }
+        _ = takeKeyword(&operands)
         try await addPrimitives(
             [.arc(
                 center: solved.center, radius: solved.radius,
@@ -429,6 +608,176 @@ enum LispScriptedCommands {
                 endAngle: atan2(c.y - solved.center.y, c.x - solved.center.x),
                 color: await currentColor(host))],
             host: host)
+    }
+
+    private static func runChprop(_ operands: inout [LispValue], host: LispCADHost) throws {
+        let targets = try takeSelection(&operands, command: "CHPROP", host: host)
+        guard !targets.isEmpty else { return }
+        var done = false
+        while !operands.isEmpty, !done {
+            guard let kw = takeKeyword(&operands) else {
+                operands.removeFirst()
+                continue
+            }
+            switch kw {
+            case .enter:
+                done = true
+            case .word("C"), .word("COLOR"):
+                let color = try parseColorOperand(&operands)
+                for handle in targets {
+                    if let entity = host.document.entity(for: handle) {
+                        host.document.replaceEntity(LispEntityAdapter.withPrimitiveColor(entity, color))
+                    }
+                }
+            case .word("LA"), .word("LAYER"):
+                if let layerName = takeStringOperand(&operands),
+                   let layer = host.document.findLayer(named: layerName) {
+                    for handle in targets {
+                        if var entity = host.document.entity(for: handle) {
+                            entity.layerID = layer.handle
+                            host.document.replaceEntity(entity)
+                        }
+                    }
+                }
+            case .word("LT"), .word("LTYPE"):
+                _ = takeStringOperand(&operands)
+            case .word("LW"), .word("LWEIGHT"):
+                _ = try? takeNumberOrNumericString(&operands, command: "CHPROP", what: "lineweight")
+            default:
+                break
+            }
+        }
+    }
+
+    private static func runHatch(_ operands: inout [LispValue], host: LispCADHost) async throws {
+        var pattern = "SOLID"
+        var color1: ColorRGBA?
+        var color2: ColorRGBA?
+        var angle = 0.0
+        var scale = 1.0
+        var doneOptions = false
+
+        while !operands.isEmpty, !doneOptions {
+            guard let kw = takeKeyword(&operands) else { break }
+            switch kw {
+            case .enter:
+                doneOptions = true
+            case .word("P"), .word("PATTERN"):
+                if let name = takeStringOperand(&operands) {
+                    pattern = canonicalName(name)
+                }
+            case .word("CO"), .word("COLOR"):
+                color1 = try parseColorOperand(&operands)
+                if pattern.hasPrefix("GR_") || pattern.hasPrefix("GRADIENT") {
+                    if let nextKw = takeKeyword(&operands), case .word("T") = nextKw {
+                        if let str = takeStringOperand(&operands) {
+                            color2 = parseTrueColor(str)
+                        }
+                    }
+                }
+            case .word("A"), .word("ANGLE"):
+                angle = (try? takeNumberOrNumericString(&operands, command: "-HATCH", what: "angle")) ?? 0.0
+            case .word("S"), .word("SCALE"):
+                scale = (try? takeNumberOrNumericString(&operands, command: "-HATCH", what: "scale")) ?? 1.0
+            default:
+                break
+            }
+        }
+
+        let targets = try takeSelection(&operands, command: "-HATCH", host: host)
+        guard !targets.isEmpty else {
+            throw LispError.hostError("command: -HATCH requires a boundary object")
+        }
+        _ = takeKeyword(&operands)
+
+        var prims: [CADPrimitive] = []
+        let defaultHatchColor = await currentColor(host)
+        for handle in targets.sorted(by: { $0.uuidString < $1.uuidString }) {
+            guard let entity = host.document.entity(for: handle) else { continue }
+            let boundary = extractBoundaryVertices(entity: entity)
+            guard boundary.count >= 3 else { continue }
+            let hatchColor = color1 ?? defaultHatchColor
+            if pattern.hasPrefix("GR_") || pattern.hasPrefix("GRAD") {
+                let c1 = color1 ?? ColorRGBA.white
+                let c2 = color2 ?? ColorRGBA.black
+                prims.append(.gradient(
+                    outer: boundary, holes: [], gradientName: pattern,
+                    angle: angle * Double.pi / 180, color1: c1, color2: c2))
+            } else if pattern == "SOLID" {
+                prims.append(.fillPolygon(points: boundary, color: hatchColor))
+            } else {
+                prims.append(.hatch(
+                    boundary: boundary, pattern: pattern, scale: scale,
+                    angle: angle * Double.pi / 180, color: hatchColor))
+            }
+        }
+        try await addPrimitives(prims, host: host)
+    }
+
+    private static func runText(_ operands: inout [LispValue], host: LispCADHost) async throws {
+        var alignH = 0
+        var alignV = 0
+        if let keyword = takeKeyword(&operands) {
+            switch keyword {
+            case .word("J"):
+                if let jOpt = takeKeyword(&operands), case .word(let jCode) = jOpt {
+                    switch jCode {
+                    case "L", "LEFT": alignH = 0; alignV = 0
+                    case "C", "CENTER": alignH = 1; alignV = 0
+                    case "R", "RIGHT": alignH = 2; alignV = 0
+                    case "M", "MIDDLE": alignH = 1; alignV = 2
+                    case "TL": alignH = 0; alignV = 1
+                    case "TC": alignH = 1; alignV = 1
+                    case "TR": alignH = 2; alignV = 1
+                    case "ML": alignH = 0; alignV = 2
+                    case "MC": alignH = 1; alignV = 2
+                    case "MR": alignH = 2; alignV = 2
+                    case "BL": alignH = 0; alignV = 0
+                    case "BC": alignH = 1; alignV = 0
+                    case "BR": alignH = 2; alignV = 0
+                    default: break
+                    }
+                }
+            default:
+                break
+            }
+        }
+        let pos = try takePoint(&operands, command: "TEXT", what: "an insertion point")
+        let height = try takeNumberOrNumericString(&operands, command: "TEXT", what: "height")
+        let rotation = try takeNumberOrNumericString(&operands, command: "TEXT", what: "rotation angle")
+        let textVal: String
+        if let first = operands.first {
+            operands.removeFirst()
+            switch first {
+            case .string(let s): textVal = s
+            case .int(let i): textVal = "\(i)"
+            case .real(let r): textVal = "\(r)"
+            default: textVal = "\(first.prin1String)"
+            }
+        } else {
+            textVal = ""
+        }
+        _ = takeKeyword(&operands)
+        let layerID = try activeLayerID(host)
+        let styleVal = await host.getSystemVar("TEXTSTYLE")
+        let style: String
+        if case let .string(s)? = styleVal { style = s } else { style = "Standard" }
+        let entity = CADEntity(
+            layerID: layerID,
+            localGeometry: [
+                .text(
+                    position: pos,
+                    text: textVal,
+                    height: height,
+                    rotation: rotation * Double.pi / 180,
+                    style: style,
+                    alignH: alignH,
+                    alignV: alignV,
+                    mtextWidth: nil,
+                    color: await currentColor(host))
+            ])
+        host.document.addEntities([entity])
+        host.lastCreated = entity.handle
     }
 
     // MARK: - Modify commands (single-mutator rule: one call, one undo entry)

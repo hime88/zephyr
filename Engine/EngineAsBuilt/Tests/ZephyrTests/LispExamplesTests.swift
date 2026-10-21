@@ -157,4 +157,20 @@ final class LispExamplesTests: XCTestCase {
         XCTAssertEqual(
             typeNames(doc), ["CIRCLE", "CIRCLE", "CIRCLE", "LINE", "TEXT"])
     }
+
+    func testZephyrLogo() async throws {
+        let (host, doc) = makeHost()
+        var env = LispEnvironment()
+        let path = "C:/Users/xingo/Downloads/gemini-code-1792561429649.lsp"
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let url = URL(fileURLWithPath: path)
+        let source = try String(contentsOf: url, encoding: .utf8)
+        _ = try await eval(source, host: host, env: &env)
+        // User pressed Enter for default Dark theme (empty line)
+        host.broker.offer(.line(""))
+        // Insertion point at (0, 0, 0)
+        host.broker.offer(.point([0, 0, 0]))
+        _ = try await eval("(c:ZEPHYRLOGO)", host: host, env: &env)
+        XCTAssertGreaterThan(doc.allEntities.count, 5)
+    }
 }

@@ -113,8 +113,14 @@ public final class LispCommand: FeatureCommand {
             processor.commandPrompt = "Select a file…"
         } else if mode == .call {
             processor.commandPrompt = "Enter function call to run:"
+            processor.commandLineActive = true
+            processor.commandBuffer = ""
+            processor.commandSelectionIndex = 0
         } else {
             processor.commandPrompt = "Enter expression to EVAL:"
+            processor.commandLineActive = true
+            processor.commandBuffer = ""
+            processor.commandSelectionIndex = 0
         }
     }
 
@@ -175,6 +181,10 @@ public final class LispCommand: FeatureCommand {
         if let doc = engineRef?.document {
             doc.undoManager.discardOpenUndoGroups()
         }
+        if processor.commandLineActive {
+            processor.commandLineActive = false
+            processor.commandBuffer = ""
+        }
         processor.lispInvocationDepth = 0
         host = nil
     }
@@ -220,13 +230,62 @@ public final class LispCommand: FeatureCommand {
     }
 
     public func handleKeyDown(
-        scancode: SDL_Scancode, engine _: PhrostEngine, processor _: CADCommandProcessor
+        scancode: SDL_Scancode, engine: PhrostEngine, processor: CADCommandProcessor
     ) -> CommandResult {
-        // Keys feed grread (queued when idle). Never swallowed: the app's
-        // shortcuts still see them.
-        // NOTE: grread key codes are SDL scancodes, not AutoCAD codes.
-        host?.broker.offer(.device(LispValue(list: [.int(2), .int(Int(scancode.rawValue))])))
+        if scancode == SDL_SCANCODE_RETURN || scancode == SDL_SCANCODE_KP_ENTER {
+            if let host {
+                switch host.broker.pendingKind {
+                case .line, .point, .entity:
+                    _ = handleCommandText("", engine: engine, processor: processor)
+                    return .handled
+                default:
+                    break
+                }
+            }
+        }
+        if host?.broker.pendingKind == .device {
+            host?.broker.offer(.device(LispValue(list: [.int(2), .int(Int(scancode.rawValue))])))
+            return .continue
+        }
+        if !processor.commandLineActive, let host, let kind = host.broker.pendingKind {
+            switch kind {
+            case .point, .line:
+                if let char = scancodeToChar(scancode) {
+                    processor.commandLineActive = true
+                    processor.commandBuffer = String(char)
+                    processor.commandSelectionIndex = 0
+                    return .handled
+                }
+            default:
+                break
+            }
+        }
         return .continue
+    }
+
+    private func scancodeToChar(_ sc: SDL_Scancode) -> Character? {
+        if sc.rawValue >= SDL_SCANCODE_A.rawValue && sc.rawValue <= SDL_SCANCODE_Z.rawValue {
+            let ascii = UInt8(0x61 + (sc.rawValue - SDL_SCANCODE_A.rawValue))
+            return Character(UnicodeScalar(ascii))
+        }
+        if sc.rawValue >= SDL_SCANCODE_1.rawValue && sc.rawValue <= SDL_SCANCODE_9.rawValue {
+            let ascii = UInt8(0x31 + (sc.rawValue - SDL_SCANCODE_1.rawValue))
+            return Character(UnicodeScalar(ascii))
+        }
+        if sc == SDL_SCANCODE_0 || sc == SDL_SCANCODE_KP_0 { return "0" }
+        if sc == SDL_SCANCODE_KP_1 { return "1" }
+        if sc == SDL_SCANCODE_KP_2 { return "2" }
+        if sc == SDL_SCANCODE_KP_3 { return "3" }
+        if sc == SDL_SCANCODE_KP_4 { return "4" }
+        if sc == SDL_SCANCODE_KP_5 { return "5" }
+        if sc == SDL_SCANCODE_KP_6 { return "6" }
+        if sc == SDL_SCANCODE_KP_7 { return "7" }
+        if sc == SDL_SCANCODE_KP_8 { return "8" }
+        if sc == SDL_SCANCODE_KP_9 { return "9" }
+        if sc == SDL_SCANCODE_PERIOD || sc == SDL_SCANCODE_KP_PERIOD { return "." }
+        if sc == SDL_SCANCODE_COMMA { return "," }
+        if sc == SDL_SCANCODE_MINUS || sc == SDL_SCANCODE_KP_MINUS { return "-" }
+        return nil
     }
 
     public func renderOverlay(cam: CameraTransform, engine: PhrostEngine) {
@@ -270,6 +329,13 @@ public final class LispCommand: FeatureCommand {
             processor.commandPrompt = host.currentPrompt.isEmpty
                 ? "Lisp running… (Esc cancels)"
                 : host.currentPrompt
+        }
+        if case .line = host.broker.pendingKind {
+            if !processor.commandLineActive {
+                processor.commandLineActive = true
+                processor.commandBuffer = ""
+                processor.commandSelectionIndex = 0
+            }
         }
         // Rubber band from the base point to the cursor during point waits.
         if case .point = host.broker.pendingKind,
@@ -457,6 +523,10 @@ public final class LispCommand: FeatureCommand {
             }
             host.output(
                 "Warning: \(depth) unbalanced UNDO group(s) auto-closed.\n")
+        }
+        if processor.commandLineActive {
+            processor.commandLineActive = false
+            processor.commandBuffer = ""
         }
         evalTask = nil
         processor.lispInvocationDepth = 0
