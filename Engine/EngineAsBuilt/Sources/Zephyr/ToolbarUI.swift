@@ -7,6 +7,7 @@ import ImGui
 // Renders the main toolbar just below the tab bar.
 // Provides quick-access buttons for common operations:
 //   - File: Open, Save, Save As
+//   - History: Undo, Redo (disabled when the stack is empty)
 //   - Tool modes: Select, Move, Rotate, Scale, Pan, Zoom
 //   - Anti-aliasing toggle (AA button)
 //   - Edit Block button (when a block reference is selected)
@@ -122,6 +123,48 @@ struct ToolbarUI {
                 ImGuiTextV("Cmd+Shift+P to import a PDF page as an underlay")
 #else
                 ImGuiTextV("Ctrl+Shift+P to import a PDF page as an underlay")
+#endif
+                ImGuiEndTooltip()
+            }
+
+            ImGuiSameLine(0, 4)
+            igSeparator()
+            ImGuiSameLine(0, 4)
+
+            // Undo / Redo quick-access buttons. They are disabled when the
+            // history stack is empty and their tooltips name the shortcuts,
+            // so users who don't know Cmd/Ctrl+Z (or the UNDO/REDO commands)
+            // can still find them here.
+            let canUndo = engine.document.undoManager.canUndo
+            let canRedo = engine.document.undoManager.canRedo
+            if !canUndo { ImGuiBeginDisabled(true) }
+            if igSmallButton("Undo") {
+                engine.commandProcessor.executeCommand("UNDO")
+            }
+            if !canUndo { ImGuiEndDisabled() }
+            if ImGuiIsItemHovered(0) {
+                ImGuiBeginTooltip()
+                ImGuiTextV(canUndo ? "Undo the last change" : "Nothing to undo")
+#if os(macOS)
+                ImGuiTextV("Cmd+Z, or type UNDO / U")
+#else
+                ImGuiTextV("Ctrl+Z, or type UNDO / U")
+#endif
+                ImGuiEndTooltip()
+            }
+            ImGuiSameLine(0, 4)
+            if !canRedo { ImGuiBeginDisabled(true) }
+            if igSmallButton("Redo") {
+                engine.commandProcessor.executeCommand("REDO")
+            }
+            if !canRedo { ImGuiEndDisabled() }
+            if ImGuiIsItemHovered(0) {
+                ImGuiBeginTooltip()
+                ImGuiTextV(canRedo ? "Re-apply the last undone change" : "Nothing to redo")
+#if os(macOS)
+                ImGuiTextV("Cmd+Y, or type REDO")
+#else
+                ImGuiTextV("Ctrl+Y, or type REDO")
 #endif
                 ImGuiEndTooltip()
             }

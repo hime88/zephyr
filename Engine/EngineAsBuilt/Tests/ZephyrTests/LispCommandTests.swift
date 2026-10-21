@@ -97,11 +97,18 @@ final class LispCommandTests: XCTestCase {
         XCTAssertTrue(LispDescriptors.load.bareEnterExecutes)
         XCTAssertTrue(LispDescriptors.script.bareEnterExecutes)
         XCTAssertFalse(LispDescriptors.eval.bareEnterExecutes)
+        // UNDO/REDO take an optional step count: bare Enter performs one step
+        // (AutoCAD parity) instead of waiting for an argument.
+        for name in ["UNDO", "REDO"] {
+            let descriptor = CommandDescriptor.allCommands.first { $0.canonicalName == name }
+            XCTAssertNotNil(descriptor, "\(name) must be a registered command")
+            XCTAssertTrue(descriptor?.bareEnterExecutes ?? false)
+        }
         // Spot-check: other parameterized commands still wait for arguments.
+        let optionalArgumentCommands: Set<String> = ["LOAD", "SCRIPT", "UNDO", "REDO"]
         let others = CommandDescriptor.allCommands.filter {
             !$0.syntax.isEmpty
-                && $0.canonicalName != "LOAD"
-                && $0.canonicalName != "SCRIPT"
+                && !optionalArgumentCommands.contains($0.canonicalName)
         }
         XCTAssertFalse(others.isEmpty)
         for desc in others {

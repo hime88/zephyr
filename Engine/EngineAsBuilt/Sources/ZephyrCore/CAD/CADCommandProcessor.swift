@@ -235,6 +235,9 @@ public struct CommandDescriptor: Sendable {
         CommandDescriptor(canonicalName: "DIMARC",     aliases: ["DAR", "DIMARCLENGTH"], category: .draw, syntax: "", description: "Arc length dimension along a curve"),
         CommandDescriptor(canonicalName: "DIMORDINATE",aliases: ["DOR", "DIMORD"], category: .draw, syntax: "", description: "X or Y ordinate dimension from origin"),
         CommandDescriptor(canonicalName: "DIMJOGGED",  aliases: ["DJO", "DIMJOG"], category: .draw, syntax: "", description: "Jogged radius dimension for large radii"),
+        // --- History ---
+        CommandDescriptor(canonicalName: "UNDO",       aliases: ["U"],             category: .modify,  syntax: "[<count>]", description: "Undo the last drawing change (Cmd/Ctrl+Z)", bareEnterExecutes: true),
+        CommandDescriptor(canonicalName: "REDO",       aliases: [],                category: .modify,  syntax: "[<count>]", description: "Re-apply the last undone change (Cmd/Ctrl+Y)", bareEnterExecutes: true),
         // --- Modify ---
         CommandDescriptor(canonicalName: "MOVE",       aliases: ["M"],             category: .modify,  syntax: "", description: "Move selected entities by picking two points"),
         CommandDescriptor(canonicalName: "ROTATE",     aliases: ["R"],             category: .modify,  syntax: "", description: "Rotate selected entities around their collective center"),
@@ -591,6 +594,40 @@ public final class CADCommandProcessor {
         }
 
         switch upper {
+        // --- History (UNDO / REDO) ---
+        // Registered so the shortcuts are discoverable: typing the name works
+        // exactly like Cmd/Ctrl+Z and Cmd/Ctrl+Y (see EngineInputHandler).
+        // An optional count undoes/redoes several steps in one command.
+        case _ where upper.hasPrefix("UNDO ") || upper.hasPrefix("U "):
+            guard let engine = engine else { clearCommand(); return }
+            let prefixLength = upper.hasPrefix("UNDO ") ? 5 : 2
+            let argument = String(upper.dropFirst(prefixLength))
+                .trimmingCharacters(in: .whitespaces)
+            guard let steps = Int(argument), steps > 0 else {
+                print("[CAD] Invalid step count '\(argument)'. Usage: UNDO [<count>]")
+                clearCommand()
+                return
+            }
+            performUndo(engine: engine, steps: steps)
+            clearCommand()
+        case _ where upper.hasPrefix("REDO "):
+            guard let engine = engine else { clearCommand(); return }
+            let argument = String(upper.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            guard let steps = Int(argument), steps > 0 else {
+                print("[CAD] Invalid step count '\(argument)'. Usage: REDO [<count>]")
+                clearCommand()
+                return
+            }
+            performRedo(engine: engine, steps: steps)
+            clearCommand()
+        case "UNDO", "U":
+            guard let engine = engine else { clearCommand(); return }
+            performUndo(engine: engine, steps: 1)
+            clearCommand()
+        case "REDO":
+            guard let engine = engine else { clearCommand(); return }
+            performRedo(engine: engine, steps: 1)
+            clearCommand()
         // --- File Commands ---
         case "N", "NEW":
             engine?.tabManager.newTab()
@@ -1658,6 +1695,34 @@ public final class CADCommandProcessor {
     }
 
     // MARK: - Command Helpers
+
+    /// `UNDO`/`U` command path. Identical to the Cmd/Ctrl+Z shortcut, which
+    /// goes straight to `document.undo()`; kept here so the behaviour (and the
+    /// user feedback) can never drift between the two entry points.
+    private func performUndo(engine: PhrostEngine, steps: Int) {
+        let available = engine.document.undoManager.undoDepth
+        guard available > 0 else {
+            print("[CAD] Nothing to undo.")
+            return
+        }
+        let count = min(steps, available)
+        for _ in 0..<count { engine.document.undo() }
+        print("[CAD] Undo \(count == 1 ? "1 step" : "\(count) steps")"
+            + (available > count ? " (\(available - count) more available)" : ""))
+    }
+
+    /// `REDO` command path. Mirror of `performUndo(engine:steps:)`.
+    private func performRedo(engine: PhrostEngine, steps: Int) {
+        let available = engine.document.undoManager.redoDepth
+        guard available > 0 else {
+            print("[CAD] Nothing to redo.")
+            return
+        }
+        let count = min(steps, available)
+        for _ in 0..<count { engine.document.redo() }
+        print("[CAD] Redo \(count == 1 ? "1 step" : "\(count) steps")"
+            + (available > count ? " (\(available - count) more available)" : ""))
+    }
 
     /// Show the native file-save dialog and, on confirmation, save the active tab.
     private func showNativeSaveDialog(engine eng: PhrostEngine) {

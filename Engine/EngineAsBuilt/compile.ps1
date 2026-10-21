@@ -36,7 +36,29 @@ $config = if ($isRelease) { "release" } else { "debug" }
 Write-Host "### Building $config configuration in $DevRoot ###" -ForegroundColor Cyan
 
 # 2. Detect Architecture for Target Triple & DXC
+# Ask the Swift toolchain first — it decides which MSVC libraries the link step
+# needs. $env:PROCESSOR_ARCHITECTURE is unreliable when this script is launched
+# from an emulated (x64) shell on ARM64 Windows: it reports AMD64, so vcvarsall
+# would load the x64 MSVC/UCRT libs and the linker fails with
+# "msvcrt.lib(chkstk.obj): machine type x64 conflicts with arm64".
 $hostArch = $env:PROCESSOR_ARCHITECTURE
+$toolchainTokens = $null
+if (Get-Command swift -ErrorAction SilentlyContinue) {
+    try {
+        $toolchainInfo = (& swift -print-target-info 2>$null | Out-String)
+        if ($toolchainInfo -match '"triple"\s*:\s*"([^"]+)"') {
+            $toolchainTokens = $Matches[1]
+        }
+    } catch { $toolchainTokens = $null }
+}
+if ($toolchainTokens) {
+    $hostArch = if ($toolchainTokens -like "aarch64*") { "ARM64" } else { "AMD64" }
+} elseif ($env:PROCESSOR_ARCHITEW6432) {
+    # Emulated x64 shell on ARM64: PROCESSOR_ARCHITECTURE says AMD64 but the
+    # real machine is ARM64.
+    $hostArch = $env:PROCESSOR_ARCHITEW6432
+}
+Write-Host "### Host architecture: $hostArch (toolchain: $toolchainTokens) ###" -ForegroundColor DarkGray
 if ($hostArch -eq "ARM64") {
     $vcvarsArch = "arm64"
     $swiftTriple = "aarch64-unknown-windows-msvc"
