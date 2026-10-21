@@ -113,7 +113,9 @@ struct CommandLineUI {
         ImGuiSetNextWindowPos(ImVec2(x: winX, y: currentY), Int32(ImGuiCond_Always.rawValue), ImVec2(x: 0, y: 0))
         ImGuiSetNextWindowSizeConstraints(ImVec2(x: cmdW, y: 0), ImVec2(x: cmdW, y: dh * 0.6), { _ in }, nil)
         
-        if igBegin("##CmdLine", nil, wflags) {
+        let enteredCmdLine = igBegin("##CmdLine", nil, wflags)
+        igBringWindowToDisplayFront(igGetCurrentWindow())
+        if enteredCmdLine {
             if featureInputActive,
                let commandPrompt = engine.commandProcessor.commandPrompt,
                !commandPrompt.isEmpty {
@@ -154,6 +156,7 @@ struct CommandLineUI {
             // would silently vanish. If nothing else holds activation, take
             // focus back for this frame so this frame's keystrokes land.
             if CommandLineUI._needsFocus || !ImGuiIsAnyItemActive() {
+                igBringWindowToFocusFront(igGetCurrentWindow())
                 igSetKeyboardFocusHere(0)
                 CommandLineUI._needsFocus = false
             }
@@ -275,7 +278,9 @@ struct CommandLineUI {
             ImGuiSetNextWindowPos(ImVec2(x: winX, y: currentY), Int32(ImGuiCond_Always.rawValue), ImVec2(x: 0, y: 0))
             ImGuiSetNextWindowSizeConstraints(ImVec2(x: cmdW, y: 0), ImVec2(x: cmdW, y: dh * 0.6), { _ in }, nil)
             
-            if igBegin("##CmdPalette", nil, paletteFlags) {
+            let enteredPalette = igBegin("##CmdPalette", nil, paletteFlags)
+            igBringWindowToDisplayFront(igGetCurrentWindow())
+            if enteredPalette {
                 if featureInputActive {
                     let currentOptions = activeFeatureCommand?.commandTextOptions(
                         for: engine.commandProcessor.commandBuffer) ?? []
@@ -338,7 +343,9 @@ struct CommandLineUI {
         ImGuiPushStyleColor(Int32(ImGuiCol_WindowBg.rawValue), engine.ui.theme.panelBg)
         ImGuiPushStyleColor(Int32(ImGuiCol_Border.rawValue), engine.ui.theme.brandGold)
 
-        if igBegin("##FeatureCommandPrompt", nil, flags) {
+        let enteredPrompt = igBegin("##FeatureCommandPrompt", nil, flags)
+        igBringWindowToDisplayFront(igGetCurrentWindow())
+        if enteredPrompt {
             ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.brandGold)
             ImGuiTextV("›")
             ImGuiPopStyleColor(1)
