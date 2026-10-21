@@ -63,18 +63,41 @@ enum LispScriptedCommands {
 
     // MARK: - Entry
 
-    static func run(args: [LispValue], host: LispCADHost) async throws -> LispValue {
-        guard let first = args.first else { return .nilValue } // (command) alone: no-op.
-        guard case let .string(rawName) = first else {
-            throw LispError.typeMismatch(
-                name: "command", expected: "command name string", got: first)
+    private static func isTerminatingToken(_ value: LispValue) -> Bool {
+        switch value {
+        case .string(let s):
+            let c = canonicalName(s)
+            return c == "" || c == "C" || c == "CLOSE"
+        case .symbol(let s):
+            let u = s.uppercased()
+            return u == "C" || u == "CLOSE"
+        default:
+            return false
         }
-        if rawName.trimmingCharacters(in: .whitespaces).hasPrefix("'") {
-            throw LispError.hostError(
-                "command: transparent invocation '\(rawName)' is not supported from Lisp")
-        }
+    }
+
+    private static func isIncompleteCommand(_ args: [LispValue]) -> Bool {
+        guard let first = args.first, case let .string(rawName) = first else { return false }
         let name = canonicalName(rawName)
-        for token in args.dropFirst() {
+        guard name == "PLINE" || name == "LINE" else { return false }
+        guard let last = args.dropFirst().last else { return true }
+        return !isTerminatingToken(last)
+    }
+
+    private static func isCommandComplete(_ args: [LispValue]) -> Bool {
+        guard let first = args.first, case let .string(rawName) = first else { return true }
+        let name = canonicalName(rawName)
+        if name == "PLINE" || name == "LINE" {
+            guard let last = args.dropFirst().last else { return false }
+            return isTerminatingToken(last)
+        }
+        return true
+    }
+
+    static func run(
+        args: [LispValue], host: LispCADHost, isCommandS: Bool = false
+    ) async throws -> LispValue {
+        for token in args {
             let isPause: Bool = switch token {
             case let .string(s): canonicalName(s) == "PAUSE"
             case let .symbol(s): s.uppercased() == "PAUSE"
@@ -85,6 +108,57 @@ enum LispScriptedCommands {
                     "command: PAUSE (interactive input) is not supported from Lisp")
             }
         }
+
+        if isCommandS {
+            return try await executeSingle(args: args, host: host)
+        }
+
+        if !host.pendingCommandArgs.isEmpty {
+            if let first = args.first, case let .string(raw) = first,
+               scripted.contains(canonicalName(raw)) {
+                let prev = host.pendingCommandArgs
+                host.pendingCommandArgs = []
+                _ = try? await executeSingle(args: prev + [.string("")], host: host)
+            } else if args.isEmpty {
+                host.pendingCommandArgs.append(.string(""))
+                if isCommandComplete(host.pendingCommandArgs) {
+                    let full = host.pendingCommandArgs
+                    host.pendingCommandArgs = []
+                    return try await executeSingle(args: full, host: host)
+                }
+                return .nilValue
+            } else {
+                host.pendingCommandArgs.append(contentsOf: args)
+                if isCommandComplete(host.pendingCommandArgs) {
+                    let full = host.pendingCommandArgs
+                    host.pendingCommandArgs = []
+                    return try await executeSingle(args: full, host: host)
+                }
+                return .nilValue
+            }
+        }
+
+        if args.isEmpty { return .nilValue } // (command) alone: no-op.
+
+        if isIncompleteCommand(args) {
+            host.pendingCommandArgs = args
+            return .nilValue
+        }
+
+        return try await executeSingle(args: args, host: host)
+    }
+
+    private static func executeSingle(args: [LispValue], host: LispCADHost) async throws -> LispValue {
+        guard let first = args.first else { return .nilValue }
+        guard case let .string(rawName) = first else {
+            throw LispError.typeMismatch(
+                name: "command", expected: "command name string", got: first)
+        }
+        if rawName.trimmingCharacters(in: .whitespaces).hasPrefix("'") {
+            throw LispError.hostError(
+                "command: transparent invocation '\(rawName)' is not supported from Lisp")
+        }
+        let name = canonicalName(rawName)
         var operands = Array(args.dropFirst())
         switch name {
         case "LINE": try await runLine(&operands, host: host)

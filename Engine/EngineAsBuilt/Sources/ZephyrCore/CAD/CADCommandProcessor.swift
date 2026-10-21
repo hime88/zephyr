@@ -421,6 +421,15 @@ public final class CADCommandProcessor {
     /// Backing store for `lispInvocationDepth` (see LispInvocationContext.swift).
     var _lispInvocationDepth: Int = 0
 
+    /// Returns true when an AutoLISP routine is actively executing off-thread
+    /// and not suspended waiting on user prompt input.
+    public var isLispActivelyEvaluating: Bool {
+        if _lispInvocationDepth > 0, let lispCmd = activeFeatureCommand as? LispCommand {
+            return lispCmd.isActivelyEvaluating
+        }
+        return false
+    }
+
     /// Persistent AutoLISP session: defuns and setq globals survive across
     /// LOAD/EVAL/c: runs (one session per app; AutoCAD scopes per-document).
     /// Each run checks a copy in/out; the depth guard keeps runs single-flight.

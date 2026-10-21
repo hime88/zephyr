@@ -173,4 +173,32 @@ final class LispExamplesTests: XCTestCase {
         _ = try await eval("(c:ZEPHYRLOGO)", host: host, env: &env)
         XCTAssertGreaterThan(doc.allEntities.count, 5)
     }
+
+    func testZephyrLogoRev3MultiCall() async throws {
+        let (host, doc) = makeHost()
+        var env = LispEnvironment()
+        let path = "C:/Users/xingo/Downloads/gemini-code-1792607081201.lsp"
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let url = URL(fileURLWithPath: path)
+        let source = try String(contentsOf: url, encoding: .utf8)
+        _ = try await eval(source, host: host, env: &env)
+        host.broker.offer(.line(""))
+        host.broker.offer(.point([0, 0, 0]))
+        _ = try await eval("(c:ZEPHYRLOGO)", host: host, env: &env)
+        XCTAssertGreaterThan(doc.allEntities.count, 5)
+    }
+
+    func testZephyrLogoRev4() async throws {
+        let (host, doc) = makeHost()
+        var env = LispEnvironment()
+        let path = "C:/Users/xingo/Downloads/gemini-code-1792607328750.lsp"
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let url = URL(fileURLWithPath: path)
+        let source = try String(contentsOf: url, encoding: .utf8)
+        _ = try await eval(source, host: host, env: &env)
+        host.broker.offer(.line(""))
+        host.broker.offer(.point([0, 0, 0]))
+        _ = try await eval("(c:ZEPHYRLOGO4)", host: host, env: &env)
+        XCTAssertGreaterThan(doc.allEntities.count, 5)
+    }
 }

@@ -619,4 +619,37 @@ final class LispCADHostTests: XCTestCase {
         }
         XCTAssertEqual(pts.count, 4)
     }
+
+    func testMultiCallPline() async throws {
+        let host = makeHost()
+        var env = LispEnvironment()
+        _ = try await eval(#"(command "_PLINE")"#, host: host, env: &env)
+        _ = try await eval(#"(command '(0 0 0))"#, host: host, env: &env)
+        _ = try await eval(#"(command '(10 0 0))"#, host: host, env: &env)
+        _ = try await eval(#"(command '(10 10 0))"#, host: host, env: &env)
+        _ = try await eval(#"(command "_C")"#, host: host, env: &env)
+        XCTAssertEqual(host.document.allEntities.count, 1)
+        guard let ent = host.document.allEntities.first,
+              let prim = ent.localGeometry?.first,
+              case let .polyline(path, _) = prim else {
+            return XCTFail("expected closed polyline")
+        }
+        XCTAssertTrue(path.isClosed)
+        XCTAssertEqual(path.vertices.count, 3)
+    }
+
+    func testMultiCallLineWithBareCommandClose() async throws {
+        let host = makeHost()
+        var env = LispEnvironment()
+        _ = try await eval(#"(command "_LINE")"#, host: host, env: &env)
+        _ = try await eval(#"(command '(0 0 0))"#, host: host, env: &env)
+        _ = try await eval(#"(command '(10 0 0))"#, host: host, env: &env)
+        _ = try await eval(#"(command)"#, host: host, env: &env)
+        XCTAssertEqual(host.document.allEntities.count, 1)
+        guard let ent = host.document.allEntities.first,
+              let prim = ent.localGeometry?.first,
+              case .line = prim else {
+            return XCTFail("expected line")
+        }
+    }
 }

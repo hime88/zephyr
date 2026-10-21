@@ -287,6 +287,10 @@ private struct CADRenderBoundsAccumulator {
 }
 
 public final class CADDocument {
+    /// Recursive lock to serialize document mutations and snapshot/render reads
+    /// across background evaluation tasks and the main render loop.
+    public let documentLock = NSRecursiveLock()
+
     // MARK: Tables
 
     private var layerTable: [UUID: Layer] = [:]
@@ -1201,11 +1205,13 @@ public final class CADDocument {
     // MARK: - Entity Operations
 
     public func addEntity(_ entity: CADEntity) {
-        pushUndo()
-        let e = preparedEntityForStorage(entity)
-        entityRegistry[e.handle] = e
-        markEdited(regenerate: true)
-        invalidateEntityGrid()
+        documentLock.withLock {
+            pushUndo()
+            let e = preparedEntityForStorage(entity)
+            entityRegistry[e.handle] = e
+            markEdited(regenerate: true)
+            invalidateEntityGrid()
+        }
     }
 
     /// Batch-insert multiple entities under a single undo snapshot.
@@ -1213,20 +1219,24 @@ public final class CADDocument {
     /// to avoid pushing one snapshot per entity.
     public func addEntities(_ entities: [CADEntity]) {
         guard !entities.isEmpty else { return }
-        pushUndo()
-        for entity in entities {
-            let prepared = preparedEntityForStorage(entity)
-            entityRegistry[prepared.handle] = prepared
+        documentLock.withLock {
+            pushUndo()
+            for entity in entities {
+                let prepared = preparedEntityForStorage(entity)
+                entityRegistry[prepared.handle] = prepared
+            }
+            markEdited(regenerate: true)
+            invalidateEntityGrid()
         }
-        markEdited(regenerate: true)
-        invalidateEntityGrid()
     }
 
     public func removeEntity(handle: UUID) {
-        pushUndo()
-        entityRegistry.removeValue(forKey: handle)
-        markEdited(regenerate: true)
-        invalidateEntityGrid()
+        documentLock.withLock {
+            pushUndo()
+            entityRegistry.removeValue(forKey: handle)
+            markEdited(regenerate: true)
+            invalidateEntityGrid()
+        }
     }
 
     /// Remove an entity without pushing undo or invalidating the spatial grid.
@@ -1350,11 +1360,13 @@ public final class CADDocument {
     }
 
     public func entity(for handle: UUID) -> CADEntity? {
-        entityRegistry[handle]
+        documentLock.withLock { entityRegistry[handle] }
     }
 
     // Legacy Array copy (Avoid using in performance loops)
-    public var allEntities: [CADEntity] { Array(entityRegistry.values) }
+    public var allEntities: [CADEntity] {
+        documentLock.withLock { Array(entityRegistry.values) }
+    }
 
     // Fast O(1) properties for UI and Rendering
     public var entityCount: Int { entityRegistry.count }
@@ -1364,7 +1376,8 @@ public final class CADDocument {
     /// This walks the renderable primitives instead of trusting cached entity boxes so rotated
     /// text, SHX glyphs, dimension blocks, arcs, ellipses, and splines match what is displayed.
     public func renderableWorldBoundingBox(visibleLayersOnly: Bool = true) -> BoundingBox3D? {
-        var bounds = CADRenderBoundsAccumulator()
+        documentLock.withLock {
+            var bounds = CADRenderBoundsAccumulator()
         let layersByName = visibleLayersOnly ? layersByUppercasedName() : [:]
 
         for entity in entityRegistry.values {
@@ -1542,6 +1555,7 @@ public final class CADDocument {
         }
 
         return bounds.boundingBox
+        }
     }
 
     private func includePrimitiveRenderBounds(
@@ -2004,10 +2018,12 @@ public final class CADDocument {
     /// Replaces a stored entity (same handle) under a single undo snapshot.
     /// Used by entmod and scripted commands that rewrite entity data.
     public func replaceEntity(_ entity: CADEntity) {
-        pushUndo()
-        entityRegistry[entity.handle] = preparedEntityForStorage(entity)
-        markEdited(regenerate: true)
-        invalidateEntityGrid()
+        documentLock.withLock {
+            pushUndo()
+            entityRegistry[entity.handle] = preparedEntityForStorage(entity)
+            markEdited(regenerate: true)
+            invalidateEntityGrid()
+        }
     }
 
     public func updateLayer(for handle: UUID, to layerID: UUID) {
@@ -3157,7 +3173,8 @@ public final class CADDocument {
     public func renderSnapshot(
         dxfRoundTripPayloadFallback: DXFRoundTripPayload? = nil
     ) -> CADDocumentSnapshot {
-        let base = snapshot(dxfRoundTripPayloadFallback: dxfRoundTripPayloadFallback)
+        documentLock.withLock {
+            let base = snapshot(dxfRoundTripPayloadFallback: dxfRoundTripPayloadFallback)
         var blocks = base.blocks
         var merged = false
         if let store = xrefRuntimeStore {
@@ -3191,6 +3208,7 @@ public final class CADDocument {
             imageDefinitions: base.imageDefinitions,
             pdfDefinitions: base.pdfDefinitions,
             availableImageAssetNames: available)
+        }
     }
 
     /// Build a save-specific snapshot that includes referenced image assets.

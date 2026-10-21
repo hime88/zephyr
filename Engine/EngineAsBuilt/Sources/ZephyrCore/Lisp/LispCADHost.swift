@@ -46,6 +46,8 @@ final class LispCADHost: LispHost, @unchecked Sendable {
 
     /// Most recently created entity (entlast / _L).
     var lastCreated: UUID?
+    /// Incomplete scripted command buffered across multiple (command ...) calls.
+    var pendingCommandArgs: [LispValue] = []
     /// Most recent non-empty consumed selection (_P).
     var previousSelection: Set<UUID> = []
     /// UNDO Mark position (single mark; Back returns to it).
@@ -248,11 +250,11 @@ final class LispCADHost: LispHost, @unchecked Sendable {
     // MARK: - Commands
 
     func runCommand(_ args: [LispValue]) async throws -> LispValue {
-        try await LispScriptedCommands.run(args: args, host: self)
+        try await LispScriptedCommands.run(args: args, host: self, isCommandS: false)
     }
 
     func runCommandS(_ args: [LispValue]) async throws -> LispValue {
-        try await LispScriptedCommands.run(args: args, host: self)
+        try await LispScriptedCommands.run(args: args, host: self, isCommandS: true)
     }
 
     // MARK: - Entity store

@@ -349,10 +349,14 @@ public final class EngineRenderer {
         // when the displayed geometry is stale and no task is already computing it.
         // The snapshot is a value-typed copy, so the task never touches the live doc.
         if wantGen != ctx.appliedGeneration && ctx.regenInFlight != wantGen {
+            if engine.commandProcessor.isLispActivelyEvaluating {
+                return false
+            }
             print("[Loop] regen needed for generation \(wantGen), launching task")
             ctx.regenTask?.cancel()
-            let docSnapshot = doc.renderSnapshot()
-            let origin = renderOrigin(for: doc)
+            let (docSnapshot, origin) = doc.documentLock.withLock {
+                (doc.renderSnapshot(), renderOrigin(for: doc))
+            }
             ctx.regenInFlight = wantGen
             ctx.pendingRevision = doc.renderRevision
             let simplify = simplifyComplexBlocks
@@ -381,8 +385,10 @@ public final class EngineRenderer {
             if isPrimary {
                 engine.interaction.pendingPreviewHandles.removeAll()
                 // Rebuild entity spatial grid after geometry has been regenerated.
-                if !doc.entityGridBuilt {
-                    doc.rebuildEntityGrid()
+                doc.documentLock.withLock {
+                    if !doc.entityGridBuilt {
+                        doc.rebuildEntityGrid()
+                    }
                 }
             }
         }

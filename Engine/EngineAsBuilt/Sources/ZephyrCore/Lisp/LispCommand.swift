@@ -78,6 +78,12 @@ public final class LispCommand: FeatureCommand {
         self.presetSource = source
     }
 
+    /// Whether the background evaluator is actively computing and not waiting for input.
+    public var isActivelyEvaluating: Bool {
+        guard launched, !tornDown, let host else { return false }
+        return !host.broker.hasPending
+    }
+
     // MARK: - FeatureCommand
 
     public func start(engine: PhrostEngine, processor: CADCommandProcessor) {
@@ -178,6 +184,7 @@ public final class LispCommand: FeatureCommand {
         evalTask?.cancel()
         evalTask = nil
         host?.broker.cancelPending()
+        host?.pendingCommandArgs.removeAll()
         if let doc = engineRef?.document {
             doc.undoManager.discardOpenUndoGroups()
         }
