@@ -114,3 +114,31 @@ final class TabManagerMoveTests: XCTestCase {
         XCTAssertEqual(manager.activeIndex, 1)
     }
 }
+
+extension TabManagerMoveTests {
+
+    // MARK: - tabOrderGeneration (tab-bar visual sync)
+
+    func testOrderGenerationBumpsOnlyOnRealReorder() {
+        let manager = makeManager(tabCount: 3)
+        let base = manager.tabOrderGeneration
+
+        XCTAssertTrue(manager.moveTab(from: 0, to: 0), "no-op move succeeds")
+        XCTAssertEqual(manager.tabOrderGeneration, base, "no-op must not bump")
+
+        XCTAssertFalse(manager.moveTab(from: -1, to: 0))
+        XCTAssertEqual(manager.tabOrderGeneration, base, "rejected move must not bump")
+
+        XCTAssertTrue(manager.moveTab(from: 0, to: 2))
+        XCTAssertEqual(manager.tabOrderGeneration, base + 1)
+
+        // Drive the active tab to the end; each successful step bumps,
+        // the refused step at the boundary does not.
+        while manager.moveActiveTabRight() {}
+        let atEnd = manager.tabOrderGeneration
+        XCTAssertFalse(manager.moveActiveTabRight(), "already last")
+        XCTAssertEqual(manager.tabOrderGeneration, atEnd)
+        XCTAssertTrue(manager.moveActiveTabLeft())
+        XCTAssertEqual(manager.tabOrderGeneration, atEnd + 1)
+    }
+}

@@ -28,6 +28,15 @@ struct TabBarUI {
     /// the window, the tab floats into its own OS window instead.
     static var _dragTabID: UUID? = nil
 
+    /// Last TabManager.tabOrderGeneration rendered, and remaining
+    /// frames to pulse ImGuiTabBarFlags_Reorderable. ImGui only
+    /// re-sorts its internal tab order when that flag toggles (or a
+    /// tab is added), so after a model reorder we toggle it on for
+    /// one frame and off the next — each toggle sorts by the latest
+    /// submission order, landing pixels on the model order.
+    static var _renderedOrderGeneration: UInt64 = 0
+    static var _reorderPulseFrames: Int = 0
+
     /// Renders the tab bar at the top of the window.
     /// - Parameters:
     ///   - engine: The engine instance.
@@ -69,10 +78,21 @@ struct TabBarUI {
                 _lastActiveIdx = activeIdx
             }
 
-            // Note: deliberately NOT Reorderable — ImGui would reorder pixels without
-            // touching the model. Reorder goes through TabManager.moveTab via the
-            // drag-drop payloads below, so the model stays the source of truth.
-            let tabBarFlags = Int32(ImGuiTabBarFlags_AutoSelectNewTabs.rawValue | ImGuiTabBarFlags_NoTooltip.rawValue)
+            // Note: deliberately NOT Reorderable as the reorder mechanism —
+            // ImGui would reorder pixels without touching the model. Reorder
+            // goes through TabManager.moveTab via the drag-drop payloads
+            // below, so the model stays the source of truth. The flag is
+            // only pulsed for two frames after a model reorder to force
+            // ImGui to re-sort its internal tab order (see statics above).
+            if engine.tabManager.tabOrderGeneration != _renderedOrderGeneration {
+                _renderedOrderGeneration = engine.tabManager.tabOrderGeneration
+                _reorderPulseFrames = 2
+            }
+            var tabBarFlags = Int32(ImGuiTabBarFlags_AutoSelectNewTabs.rawValue | ImGuiTabBarFlags_NoTooltip.rawValue)
+            if _reorderPulseFrames > 0 {
+                tabBarFlags |= Int32(ImGuiTabBarFlags_Reorderable.rawValue)
+                _reorderPulseFrames -= 1
+            }
             if ImGuiBeginTabBar("DocumentTabs", tabBarFlags) {
 
                 for i in 0..<tabs.count {

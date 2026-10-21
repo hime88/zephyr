@@ -14,6 +14,32 @@ struct LayerPanelUI {
     static var _editingDocumentID: ObjectIdentifier? = nil
     static var _editingLayerNameBuf: [CChar] = []
     static var _isDocked: Bool = false
+    static var _searchText: String = ""
+    static var _searchBuf: [CChar] = []
+    static var _cachedCountsDocumentID: ObjectIdentifier? = nil
+    static var _cachedCountsRevision: UInt64 = .max
+    static var _cachedCounts: [UUID: Int] = [:]
+
+    /// Read the shared persisted settings each frame so LAYERSORT
+    /// commands take effect immediately in an already-open panel.
+    private static func sortSettings() -> LayerSortSettings {
+        LayerSortSettings.load()
+    }
+
+    private static func applySort(_ settings: LayerSortSettings) {
+        settings.save()
+    }
+
+    private static func entityCounts(for doc: CADDocument) -> [UUID: Int] {
+        if _cachedCountsDocumentID == ObjectIdentifier(doc),
+           _cachedCountsRevision == doc.editRevision {
+            return _cachedCounts
+        }
+        _cachedCounts = LayerSortPolicy.entityCounts(in: doc)
+        _cachedCountsDocumentID = ObjectIdentifier(doc)
+        _cachedCountsRevision = doc.editRevision
+        return _cachedCounts
+    }
 
     static func render(engine: PhrostEngine, document: CADDocument) {
         let doc = document
@@ -62,6 +88,7 @@ struct LayerPanelUI {
                 engine.ui.layersPanelVisible = false
             } else {
                 renderHeader(engine: engine, document: doc, isDocked: wasDocked)
+                renderSortStrip(engine: engine)
 
                 if layers.isEmpty {
                     ImGuiSetCursorPosX(10)
@@ -70,7 +97,21 @@ struct LayerPanelUI {
                     // Host layers first; xref-dependent layers grouped
                     // under a collapsible header per owning xref.
                     // Direct iteration — avoid ImGuiListClipper due to arm64e C struct ABI mismatch.
-                    let hostLayers = layers.filter { !doc.isXrefDependentLayer($0) }
+                    // Both lists follow the shared sort settings
+                    // (LAYERSORT command / sort strip) and name search.
+                    let settings = sortSettings()
+                    let counts = settings.key == .used ? entityCounts(for: doc) : [:]
+                    let search = _searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    func visibleLayers(_ list: [Layer]) -> [Layer] {
+                        let sorted = LayerSortPolicy.sorted(
+                            list, entityCounts: counts, settings: settings)
+                        guard !search.isEmpty else { return sorted }
+                        return sorted.filter {
+                            $0.name.localizedCaseInsensitiveContains(search)
+                        }
+                    }
+                    let hostLayers = visibleLayers(
+                        layers.filter { !doc.isXrefDependentLayer($0) })
                     for index in 0..<hostLayers.count {
                         renderLayerRow(
                             engine: engine,
@@ -86,9 +127,10 @@ struct LayerPanelUI {
                     })).sorted()
                     var rowIndex = hostLayers.count
                     for owner in owners {
-                        let group = dependent.filter {
+                        let group = visibleLayers(dependent.filter {
                             doc.xrefOwnerBlockName(forLayerName: $0.name) == owner
-                        }.sorted { $0.name < $1.name }
+                        })
+                        if group.isEmpty { continue }
                         ImGuiSetCursorPosX(6)
                         ImGuiPushStyleColor(
                             Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textDim)
@@ -164,6 +206,79 @@ struct LayerPanelUI {
             y: headerY + ImGuiGetFrameHeight() + 4))
     }
 
+    /// Sort controls shared with the LAYERSORT command: clickable
+    /// On/Color/Name headers, a Sort menu with every key, and a name
+    /// search field. Reads settings fresh each frame, so commands
+    /// take effect immediately here.
+    private static func renderSortStrip(engine: PhrostEngine) {
+        // Explicit theme colors: the global gold hover/active pair
+        // (brandGoldHover/Active) behind near-white text is unreadable
+        // on dark themes, so this strip uses mid-tone control colors
+        // that keep textPrimary readable in every state and theme.
+        let theme = engine.ui.theme
+        ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), theme.frameBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_ButtonHovered.rawValue), theme.activeBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_ButtonActive.rawValue), theme.activeBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), theme.textPrimary)
+        ImGuiPushStyleColor(Int32(ImGuiCol_FrameBg.rawValue), theme.frameBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_FrameBgHovered.rawValue), theme.activeBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_FrameBgActive.rawValue), theme.activeBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_Header.rawValue), theme.activeBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_HeaderHovered.rawValue), theme.activeBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_HeaderActive.rawValue), theme.activeBg)
+        ImGuiPushStyleColor(Int32(ImGuiCol_PopupBg.rawValue), theme.panelBg)
+        defer { ImGuiPopStyleColor(11) }
+
+        let settings = sortSettings()
+        func arrow(_ key: LayerSortKey) -> String {
+            guard settings.key == key else { return "" }
+            return settings.ascending ? " \u{25B2}" : " \u{25BC}"
+        }
+        ImGuiSetCursorPosX(6)
+        if igSmallButton("On\(arrow(.onOff))##LayerSortOn") {
+            applySort(settings.selecting(.onOff))
+        }
+        ImGuiSameLine(0, 4)
+        if igSmallButton("Color\(arrow(.color))##LayerSortColor") {
+            applySort(settings.selecting(.color))
+        }
+        ImGuiSameLine(0, 4)
+        if igSmallButton("Name\(arrow(.name))##LayerSortName") {
+            applySort(settings.selecting(.name))
+        }
+        ImGuiSameLine(0, 4)
+        if igSmallButton("Sort: \(settings.key.displayName)\(arrow(settings.key)) \u{25BE}##LayerSortMenuBtn") {
+            ImGuiOpenPopup("##LayerSortMenu", 0)
+        }
+        if ImGuiBeginPopup("##LayerSortMenu", 0) {
+            for key in LayerSortKey.allCases {
+                let marker = settings.key == key ? "\u{2713} " : "  "
+                if igMenuItem_Bool("\(marker)\(key.displayName)", nil, false, true) {
+                    applySort(settings.selecting(key))
+                }
+            }
+            ImGuiSeparator()
+            if igMenuItem_Bool(settings.ascending ? "Descending" : "Ascending", nil, false, true) {
+                applySort(LayerSortSettings(key: settings.key, ascending: !settings.ascending))
+            }
+            ImGuiEndPopup()
+        }
+
+        let bufSize = 128
+        if _searchBuf.count != bufSize {
+            var buffer = [CChar](repeating: 0, count: bufSize)
+            let bytes = _searchText.utf8CString
+            for i in 0..<min(bytes.count, bufSize - 1) { buffer[i] = bytes[i] }
+            _searchBuf = buffer
+        }
+        ImGuiSetCursorPosX(6)
+        ImGuiSetNextItemWidth(max(60, ImGuiGetContentRegionAvail().x - 12))
+        if igInputTextWithHint("##LayerSearch", "Filter layers…",
+                               &_searchBuf, bufSize, 0, nil, nil) {
+            _searchText = String(cString: _searchBuf)
+        }
+    }
+
     private static func renderLayerRow(
         engine: PhrostEngine,
         document: CADDocument,
@@ -233,9 +348,9 @@ struct LayerPanelUI {
                     layer.handle,
                     visible: !layer.isVisible)
             } else if mouse.x < swatchMaxX {
-                ImGuiOpenPopup("##LayerColorPopup\(index)", 0)
+                ImGuiOpenPopup("##LayerColorPopup\(layer.handle.uuidString)", 0)
             } else if mouse.x >= propsMinX {
-                ImGuiOpenPopup("##LayerPropsPopup\(index)", 0)
+                ImGuiOpenPopup("##LayerPropsPopup\(layer.handle.uuidString)", 0)
             } else {
                 document.activeLayerID = layer.handle
             }
@@ -390,13 +505,13 @@ struct LayerPanelUI {
         layer: Layer,
         index: Int
     ) {
-        if ImGuiBeginPopup("##LayerColorPopup\(index)", 0) {
+        if ImGuiBeginPopup("##LayerColorPopup\(layer.handle.uuidString)", 0) {
             var color: [Float] = [
                 Float(layer.color.r) / 255,
                 Float(layer.color.g) / 255,
                 Float(layer.color.b) / 255,
             ]
-            if igColorEdit3("##LayerColorEdit\(index)", &color, 0) {
+            if igColorEdit3("##LayerColorEdit\(layer.handle.uuidString)", &color, 0) {
                 document.setLayerColor(
                     layer.handle,
                     color: ColorRGBA(
@@ -414,7 +529,7 @@ struct LayerPanelUI {
         layer: Layer,
         index: Int
     ) {
-        if ImGuiBeginPopup("##LayerPropsPopup\(index)", 0) {
+        if ImGuiBeginPopup("##LayerPropsPopup\(layer.handle.uuidString)", 0) {
             ImGuiTextV("Properties: \(layer.name)")
             ImGuiSeparator()
 

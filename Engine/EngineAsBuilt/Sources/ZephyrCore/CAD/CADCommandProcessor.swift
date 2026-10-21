@@ -299,6 +299,7 @@ public struct CommandDescriptor: Sendable {
         CommandDescriptor(canonicalName: "LAYER NEW",  aliases: ["LA NEW"],        category: .layer,   syntax: "<name>", description: "Create a new layer with an optional name"),
         CommandDescriptor(canonicalName: "LAYER DELETE", aliases: ["LAYER DEL", "LA DELETE", "LA DEL"], category: .layer, syntax: "<name>", description: "Delete a layer by name"),
         CommandDescriptor(canonicalName: "LAYER RENAME", aliases: ["LA RENAME"],   category: .layer,   syntax: "<oldName> <newName>", description: "Rename an existing layer"),
+        CommandDescriptor(canonicalName: "LAYERSORT", aliases: ["LASORT", "LAYER SORT", "LA SORT"], category: .layer, syntax: "[Name|On|Color|Linetype|Lineweight|Opacity|Plot|Used] [Asc|Desc]", description: "Sort layers in the Layers panel by property; repeat a key to toggle direction"),
         CommandDescriptor(canonicalName: "LAYERMOVE",    aliases: ["LM", "LAYMOVE"], category: .layer, syntax: "", description: "Move selected entities to a different layer (autocomplete prompt)"),
         // --- Block ---
         CommandDescriptor(canonicalName: "BLOCK",      aliases: ["BMAKE"],         category: .block,   syntax: "<name>", description: "Create a new block from selected entities"),
@@ -1138,6 +1139,41 @@ public final class CADCommandProcessor {
         case "LA", "LAYER":
             if let engine = engine {
                 engine.ui.layersPanelVisible.toggle()
+            }
+            clearCommand()
+        case _ where upper == "LAYERSORT" || upper == "LASORT" || upper == "LAYER SORT" || upper == "LA SORT"
+            || upper.hasPrefix("LAYERSORT ") || upper.hasPrefix("LASORT ")
+            || upper.hasPrefix("LAYER SORT ") || upper.hasPrefix("LA SORT "):
+            let tokens = upper.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            let argTokens: [String]
+            if tokens.count >= 2, tokens[0] == "LAYER" || tokens[0] == "LA", tokens[1] == "SORT" {
+                argTokens = Array(tokens.dropFirst(2))
+            } else {
+                argTokens = Array(tokens.dropFirst())
+            }
+            let current = LayerSortSettings.load()
+            let usage = "LAYERSORT [Name|On|Color|Linetype|Lineweight|Opacity|Plot|Used] [Asc|Desc|Reverse]"
+            if argTokens.isEmpty || argTokens.contains("?") {
+                print("[CAD] Layer sort: \(current.key.displayName) \(current.ascending ? "ascending" : "descending"). Usage: \(usage)")
+            } else if let updated = current.applyingCommandTokens(argTokens) {
+                updated.save()
+                print("[CAD] Layer sort: \(updated.key.displayName) \(updated.ascending ? "ascending" : "descending").")
+            } else {
+                print("[CAD] Invalid LAYERSORT option. Usage: \(usage)")
+            }
+            // Make the result visible immediately, like opening AutoCAD's
+            // Layer Properties Manager to apply a column sort.
+            engine?.ui.layersPanelVisible = true
+            clearCommand()
+        case _ where upper == "LAYER ?" || upper == "-LAYER ?" || upper == "LA ?" || upper == "-LA ?":
+            guard let engine = engine else { clearCommand(); return }
+            let doc = engine.document
+            let counts = LayerSortPolicy.entityCounts(in: doc)
+            print("[CAD] Layers (alphabetical):")
+            for layer in doc.allLayers.sorted(by: { $0.name < $1.name }) {
+                let state = layer.isVisible ? "On" : "Off"
+                let current = doc.activeLayerID == layer.handle ? " (current)" : ""
+                print("[CAD]   \(layer.name)\(current) — \(state), color \(DXFColorTable.rgbaToACI(layer.color)), lt \(layer.lineType), \(counts[layer.handle] ?? 0) ent")
             }
             clearCommand()
         case _ where upper.hasPrefix("LAYER NEW ") || upper.hasPrefix("LA NEW "):

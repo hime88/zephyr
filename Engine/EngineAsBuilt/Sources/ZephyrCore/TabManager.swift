@@ -751,6 +751,12 @@ public final class TabManager {
     /// per tab, so no save/restore is needed.
     /// - Returns: False when `from` is out of range; true otherwise
     ///   (including a no-op move to the tab's own position).
+    /// Bumped whenever tab order actually changes. ImGui's tab bar
+    /// keeps its own visual order and only re-sorts it when a tab is
+    /// added or its Reorderable flag toggles, so the UI layer watches
+    /// this counter to force a re-sort after a model reorder.
+    public private(set) var tabOrderGeneration: UInt64 = 0
+
     @discardableResult
     public func moveTab(from: Int, to: Int) -> Bool {
         guard from >= 0, from < tabs.count else { return false }
@@ -762,6 +768,7 @@ public final class TabManager {
         if let newActive = tabs.firstIndex(where: { $0.id == activeID }) {
             activeIndex = newActive
         }
+        tabOrderGeneration &+= 1
         return true
     }
 

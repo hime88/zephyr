@@ -345,7 +345,8 @@ Not yet: `REFEDIT` in-place editing of a referenced drawing (Bind or open the fi
 - Full layer table with ACI color indexing.
 - Per-layer line type, weight, and **opacity** (DXF group code 440, 0–100%).
 - Layer opacity slider in the layer panel.
-- Layer management commands: `LAYER NEW`, `LAYER DELETE`, `LAYER RENAME`.
+- Layer management commands: `LAYER NEW`, `LAYER DELETE`, `LAYER RENAME`, `LAYER ?` (alphabetical listing).
+- **Sortable Layers panel** — Run `LAYERSORT` (for example `LAYERSORT COLOR DESC`, `LAYERSORT USED`, or `LAYERSORT REVERSE`) to sort by name, state, color, linetype, lineweight, opacity, plot, or used; it opens the Layers panel so the new order is visible. Repeating a key toggles direction. The panel also has **On/Color/Name** sort buttons, a **Sort** menu, and a name search box. Sort choice persists across sessions, not in the drawing.
 - Layer move command (`LAYERMOVE` / `LM`) — modal dialog with filterable layer list.
 
 ### SHX Shape Font Interpreter
