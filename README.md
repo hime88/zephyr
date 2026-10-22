@@ -51,7 +51,7 @@ On top of that, finding great cross-platform tools that treat macOS and Linux as
 | **GPU (Linux)** | Vulkan via SDL3 |
 | **UI** | ImGui (SDL3 GPU backend) |
 | **DXF I/O** | Swift port of libdxfrw) |
-| **DWG I/O** | ODA CLI bridge (import/export) |
+| **DWG I/O** | ODA CLI bridge (import/export) today — native Swift DWG codec planned, see Roadmap |
 | **PDF Export** | PDFium (Windows/Linux) · PDFKit (macOS) |
 | **PDF Import** | PDFium (Windows/Linux) · PDFKit (macOS) |
 | **Compression** | zstd via zlib-ng |
@@ -68,7 +68,7 @@ On top of that, finding great cross-platform tools that treat macOS and Linux as
 ## Current Features
 
 ### File I/O
-- **DWG import/export** — Full read/write via ODA FileConverter. Blocks, layers, text styles, hatches, splines, polylines with bulge, dimensions. Native DWG round-trip.
+- **DWG import/export** — Full read/write via ODA FileConverter. Blocks, layers, text styles, hatches, splines, polylines with bulge, dimensions. Native DWG round-trip. The converter is a host CLI bridge, so DWG currently requires a desktop OS — the roadmap's native Swift codec removes that constraint.
 - **DXF import/export** — R2007 round-trip. Dimensions, splines, hatches, leaders all preserved. Layer transparency (group code 440) supported.
 - **PDF export** — Vector PDF 1.7 with Bluebeam Revu-compatible Measurement dictionary.
 - **PDF import** — Cross-platform: PDFKit on macOS, PDFium on Windows/Linux. Page selector with preview. Raster underlay at 150 DPI. (Import embeds a snapshot; `PDFATTACH` keeps a live link — see External References below.)
@@ -384,7 +384,7 @@ Scripted command calls include `(command "INSERT" ...)`, `(command "_CHPROP" ...
 
 Runnable examples live in `Engine/EngineAsBuilt/Tools/lisp/examples/` (`SHAPES`, `SELCOUNT`, `REDCIRCLES`, `INPUTDEMO`) — `LOAD` one and run its command. Each is executed by `LispExamplesTests`, so they double as compatibility checks. Loaded `c:` routines stay resident for the session and run by bare name (built-ins win on collision); `setq` globals persist across `EVAL` runs too.
 
-Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, ActiveX automation, and ARX/VLX/VBA application loading.
+Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, the rest of the `vla-*`/`vlax-*` object model beyond `vl-load-com`, `vlax-ename->vla-object`, `vla-getboundingbox`, and `vlax-safearray->list`, and ARX/VLX/VBA application loading. Out-of-process COM interop (foreign ActiveX servers, type-library import) is Windows-only and not planned.
 
 ### UI
 - **Command palette** — Type any letter to open, Tab-cycle through fuzzy-matched autocomplete. Space repeats the last command (AutoCAD-style). 100+ registered commands with descriptions and syntax hints.
@@ -433,7 +433,12 @@ Features planned or in active development to be programmed:
 - **Parametric Constraints & Numerical Solver** — 15 geometric and dimensional constraint types (coincident, parallel, perpendicular, tangent, concentric, horizontal, vertical, equal, distance, angle, fix, midpoint, collinear, symmetric, offset). Core data models (`CADConstraint`) and `.eab` file serialization are implemented; the numerical constraint solver, interactive commands (`GEOMCONSTRAINT`, `DIMCONSTRAINT`, `PARAMETRIC`), and constraint indicator glyphs are to be programmed.
 - **In-Place Reference Editing (`REFEDIT`)** — In-place editing of referenced drawings and blocks.
 - **Underlay Enhancements** — Rendering support for DWF/DGN underlays and on-zoom vector re-rendering for PDF attachments.
-- **Extended AutoLISP (Tier 2)** — DCL dialogs, reactors, and ActiveX automation.
+- **Extended AutoLISP (Tier 2) — DCL Dialogs** — `.dcl` parsing plus `load_dialog`/`new_dialog`/`action_tile`/`start_dialog`/`done_dialog`, rendered through the existing ImGui layer. No COM dependency, so this is fully cross-platform.
+- **Extended AutoLISP (Tier 2) — Reactors** — `vlr-object-reactor`, `vlr-command-reactor`, `vlr-editor-reactor`, and their callback plumbing, driven by the editor's own event stream. Also fully cross-platform.
+- **Extended AutoLISP (Tier 2) — VLA/VLAX Object Model** — the `vla-get-*`/`vla-put-*`/`vla-*` method and property surface, plus safearrays and variants, backed by a native descriptor table over Zephyr's own objects (the same approach BricsCAD ships as "Fast-COM"), not by COM. Literal ActiveX/COM interop — `vlax-create-object` against foreign servers, `vlax-import-type-library`, third-party ActiveX controls, VBA/VLX hosting — is Windows-only by nature and out of scope.
+- **Native DWG I/O** — An in-process Swift DWG reader/writer to replace the ODA FileConverter CLI bridge (`Sources/ZephyrCore/IO/ODADWGConverter.swift`) and retire `INSTALLODA`. A host-side external binary cannot exist on Web, iOS, or Android, so this is the blocker for DWG on those targets — and on desktop it drops an out-of-process round-trip per open and save.
+- **Web** — Browser build via the SDL3 SDL_GPU WebGPU backend, currently an open upstream PR ([libsdl-org/SDL#16020](https://github.com/libsdl-org/SDL/pull/16020)). Web lands when that backend does.
+- **iOS and Android** — Additional targets in the same SDL3/Swift pipeline, independent of the web work: Metal on iOS and Vulkan on Android already ship in SDL_GPU, so the remaining work is platform shell — touch and pen input mapping, on-device document access and packaging, and mobile-appropriate UI density.
 
 ## Nightly Builds
 
