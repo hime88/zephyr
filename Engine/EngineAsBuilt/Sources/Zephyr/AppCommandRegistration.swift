@@ -134,7 +134,7 @@ struct AppCommandRegistration {
         engine.commandProcessor.registerFeatureCommand(
             name: "EXPLODE",
             aliases: ["X"],
-            factory: { ExplodeArrayCommand() }
+            factory: { ExplodeCommand() }
         )
         engine.commandProcessor.registerFeatureCommand(
             name: "MATCHPROP",

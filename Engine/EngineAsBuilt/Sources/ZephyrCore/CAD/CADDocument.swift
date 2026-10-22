@@ -2547,47 +2547,288 @@ public final class CADDocument {
 
     @discardableResult
     public func explodeAssociativeArray(handle: UUID) -> [UUID] {
-        explodeAssociativeArrays(handles: [handle])
+        explodeEntities(handles: [handle])
     }
 
     @discardableResult
     public func explodeAssociativeArrays(handles sourceHandles: Set<UUID>) -> [UUID] {
-        var work: [(entity: CADEntity, blockID: UUID, instances: [CADArrayInstance])] = []
+        explodeEntities(handles: sourceHandles)
+    }
+
+    /// Explodes compound objects (rectangles, polylines, associative arrays, block references,
+    /// dimensions, leaders, tables, and multi-primitive entities) into their component elements.
+    @discardableResult
+    public func explodeEntities(handles sourceHandles: Set<UUID>) -> [UUID] {
+        guard !sourceHandles.isEmpty else { return [] }
+
+        var handlesToRemove = Set<UUID>()
+        var entitiesToAdd: [CADEntity] = []
+
         for handle in sourceHandles {
-            guard let entity = entityRegistry[handle],
-                  let array = entity.arrayData,
-                  let blockID = entity.blockID,
-                  blockTable[blockID] != nil
-            else { continue }
-            let path = CADArrayPathResolver.points(
-                for: array,
-                containerTransform: entity.transform,
-                document: self)
-            let instances = array.evaluatedInstances(pathPoints: path)
-            if !instances.isEmpty { work.append((entity, blockID, instances)) }
+            guard let entity = entityRegistry[handle] else { continue }
+
+            // 1. Associative Array
+            if let array = entity.arrayData,
+               let blockID = entity.blockID,
+               blockTable[blockID] != nil {
+                let path = CADArrayPathResolver.points(
+                    for: array,
+                    containerTransform: entity.transform,
+                    document: self)
+                let instances = array.evaluatedInstances(pathPoints: path)
+                if !instances.isEmpty {
+                    handlesToRemove.insert(entity.handle)
+                    for instance in instances {
+                        var copy = CADEntity(
+                            layerID: entity.layerID,
+                            blockID: blockID,
+                            transform: entity.transform.multiplying(by: instance.transform),
+                            xdata: entity.xdata,
+                            drawOrder: entity.drawOrder)
+                        copy.xdata.removeValue(forKey: "dxf.handle")
+                        entitiesToAdd.append(copy)
+                    }
+                }
+                continue
+            }
+
+            // 2. Block Reference (non-array)
+            if let blockID = entity.blockID, entity.arrayData == nil {
+                if blockTable[blockID]?.isXref == true { continue }
+                guard let block = effectiveBlock(for: blockID), !block.geometry.isEmpty else { continue }
+
+                handlesToRemove.insert(entity.handle)
+                for (index, prim) in block.geometry.enumerated() {
+                    var layerID = entity.layerID
+                    if let style = block.primitiveStyles[index],
+                       let l = layersView.first(where: { $0.name == style.layerName }) {
+                        layerID = l.handle
+                    }
+                    let transformed = CADGeometryMath.transformPrimitives([prim], by: entity.transform)
+                    var xd = block.primitiveXData[index] ?? entity.xdata
+                    xd.removeValue(forKey: "dxf.handle")
+                    for tp in transformed {
+                        let loose = CADEntity(
+                            layerID: layerID,
+                            localGeometry: [tp],
+                            transform: .identity,
+                            xdata: xd,
+                            drawOrder: entity.drawOrder
+                        )
+                        entitiesToAdd.append(loose)
+                    }
+                }
+                continue
+            }
+
+            // 3. Loose Geometry / Compound Entities
+            if let geometry = entity.localGeometry, !geometry.isEmpty {
+                var decomposedPrimitives: [CADPrimitive] = []
+                var canExplode = false
+
+                if entity.dimensionMetadata != nil || entity.leaderData != nil {
+                    canExplode = true
+                }
+                if geometry.count > 1 {
+                    canExplode = true
+                }
+
+                for prim in geometry {
+                    if let sub = CADDocument.explodePrimitive(prim, transform: entity.transform) {
+                        decomposedPrimitives.append(contentsOf: sub)
+                        canExplode = true
+                    } else {
+                        let transformed = CADGeometryMath.transformPrimitives([prim], by: entity.transform)
+                        decomposedPrimitives.append(contentsOf: transformed)
+                    }
+                }
+
+                if canExplode, !decomposedPrimitives.isEmpty {
+                    handlesToRemove.insert(entity.handle)
+                    var xd = entity.xdata
+                    xd.removeValue(forKey: "dxf.handle")
+                    xd.removeValue(forKey: "dxf.closed")
+
+                    for prim in decomposedPrimitives {
+                        let newEntity = CADEntity(
+                            layerID: entity.layerID,
+                            localGeometry: [prim],
+                            transform: .identity,
+                            xdata: xd,
+                            drawOrder: entity.drawOrder
+                        )
+                        entitiesToAdd.append(newEntity)
+                    }
+                }
+                continue
+            }
         }
-        guard !work.isEmpty else { return [] }
+
+        guard !handlesToRemove.isEmpty, !entitiesToAdd.isEmpty else { return [] }
 
         pushUndo()
+        for handle in handlesToRemove {
+            entityRegistry.removeValue(forKey: handle)
+        }
         var newHandles: [UUID] = []
-        newHandles.reserveCapacity(work.reduce(0) { $0 + $1.instances.count })
-        for item in work {
-            entityRegistry.removeValue(forKey: item.entity.handle)
-            for instance in item.instances {
-                var copy = CADEntity(
-                    layerID: item.entity.layerID,
-                    blockID: item.blockID,
-                    transform: item.entity.transform.multiplying(by: instance.transform),
-                    xdata: item.entity.xdata,
-                    drawOrder: item.entity.drawOrder)
-                copy = preparedEntityForStorage(copy)
-                entityRegistry[copy.handle] = copy
-                newHandles.append(copy.handle)
-            }
+        newHandles.reserveCapacity(entitiesToAdd.count)
+        for entity in entitiesToAdd {
+            let prepared = preparedEntityForStorage(entity)
+            entityRegistry[prepared.handle] = prepared
+            newHandles.append(prepared.handle)
         }
         markEdited(regenerate: true)
         invalidateEntityGrid()
         return newHandles
+    }
+
+    /// Decomposes a compound CADPrimitive into simpler primitives in world space, or nil if atomic.
+    public static func explodePrimitive(
+        _ prim: CADPrimitive,
+        transform: Transform3D
+    ) -> [CADPrimitive]? {
+        switch prim {
+        case .rect(let origin, let size, let color),
+             .fillRect(let origin, let size, let color):
+            let p0 = transform.transformPoint(origin)
+            let p1 = transform.transformPoint(Vector3(x: origin.x + size.x, y: origin.y, z: origin.z))
+            let p2 = transform.transformPoint(Vector3(x: origin.x + size.x, y: origin.y + size.y, z: origin.z))
+            let p3 = transform.transformPoint(Vector3(x: origin.x, y: origin.y + size.y, z: origin.z))
+            return [
+                .line(start: p0, end: p1, color: color),
+                .line(start: p1, end: p2, color: color),
+                .line(start: p2, end: p3, color: color),
+                .line(start: p3, end: p0, color: color)
+            ]
+
+        case .polygon(let points, let color),
+             .fillPolygon(let points, let color):
+            guard points.count >= 2 else { return nil }
+            if points.count == 2 {
+                let p0 = transform.transformPoint(points[0])
+                let p1 = transform.transformPoint(points[1])
+                return [.line(start: p0, end: p1, color: color)]
+            }
+            var lines: [CADPrimitive] = []
+            lines.reserveCapacity(points.count)
+            for i in 0..<points.count {
+                let pA = transform.transformPoint(points[i])
+                let pB = transform.transformPoint(points[(i + 1) % points.count])
+                lines.append(.line(start: pA, end: pB, color: color))
+            }
+            return lines
+
+        case .fillComplexPolygon(let outer, let holes, let color):
+            var lines: [CADPrimitive] = []
+            func addRing(_ ring: [Vector3]) {
+                guard ring.count >= 2 else { return }
+                for i in 0..<ring.count {
+                    let pA = transform.transformPoint(ring[i])
+                    let pB = transform.transformPoint(ring[(i + 1) % ring.count])
+                    lines.append(.line(start: pA, end: pB, color: color))
+                }
+            }
+            addRing(outer)
+            for hole in holes { addRing(hole) }
+            return lines.isEmpty ? nil : lines
+
+        case .polyline(let path, let color):
+            if !path.hatchEdges.isEmpty {
+                var edgePrims: [CADPrimitive] = []
+                for edge in path.hatchEdges {
+                    let tEdge = edge.transformed(by: transform)
+                    switch tEdge {
+                    case .line(let s, let e):
+                        edgePrims.append(.line(start: s, end: e, color: color))
+                    case .circularArc(let c, let r, let sa, let sw):
+                        let sA: Double
+                        let eA: Double
+                        if sw >= 0 {
+                            sA = sa
+                            eA = sa + sw
+                        } else {
+                            sA = sa + sw
+                            eA = sa
+                        }
+                        edgePrims.append(.arc(center: c, radius: r, startAngle: sA, endAngle: eA, color: color))
+                    case .ellipticalArc(let c, let u, let v, _, _):
+                        let majorLen = u.magnitude
+                        let minorRatio = majorLen > 1e-9 ? v.magnitude / majorLen : 1.0
+                        edgePrims.append(.ellipse(center: c, majorAxis: u, minorRatio: minorRatio, color: color))
+                    case .spline(let d):
+                        edgePrims.append(.spline(controlPoints: d.controlPoints, knots: d.knots, degree: d.degree, weights: d.weights, color: color))
+                    }
+                }
+                return edgePrims.isEmpty ? nil : edgePrims
+            }
+
+            guard path.segmentCount > 0 else { return nil }
+            let tPath = path.transformed(by: transform)
+            var segPrims: [CADPrimitive] = []
+            for seg in 0..<tPath.segmentCount {
+                if let arc = tPath.arcParameters(forSegment: seg) {
+                    let sA: Double
+                    let eA: Double
+                    if arc.sweep >= 0 {
+                        sA = arc.startAngle
+                        eA = arc.startAngle + arc.sweep
+                    } else {
+                        sA = arc.startAngle + arc.sweep
+                        eA = arc.startAngle
+                    }
+                    segPrims.append(.arc(center: arc.center, radius: arc.radius, startAngle: sA, endAngle: eA, color: color))
+                } else {
+                    let p1 = tPath.vertices[seg].position
+                    let p2 = tPath.vertices[tPath.endVertexIndex(forSegment: seg)].position
+                    segPrims.append(.line(start: p1, end: p2, color: color))
+                }
+            }
+            return segPrims.isEmpty ? nil : segPrims
+
+        case .table(let data, let origin, _):
+            let tessellated = DataTableTessellator.explodeForDXF(data: data, origin: origin, transform: transform)
+            return tessellated.isEmpty ? nil : tessellated
+
+        case .hatch(let boundary, let pattern, let scale, let angle, let color, _):
+            guard boundary.count >= 3 else { return nil }
+            let adaptiveMinimumSpacing = DXFHatchGenerator.adaptiveMinimumSpacing(for: boundary)
+            let nominalSpacing = DXFHatchGenerator.effectiveSpacing(patternName: pattern, scale: scale)
+            let hatchLines = DXFHatchGenerator.generatePatternHatch(
+                polygon: boundary,
+                patternName: pattern,
+                scale: scale,
+                angleDegrees: angle * 180.0 / .pi,
+                minimumSpacing: max(adaptiveMinimumSpacing, nominalSpacing))
+            let colored = color != nil ? hatchLines.map { prim in
+                if case .line(let s, let e, _) = prim { return CADPrimitive.line(start: s, end: e, color: color) }
+                return prim
+            } : hatchLines
+            let transformed = CADGeometryMath.transformPrimitives(colored, by: transform)
+            return transformed.isEmpty ? nil : transformed
+
+        case .hatchPath(let boundary, let holes, let pattern, let scale, let angle, let color, _):
+            let outerPts = boundary.tessellatedPoints()
+            guard outerPts.count >= 3 else { return nil }
+            let holePts = holes.map { $0.tessellatedPoints() }
+            let patternPolygon = holePts.isEmpty ? outerPts : DXFHatchGenerator.connectHoles(outer: outerPts, holes: holePts)
+            let adaptiveMinimumSpacing = DXFHatchGenerator.adaptiveMinimumSpacing(for: patternPolygon)
+            let nominalSpacing = DXFHatchGenerator.effectiveSpacing(patternName: pattern, scale: scale)
+            let hatchLines = DXFHatchGenerator.generatePatternHatch(
+                polygon: patternPolygon,
+                patternName: pattern,
+                scale: scale,
+                angleDegrees: angle * 180.0 / .pi,
+                minimumSpacing: max(adaptiveMinimumSpacing, nominalSpacing))
+            let colored = color != nil ? hatchLines.map { prim in
+                if case .line(let s, let e, _) = prim { return CADPrimitive.line(start: s, end: e, color: color) }
+                return prim
+            } : hatchLines
+            let transformed = CADGeometryMath.transformPrimitives(colored, by: transform)
+            return transformed.isEmpty ? nil : transformed
+
+        default:
+            return nil
+        }
     }
 
     public func replaceEntities(remove handles: Set<UUID>, add newEntities: [CADEntity]) {

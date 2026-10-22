@@ -270,7 +270,7 @@ public struct CommandDescriptor: Sendable {
         CommandDescriptor(canonicalName: "ARRAYASSOCIATIVITY", aliases: [], category: .settings, syntax: "[0|1]", description: "Set whether new arrays are associative"),
         CommandDescriptor(canonicalName: "ARRAYEDITSTATE", aliases: [], category: .settings, syntax: "", description: "Display whether array source editing is active"),
         CommandDescriptor(canonicalName: "ARRAYTYPE", aliases: [], category: .settings, syntax: "[0|1|2]", description: "Set the default array type: rectangular, path, or polar"),
-        CommandDescriptor(canonicalName: "EXPLODE", aliases: ["X"], category: .modify, syntax: "", description: "Convert selected associative arrays to independent block references"),
+        CommandDescriptor(canonicalName: "EXPLODE", aliases: ["X"], category: .modify, syntax: "", description: "Break a compound object into its component elements"),
         CommandDescriptor(canonicalName: "MATCHPROP",   aliases: ["MA", "MATCH"],  category: .modify,  syntax: "", description: "Copy properties from one entity to others"),
         CommandDescriptor(canonicalName: "TORIENT",    aliases: ["TO", "TEXTO"], category: .modify, syntax: "", description: "Rotate text individually to an absolute or most-readable angle"),
         CommandDescriptor(canonicalName: "SPLINEEDIT", aliases: ["SPE"],           category: .modify,  syntax: "", description: "Edit an existing spline (reverse, convert to polyline, etc.)"),

@@ -253,7 +253,7 @@ At the side prompt, **Multiple (`M`)** offsets the same object repeatedly with e
 | ARRAYASSOCIATIVITY | | Set whether new arrays are associative (`[0|1]`) |
 | ARRAYEDITSTATE | | Display whether array source editing is active |
 | ARRAYTYPE | | Set the default array type (`[0|1|2]`: rectangular, path, polar) |
-| EXPLODE | `X` | Convert associative arrays to independent block references |
+| EXPLODE | `X` | Break compound objects into component elements |
 
 ### Clipboard (Copy/Paste)
 | Command | Description |
