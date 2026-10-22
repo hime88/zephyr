@@ -56,6 +56,7 @@ public final class CADRendererBridge {
     private nonisolated(unsafe) var pendingResults: (
         generation: Int,
         renderOrigin: CADRenderOrigin,
+        autoContrastTrueColor: Bool,
         results: [EntityResult]
     )? = nil
     private let pendingLock = NSLock()
@@ -92,7 +93,7 @@ public final class CADRendererBridge {
             // Never let an older generation overwrite results from a newer one that already
             // landed (tasks can finish out of order; the newest generation always wins).
             if let existing = pendingResults, existing.generation >= generation { return }
-            pendingResults = (generation, renderOrigin, results)
+            pendingResults = (generation, renderOrigin, snapshot.autoContrastTrueColor, results)
         }
     }
 
@@ -111,7 +112,7 @@ public final class CADRendererBridge {
         splineTessellationDivisor: Double = 5000.0,
         engine: PhrostEngine
     ) -> Bool {
-        let applied = pendingLock.withLock { () -> (CADRenderOrigin, [EntityResult])? in
+        let applied = pendingLock.withLock { () -> (CADRenderOrigin, Bool, [EntityResult])? in
             guard let p = pendingResults else { return nil }
             if p.generation != wantGen {
                 // Stale: drop older generations so they can't linger and be applied later.
@@ -121,10 +122,11 @@ public final class CADRendererBridge {
                 return nil
             }
             pendingResults = nil
-            return (p.renderOrigin, p.results)
+            return (p.renderOrigin, p.autoContrastTrueColor, p.results)
         }
-        guard let (renderOrigin, results) = applied else { return false }
+        guard let (renderOrigin, autoContrastTrueColor, results) = applied else { return false }
         geometryManager.renderOrigin = renderOrigin
+        geometryManager.autoContrastTrueColor = autoContrastTrueColor
         applySpecs(
             results, into: geometryManager, spriteManager: spriteManager,
             imageStore: imageStore, viewportBackground: viewportBackground,
@@ -148,6 +150,7 @@ public final class CADRendererBridge {
         let opacityMultiplier: Double
         /// False when the primitive's own style layer is hidden.
         let isVisible: Bool
+        let isTrueColor: Bool
     }
 
     private nonisolated static func explicitColor(of primitive: CADPrimitive) -> ColorRGBA? {
@@ -261,6 +264,7 @@ public final class CADRendererBridge {
         entityLineTypeScale: Double,
         entityGeomWidth: Double,
         entityLayerOpacity: Double,
+        entityIsTrueColor: Bool = false,
         layersByName: [String: Layer]
     ) -> ResolvedPrimitiveStyle {
         let styleLayer: Layer?
@@ -317,6 +321,16 @@ public final class CADRendererBridge {
             b: color.b,
             a: UInt8(min(255, Double(color.a) * opacityMultiplier)))
 
+        let isTrueColor: Bool = {
+            if let expl = Self.explicitColor(of: primitive) {
+                return !DXFColorTable.isACI(expl)
+            }
+            if let styleColor = style?.color {
+                return !DXFColorTable.isACI(styleColor)
+            }
+            return entityIsTrueColor
+        }()
+
         return ResolvedPrimitiveStyle(
             color: adjustedColor,
             lineType: lineType,
@@ -324,7 +338,8 @@ public final class CADRendererBridge {
             lineTypeScale: entityLineTypeScale * (style?.lineTypeScale ?? 1.0),
             geomWidth: style?.geomWidth ?? entityGeomWidth,
             opacityMultiplier: opacityMultiplier,
-            isVisible: styleLayer?.isVisible ?? true)
+            isVisible: styleLayer?.isVisible ?? true,
+            isTrueColor: isTrueColor)
     }
 
     private nonisolated static func makeTextBackgroundSpec(
@@ -386,7 +401,7 @@ public final class CADRendererBridge {
                 index: Int, handle: UUID,
                 geometry: [CADPrimitive], primitiveStyles: [Int: CADPrimitiveStyle],
                 primitiveXData: [Int: [String: XDataValue]],
-                transform: Transform3D, color: ColorRGBA,
+                transform: Transform3D, color: ColorRGBA, isTrueColor: Bool,
                 lineType: String,
                 lineWeight: Double,
                 lineTypeScale: Double,
@@ -430,11 +445,20 @@ public final class CADRendererBridge {
                 continue
             }
             
+            let entityIsTrueColor: Bool
             let entityColor: ColorRGBA
             if let cv = entity.xdata["dxf.color"], case .string(let hex) = cv, let c = ColorRGBA(hex: hex) {
                 entityColor = c
+                if entity.xdata["dxf.color24"] != nil || entity.xdata["dxf.isTrueColor"]?.intValue == 1 {
+                    entityIsTrueColor = true
+                } else if entity.xdata["dxf.colorIndex"] != nil {
+                    entityIsTrueColor = false
+                } else {
+                    entityIsTrueColor = !DXFColorTable.isACI(c)
+                }
             } else {
                 entityColor = layer.color
+                entityIsTrueColor = false
             }
             let entityOpacity: Double
             if let value = entity.xdata["dxf.opacity"], case .double(let opacity) = value {
@@ -668,9 +692,9 @@ public final class CADRendererBridge {
 
             let lineTypeScale: Double
             if let ltsv = entity.xdata["dxf.lineTypeScale"], case .double(let d) = ltsv {
-                lineTypeScale = d
+                lineTypeScale = d * snapshot.globalLineTypeScale
             } else {
-                lineTypeScale = 1.0
+                lineTypeScale = 1.0 * snapshot.globalLineTypeScale
             }
 
             let geomWidth: Double
@@ -694,7 +718,7 @@ public final class CADRendererBridge {
                 for instance in array.evaluatedInstances(pathPoints: path) {
                     visible.append((index, entity.handle, geometry, primitiveStyles,
                                     primitiveXData, entity.transform.multiplying(by: instance.transform),
-                                    entityColor, lineType, lineWeight, lineTypeScale, geomWidth,
+                                    entityColor, entityIsTrueColor, lineType, lineWeight, lineTypeScale, geomWidth,
                                     penStrokeBrushSettings, penStrokeStabilizationSettings,
                                     combinedLayerOpacity, entityTextBackgroundScale,
                                     entityTextBackgroundColor, entityTextBackgroundUsesViewportColor,
@@ -703,7 +727,7 @@ public final class CADRendererBridge {
                 }
             } else {
                 visible.append((index, entity.handle, geometry, primitiveStyles,
-                                primitiveXData, entity.transform, entityColor, lineType, lineWeight,
+                                primitiveXData, entity.transform, entityColor, entityIsTrueColor, lineType, lineWeight,
                                 lineTypeScale, geomWidth, penStrokeBrushSettings,
                                 penStrokeStabilizationSettings, combinedLayerOpacity,
                                 entityTextBackgroundScale, entityTextBackgroundColor,
@@ -805,6 +829,7 @@ public final class CADRendererBridge {
                                     entityLineTypeScale: v.lineTypeScale,
                                     entityGeomWidth: v.geomWidth,
                                     entityLayerOpacity: v.layerOpacity,
+                                    entityIsTrueColor: v.isTrueColor,
                                     layersByName: layersByName)
                                 if !drawStyle.isVisible {
                                     currentZ += 0.01
@@ -1007,7 +1032,8 @@ public final class CADRendererBridge {
                                     penStrokeStabilizationSettings: v.penStrokeStabilizationSettings,
                                     penStrokeUnitScaleFromMM: snapshot.unit.scaleFromMM,
                                     renderOrigin: renderOrigin,
-                                    splineTessellationDivisor: splineTessellationDivisor)
+                                    splineTessellationDivisor: splineTessellationDivisor,
+                                    isTrueColor: drawStyle.isTrueColor)
                                 if s.count > 10000 {
                                     let typeStr: String
                                     switch primitive {
@@ -1050,6 +1076,7 @@ public final class CADRendererBridge {
                                         entityLineTypeScale: v.lineTypeScale,
                                         entityGeomWidth: v.geomWidth,
                                         entityLayerOpacity: v.layerOpacity,
+                                        entityIsTrueColor: v.isTrueColor,
                                         layersByName: layersByName)
                                     if drawStyle.isVisible, let imgSpec = CADPrimitiveGenerator.computeImageSpec(
                                         from: primitive,
@@ -1089,7 +1116,8 @@ public final class CADRendererBridge {
                                                     penStrokeStabilizationSettings: v.penStrokeStabilizationSettings,
                                                     penStrokeUnitScaleFromMM: snapshot.unit.scaleFromMM,
                                                     renderOrigin: renderOrigin,
-                                                    splineTessellationDivisor: splineTessellationDivisor))
+                                                    splineTessellationDivisor: splineTessellationDivisor,
+                                                    isTrueColor: drawStyle.isTrueColor))
                                             }
                                         }
                                     }
@@ -2167,13 +2195,14 @@ public final class CADRendererBridge {
         return result
     }
 
-        private struct LivePrimitiveStyle {
+    private struct LivePrimitiveStyle {
         let color: ColorRGBA
         let lineType: String
         let lineWeight: Double
         let lineTypeScale: Double
         let geomWidth: Double
         let layerOpacity: Double
+        let isTrueColor: Bool
     }
 
     private func livePrimitiveStyle(for entity: CADEntity, document: CADDocument) -> LivePrimitiveStyle? {
@@ -2214,9 +2243,9 @@ public final class CADRendererBridge {
 
         let lineTypeScale: Double
         if let ltsv = entity.xdata["dxf.lineTypeScale"], case .double(let d) = ltsv {
-            lineTypeScale = d
+            lineTypeScale = d * document.globalLineTypeScale
         } else {
-            lineTypeScale = 1.0
+            lineTypeScale = 1.0 * document.globalLineTypeScale
         }
 
         let geomWidth: Double
@@ -2226,13 +2255,25 @@ public final class CADRendererBridge {
             geomWidth = 0.0
         }
 
+        let isTrueColor: Bool = {
+            if entity.xdata["dxf.color24"] != nil || entity.xdata["dxf.isTrueColor"]?.intValue == 1 {
+                return true
+            }
+            if let cv = entity.xdata["dxf.color"], case .string(let hex) = cv, let c = ColorRGBA(hex: hex) {
+                if entity.xdata["dxf.colorIndex"] != nil { return false }
+                return !DXFColorTable.isACI(c)
+            }
+            return false
+        }()
+
         return LivePrimitiveStyle(
             color: effectiveColor,
             lineType: lineType,
             lineWeight: lineWeight,
             lineTypeScale: lineTypeScale,
             geomWidth: geomWidth,
-            layerOpacity: layer.opacity
+            layerOpacity: layer.opacity,
+            isTrueColor: isTrueColor
         )
     }
 
@@ -2299,7 +2340,8 @@ public final class CADRendererBridge {
                 xdata: entity.xdata),
             penStrokeUnitScaleFromMM: document.unit.scaleFromMM,
             renderOrigin: gm.renderOrigin,
-            splineTessellationDivisor: 5000.0
+            splineTessellationDivisor: 5000.0,
+            isTrueColor: style.isTrueColor
         )
 
         var newIDs: [SpriteID] = []

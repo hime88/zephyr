@@ -60,13 +60,13 @@ import ImGui
 // updates `engine.commandProcessor.commandSelectionIndex`. This index is
 // clamped into `clampedIndex` by the caller and passed here for rendering.
 //
-// ## THEME Command
+// ## THEME & AUTOCONTRAST Commands
 //
-// The "THEME" command receives special rendering: in addition to the command
-// name and description, two inline buttons ("DARK" and "LIGHT") are drawn
-// alongside the name. The active theme pill is highlighted in gold. This
-// allows quick theme toggling directly from the palette without leaving
-// the command line.
+// The "THEME" and "AUTOCONTRAST" commands receive special rendering: in addition
+// to the command name and description, inline buttons ("DARK"/"LIGHT" and
+// "ON"/"OFF") are drawn alongside the name. The active state pill is highlighted
+// in gold. This allows quick inspection and toggling directly from the palette
+// without leaving the command line.
 
 /// Renders autocomplete suggestions and empty-state UI for the command palette.
 ///
@@ -438,6 +438,38 @@ struct CommandAutocompleteUI {
                         }
                         if ImGuiButton("\(preset.shortName)##theme_\(preset.id)", ImVec2(x: 0, y: 0)) {
                             engine.ui.setTheme(preset.theme)
+                        }
+                        ImGuiPopStyleColor(2)
+                    }
+                    ImGuiPopStyleVar(2)
+
+                } else if canonical == "AUTOCONTRAST" {
+                    if let title = engine.ui.commandTitleFont { ImGuiPushFont(title, 0.0) }
+                    ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), (isSelected || isHovered) ? engine.ui.theme.brandGold : engine.ui.theme.textPrimary)
+                    ImGuiTextV(canonical)
+                    ImGuiPopStyleColor(1)
+                    if engine.ui.commandTitleFont != nil { ImGuiPopFont() }
+
+                    // ---- Inline Auto-Contrast pills (ON / OFF) ----
+                    // The active state pill uses brandGold as the button
+                    // background and rowHoverText as the text color.
+                    let isAutoContrastActive = engine.tabManager.activeDocument.autoContrastTrueColor
+                    ImGuiPushStyleVarX(Int32(ImGuiStyleVar_FramePadding.rawValue), 6)
+                    ImGuiPushStyleVarY(Int32(ImGuiStyleVar_FramePadding.rawValue), 0)
+                    for (label, enabled) in [("ON", true), ("OFF", false)] {
+                        ImGuiSameLine(0, 4)
+                        let isActive = (isAutoContrastActive == enabled)
+                        if isActive {
+                            ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.rowHoverText)
+                            ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), engine.ui.theme.brandGold)
+                        } else {
+                            ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textDim)
+                            ImGuiPushStyleColor(Int32(ImGuiCol_Button.rawValue), ImVec4(x: 0, y: 0, z: 0, w: 0))
+                        }
+                        if ImGuiButton("\(label)##autocontrast_\(label)", ImVec2(x: 0, y: 0)) {
+                            let doc = engine.tabManager.activeDocument
+                            doc.autoContrastTrueColor = enabled
+                            doc.markNeedsRegeneration()
                         }
                         ImGuiPopStyleColor(2)
                     }

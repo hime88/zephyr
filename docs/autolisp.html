@@ -146,10 +146,13 @@ footer .wrap { display:flex; justify-content:space-between; gap:16px; flex-wrap:
       <tr><td>EVAL</td><td>&mdash;</td><td>Evaluate a single Lisp expression string</td></tr>
       <tr><td>SCRIPT</td><td>SCR</td><td>Run a <code>.scr</code> command script</td></tr>
     </table>
-    <p>Scripted <code>(command &hellip;)</code> calls include <code>"INSERT"</code> / <code>"-INSERT"</code>
+    <p>Scripted <code>(command &hellip;)</code> calls include <code>"INSERT"</code> / <code>"-INSERT"</code>,
+    <code>"_CHPROP"</code> (color, layer, linetype, ltscale, lineweight),
     and, for images and PDFs, <code>"-ATTACH"</code> with AutoCAD's operand order:
     <code>(command "-ATTACH" path [page] point [scale [rotation]])</code>. Drawing attaches stay
-    interactive (<code>XATTACH</code>). The xref system variables <code>REFPATHTYPE</code>,
+    interactive (<code>XATTACH</code>). Drawing properties and system variables including <code>CELTYPE</code>,
+    <code>CELTSCALE</code>, <code>CELWEIGHT</code>, <code>CECOLOR</code>, <code>LTSCALE</code>,
+    <code>AUTOCONTRAST</code>, and xref variables <code>REFPATHTYPE</code>,
     <code>VISRETAIN</code>, <code>BINDTYPE</code>, <code>XDWGFADECTL</code>, <code>XREFNOTIFY</code>,
     and <code>XLOADCTL</code> are readable and settable through <code>getvar</code>/<code>setvar</code>,
     and <code>(tblsearch "BLOCK" name)</code> returns an xref's saved path (group 1) and flags (group 70).</p>

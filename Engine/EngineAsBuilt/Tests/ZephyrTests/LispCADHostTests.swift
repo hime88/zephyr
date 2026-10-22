@@ -482,7 +482,7 @@ final class LispCADHostTests: XCTestCase {
             ["LINE", "CIRCLE", "PLINE", "ARC",
              "COPY", "ROTATE", "MOVE", "ERASE", "SELECT",
              "UNDO", "U", "REDRAW", "REGEN", "INSERT", "-INSERT", "-ATTACH",
-             "RECTANG", "RECTANGLE", "CHPROP", "CHANGE", "-HATCH", "HATCH", "TEXT", "-TEXT", "DTEXT"])
+             "RECTANG", "RECTANGLE", "CHPROP", "CHANGE", "-HATCH", "HATCH", "TEXT", "-TEXT", "DTEXT", "AUTOCONTRAST"])
         XCTAssertEqual(
             LispScriptedCommands.disposition(for: "_.LINE"), .scripted)
         XCTAssertEqual(
@@ -714,5 +714,83 @@ final class LispCADHostTests: XCTestCase {
         XCTAssertEqual(angle4, 0.785398, accuracy: 1e-6)
         XCTAssertEqual(c4_1, ColorRGBA(r: 22, g: 53, b: 77, a: 255))
         XCTAssertEqual(c4_2, ColorRGBA(r: 11, g: 25, b: 37, a: 255))
+    }
+
+    func testChpropLinetypeAndScale() async throws {
+        let host = makeHost()
+        var env = LispEnvironment()
+        _ = try await eval(#"(command "_.LINE" '(0 0 0) '(10 0 0) "")"#, host: host, env: &env)
+        _ = try await eval(#"(command "_.CHPROP" "_L" "" "_LT" "DASHED" "_S" 5.0 "_LW" 0.35 "")"#, host: host, env: &env)
+        guard let ent = host.document.allEntities.first else {
+            return XCTFail("entity should exist")
+        }
+        XCTAssertEqual(ent.xdata["dxf.lineType"], .string("DASHED"))
+        XCTAssertEqual(ent.xdata["dxf.lineTypeScale"], .double(5.0))
+        XCTAssertEqual(ent.xdata["dxf.lineWeight"], .double(0.35))
+    }
+
+    func testCeltypeAndLtscale() async throws {
+        let host = makeHost()
+        var env = LispEnvironment()
+        _ = try await eval(#"(setvar "CELTYPE" "DASHED")"#, host: host, env: &env)
+        _ = try await eval(#"(setvar "CELTSCALE" 2.5)"#, host: host, env: &env)
+        _ = try await eval(#"(setvar "LTSCALE" 5.0)"#, host: host, env: &env)
+
+        let ltScaleVal = try await eval(#"(getvar "LTSCALE")"#, host: host, env: &env)
+        XCTAssertEqual(ltScaleVal.asDouble, 5.0)
+        XCTAssertEqual(host.document.globalLineTypeScale, 5.0)
+
+        _ = try await eval(#"(command "_.LINE" '(0 0 0) '(20 0 0) "")"#, host: host, env: &env)
+        guard let ent = host.document.allEntities.first else {
+            return XCTFail("entity should exist")
+        }
+        XCTAssertEqual(ent.xdata["dxf.lineType"], .string("DASHED"))
+        XCTAssertEqual(ent.xdata["dxf.lineTypeScale"], .double(2.5))
+    }
+
+    func testAutoContrastToggle() async throws {
+        let host = makeHost()
+        var env = LispEnvironment()
+
+        // Default is ON (1)
+        XCTAssertTrue(host.document.autoContrastTrueColor)
+        let defVal = try await eval(#"(getvar "AUTOCONTRAST")"#, host: host, env: &env)
+        XCTAssertEqual(defVal, .int(1))
+
+        // Turn OFF via setvar
+        _ = try await eval(#"(setvar "AUTOCONTRAST" 0)"#, host: host, env: &env)
+        XCTAssertFalse(host.document.autoContrastTrueColor)
+        let offVal = try await eval(#"(getvar "AUTOCONTRAST")"#, host: host, env: &env)
+        XCTAssertEqual(offVal, .int(0))
+
+        // Turn ON via command
+        _ = try await eval(#"(command "_.AUTOCONTRAST" "ON")"#, host: host, env: &env)
+        XCTAssertTrue(host.document.autoContrastTrueColor)
+
+        // Toggle via command with empty enter
+        _ = try await eval(#"(command "_.AUTOCONTRAST" "")"#, host: host, env: &env)
+        XCTAssertFalse(host.document.autoContrastTrueColor)
+    }
+
+    func testEntmakeOverridesRoundTrip() async throws {
+        let host = makeHost()
+        var env = LispEnvironment()
+        _ = try await eval(
+            #"(entmake '((0 . "LINE") (10 0 0 0) (11 10 0 0) (6 . "HIDDEN") (48 . 3.0) (370 . 50) (420 . 1059649)))"#,
+            host: host, env: &env)
+        guard let handle = host.lastCreated, let ent = host.document.entity(for: handle) else {
+            return XCTFail("entity should exist from entmake")
+        }
+        XCTAssertEqual(ent.xdata["dxf.lineType"], .string("HIDDEN"))
+        XCTAssertEqual(ent.xdata["dxf.lineTypeScale"], .double(3.0))
+        XCTAssertEqual(ent.xdata["dxf.lineWeight"], .double(0.5))
+        XCTAssertEqual(ent.xdata["dxf.color24"], .int(1059649))
+
+        let lt = try await eval(#"(cdr (assoc 6 (entget (entlast))))"#, host: host, env: &env)
+        let s = try await eval(#"(cdr (assoc 48 (entget (entlast))))"#, host: host, env: &env)
+        let c24 = try await eval(#"(cdr (assoc 420 (entget (entlast))))"#, host: host, env: &env)
+        XCTAssertEqual(lt, .string("HIDDEN"))
+        XCTAssertEqual(s.asDouble, 3.0)
+        XCTAssertEqual(c24, .int(1059649))
     }
 }

@@ -22,7 +22,8 @@ public enum CADTessellator {
         transform: Transform3D,
         color: (UInt8, UInt8, UInt8, UInt8),
         z: Double,
-        renderOrigin: CADRenderOrigin = .zero
+        renderOrigin: CADRenderOrigin = .zero,
+        isTrueColor: Bool = false
     ) -> PrimitiveSpec {
         // 1. Helper to clean duplicates and floating-point drift
         func cleanLoop(_ loop: [Vector3]) -> [SDL_FPoint] {
@@ -87,7 +88,7 @@ public enum CADTessellator {
         let cleanedLoops = allLoops.map { cleanLoop($0) }.filter { $0.count >= 3 }
         guard !cleanedLoops.isEmpty else {
             // Safe fallback to prevent crashes on empty geometry
-            return PrimitiveSpec(type: .fillRect, points: [], rects: [], corners: [], z: z, color: color)
+            return PrimitiveSpec(type: .fillRect, points: [], rects: [], corners: [], z: z, color: color, isTrueColor: isTrueColor)
         }
         
         // 4. Determine Topography (Outer Islands vs Holes)
@@ -241,7 +242,7 @@ public enum CADTessellator {
         }
         
         // Return a SINGLE PrimitiveSpec, satisfying your downstream compiler requirements
-        return PrimitiveSpec(type: .fillRect, points: [], rects: [], corners: finalTriangles, z: z, color: color)
+        return PrimitiveSpec(type: .fillRect, points: [], rects: [], corners: finalTriangles, z: z, color: color, isTrueColor: isTrueColor)
     }
 
 

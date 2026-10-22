@@ -38,7 +38,7 @@ enum LispScriptedCommands {
         "LINE", "CIRCLE", "PLINE", "ARC",
         "COPY", "ROTATE", "MOVE", "ERASE", "SELECT",
         "UNDO", "U", "REDRAW", "REGEN", "INSERT", "-INSERT", "-ATTACH",
-        "RECTANG", "RECTANGLE", "CHPROP", "CHANGE", "-HATCH", "HATCH", "TEXT", "-TEXT", "DTEXT",
+        "RECTANG", "RECTANGLE", "CHPROP", "CHANGE", "-HATCH", "HATCH", "TEXT", "-TEXT", "DTEXT", "AUTOCONTRAST",
     ]
 
     static func disposition(for name: String) -> LispCommandDisposition {
@@ -169,6 +169,7 @@ enum LispScriptedCommands {
         case "CHPROP", "CHANGE": try runChprop(&operands, host: host)
         case "-HATCH", "HATCH": try await runHatch(&operands, host: host)
         case "TEXT", "-TEXT", "DTEXT": try await runText(&operands, host: host)
+        case "AUTOCONTRAST": runAutoContrast(&operands, host: host)
         case "COPY": try await runCopy(&operands, host: host)
         case "ROTATE": try runRotate(&operands, host: host)
         case "MOVE": try runMove(&operands, host: host)
@@ -326,8 +327,24 @@ enum LispScriptedCommands {
 
     private static func currentColor(_ host: LispCADHost) async -> ColorRGBA? {
         guard let value = await host.getSystemVar("CECOLOR") else { return nil }
-        if case let .int(aci) = value, (1...255).contains(aci) {
-            return DXFColorTable.aciToRGBA(Int32(aci), color24: -1)
+        switch value {
+        case .int(let aci):
+            if (1...255).contains(aci) {
+                return DXFColorTable.aciToRGBA(Int32(aci), color24: -1)
+            }
+        case .string(let s), .symbol(let s):
+            let canon = canonicalName(s)
+            if canon == "BYLAYER" || canon == "BYBLOCK" {
+                return nil
+            }
+            if let aci = Int(s), (1...255).contains(aci) {
+                return DXFColorTable.aciToRGBA(Int32(aci), color24: -1)
+            }
+            if let tc = parseTrueColor(s) {
+                return tc
+            }
+        default:
+            break
         }
         return nil // BYLAYER / BYBLOCK.
     }
@@ -337,8 +354,25 @@ enum LispScriptedCommands {
     ) async throws {
         guard !prims.isEmpty else { return }
         let layerID = try activeLayerID(host)
-        let entities = prims.map {
-            CADEntity(layerID: layerID, localGeometry: [$0])
+        var xdata: [String: XDataValue] = [:]
+        if case let .string(celtype)? = await host.getSystemVar("CELTYPE") {
+            let canon = canonicalName(celtype)
+            if canon != "BYLAYER" && !canon.isEmpty {
+                xdata["dxf.lineType"] = .string(canon)
+            }
+        }
+        if let celtscale = (await host.getSystemVar("CELTSCALE"))?.asDouble, celtscale > 0, abs(celtscale - 1.0) > 1e-9 {
+            xdata["dxf.lineTypeScale"] = .double(celtscale)
+        }
+        if let celweight = (await host.getSystemVar("CELWEIGHT"))?.asDouble, celweight >= 0 {
+            xdata["dxf.lineWeight"] = .double(celweight)
+        }
+        let entities = prims.map { prim in
+            var ent = CADEntity(layerID: layerID, localGeometry: [prim])
+            if !xdata.isEmpty {
+                ent.xdata = xdata
+            }
+            return ent
         }
         host.document.addEntities(entities)
         host.lastCreated = entities.last?.handle
@@ -776,9 +810,28 @@ enum LispScriptedCommands {
                 done = true
             case .word("C"), .word("COLOR"):
                 let color = try parseColorOperand(&operands)
+                let isTC = color.map { !DXFColorTable.isACI($0) } ?? false
                 for handle in targets {
-                    if let entity = host.document.entity(for: handle) {
-                        host.document.replaceEntity(LispEntityAdapter.withPrimitiveColor(entity, color))
+                    if var entity = host.document.entity(for: handle) {
+                        entity = LispEntityAdapter.withPrimitiveColor(entity, color)
+                        if let color {
+                            if isTC {
+                                let rgb = (Int(color.r) << 16) | (Int(color.g) << 8) | Int(color.b)
+                                entity.xdata["dxf.color24"] = .int(rgb)
+                                entity.xdata["dxf.isTrueColor"] = .int(1)
+                                entity.xdata.removeValue(forKey: "dxf.colorIndex")
+                            } else {
+                                entity.xdata["dxf.colorIndex"] = .int(Int(DXFColorTable.rgbaToACI(color)))
+                                entity.xdata.removeValue(forKey: "dxf.color24")
+                                entity.xdata.removeValue(forKey: "dxf.isTrueColor")
+                            }
+                        } else {
+                            entity.xdata.removeValue(forKey: "dxf.color")
+                            entity.xdata.removeValue(forKey: "dxf.color24")
+                            entity.xdata.removeValue(forKey: "dxf.colorIndex")
+                            entity.xdata.removeValue(forKey: "dxf.isTrueColor")
+                        }
+                        host.document.replaceEntity(entity)
                     }
                 }
             case .word("LA"), .word("LAYER"):
@@ -792,12 +845,72 @@ enum LispScriptedCommands {
                     }
                 }
             case .word("LT"), .word("LTYPE"):
-                _ = takeStringOperand(&operands)
+                if let ltName = takeStringOperand(&operands) {
+                    let canonicalLT = canonicalName(ltName)
+                    for handle in targets {
+                        if var entity = host.document.entity(for: handle) {
+                            if canonicalLT == "BYLAYER" || canonicalLT.isEmpty {
+                                entity.xdata.removeValue(forKey: "dxf.lineType")
+                            } else {
+                                entity.xdata["dxf.lineType"] = .string(canonicalLT)
+                            }
+                            host.document.replaceEntity(entity)
+                        }
+                    }
+                }
+            case .word("S"), .word("LSCALE"), .word("LTSCALE"):
+                if let scale = try? takeNumberOrNumericString(&operands, command: "CHPROP", what: "linetypescale") {
+                    for handle in targets {
+                        if var entity = host.document.entity(for: handle) {
+                            entity.xdata["dxf.lineTypeScale"] = .double(scale)
+                            host.document.replaceEntity(entity)
+                        }
+                    }
+                }
             case .word("LW"), .word("LWEIGHT"):
-                _ = try? takeNumberOrNumericString(&operands, command: "CHPROP", what: "lineweight")
+                if let lw = try? takeNumberOrNumericString(&operands, command: "CHPROP", what: "lineweight") {
+                    for handle in targets {
+                        if var entity = host.document.entity(for: handle) {
+                            if lw < 0 {
+                                entity.xdata.removeValue(forKey: "dxf.lineWeight")
+                            } else {
+                                entity.xdata["dxf.lineWeight"] = .double(lw)
+                            }
+                            host.document.replaceEntity(entity)
+                        }
+                    }
+                }
             default:
                 break
             }
+        }
+    }
+
+    private static func runAutoContrast(_ operands: inout [LispValue], host: LispCADHost) {
+        var enabled: Bool?
+        if let kw = takeKeyword(&operands) {
+            switch kw {
+            case .word("ON"), .word("1"): enabled = true
+            case .word("OFF"), .word("0"): enabled = false
+            case .enter: enabled = !host.document.autoContrastTrueColor
+            default: break
+            }
+        } else if let first = operands.first {
+            operands.removeFirst()
+            switch first {
+            case .int(let i): enabled = (i != 0)
+            case .string(let s), .symbol(let s):
+                let upper = s.uppercased()
+                if upper == "ON" || upper == "1" { enabled = true }
+                else if upper == "OFF" || upper == "0" { enabled = false }
+            default: break
+            }
+        } else {
+            enabled = !host.document.autoContrastTrueColor
+        }
+        if let enabled {
+            host.document.autoContrastTrueColor = enabled
+            host.document.markNeedsRegeneration()
         }
     }
 

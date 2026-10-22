@@ -38,6 +38,9 @@ extension EngineRenderer {
             if primitive.usesViewportBackgroundColor {
                 return viewportBackground
             }
+            if !geometryManager.autoContrastTrueColor && primitive.isTrueColor {
+                return primitive.color
+            }
             return useLightDisplayPalette
                 ? primitive.adjustedColorLight
                 : primitive.adjustedColorDark
@@ -45,6 +48,9 @@ extension EngineRenderer {
 
         func adjustedGradient(_ gradient: RenderPrimitive.GradientData?) -> RenderPrimitive.GradientData? {
             guard let gradient else { return nil }
+            if !geometryManager.autoContrastTrueColor {
+                return gradient
+            }
             let color1 = ColorRGBA(
                 r: gradient.color1.0, g: gradient.color1.1,
                 b: gradient.color1.2, a: gradient.color1.3

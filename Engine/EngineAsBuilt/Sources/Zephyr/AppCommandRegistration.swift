@@ -26,6 +26,21 @@ struct AppCommandRegistration {
             factory: { CleanSpecklesCommand() }
         )
 
+        // Toggle auto-contrast for 24-bit TrueColors and gradients in viewport.
+        let autoContrastDescriptor = CommandDescriptor(
+            canonicalName: "AUTOCONTRAST",
+            aliases: ["CONTRAST", "TRUECOLORCONTRAST"],
+            category: .settings,
+            syntax: "[ON|OFF]",
+            description: "Toggle auto-contrast clamping for 24-bit TrueColors and gradients"
+        )
+        engine.commandProcessor.registerFeatureCommand(
+            name: "AUTOCONTRAST",
+            aliases: ["CONTRAST", "TRUECOLORCONTRAST"],
+            descriptor: autoContrastDescriptor,
+            factory: { AutoContrastCommand() }
+        )
+
         // --- Modify commands ---
         engine.commandProcessor.registerFeatureCommand(
             name: "JOIN",

@@ -98,6 +98,7 @@ import SwiftSDL
         let hatchSpacing: Double
         let gradientData: RenderPrimitive.GradientData?
         let usesViewportBackground: Bool
+        let isTrueColor: Bool
 
         init(
             type: PrimitiveType,
@@ -112,7 +113,8 @@ import SwiftSDL
             isHatchLine: Bool = false,
             hatchSpacing: Double = 0.0,
             gradientData: RenderPrimitive.GradientData? = nil,
-            usesViewportBackground: Bool = false
+            usesViewportBackground: Bool = false,
+            isTrueColor: Bool = false
         ) {
             self.type = type
             self.points = points
@@ -127,6 +129,7 @@ import SwiftSDL
             self.hatchSpacing = hatchSpacing
             self.gradientData = gradientData
             self.usesViewportBackground = usesViewportBackground
+            self.isTrueColor = isTrueColor || gradientData != nil
         }
 
         /// Create RenderPrimitive from spec and add to GeometryManager. Returns the new ID.
@@ -196,6 +199,7 @@ import SwiftSDL
                 prim.isHatchLine = isHatchLine
                 prim.hatchSpacing = hatchSpacing
                 prim.usesViewportBackgroundColor = usesViewportBackground
+                prim.isTrueColor = isTrueColor
             }
             return id
         }
@@ -299,9 +303,14 @@ public enum CADPrimitiveGenerator {
         if n == "CONTINUOUS" || n == "SOLID" || n.isEmpty || n == "BYLAYER" || n == "BYBLOCK" {
             return nil
         }
-        // Consult document-level linetype table first (exact match from DXF/EAB).
-        if let patterns = linetypePatterns, let exact = patterns[n] {
-            return exact.isEmpty ? nil : exact
+        // Consult document-level linetype table first (exact or case-insensitive match from DXF/EAB).
+        if let patterns = linetypePatterns {
+            if let exact = patterns[n] {
+                return exact.isEmpty ? nil : exact
+            }
+            if let match = patterns.first(where: { $0.key.caseInsensitiveCompare(n) == .orderedSame })?.value {
+                return match.isEmpty ? nil : match
+            }
         }
         if n.contains("DASHED") {
             return [10.0, 5.0]
@@ -342,7 +351,8 @@ public enum CADPrimitiveGenerator {
         penStrokeStabilizationSettings: PenStrokeStabilizationSettings? = nil,
         penStrokeUnitScaleFromMM: Double = 1.0,
         renderOrigin: CADRenderOrigin = .zero,
-        splineTessellationDivisor: Double = 5000.0
+        splineTessellationDivisor: Double = 5000.0,
+        isTrueColor: Bool = false
     ) -> [PrimitiveSpec] {
         // Extract primitive color override if present
         let primColor: ColorRGBA?
@@ -368,6 +378,13 @@ public enum CADPrimitiveGenerator {
         case .image(_, _, _, _, _, let c): primColor = c
         case .table(_, _, let c): primColor = c
         }
+        let effectiveIsTrueColor: Bool = {
+            if isTrueColor { return true }
+            if let primColor {
+                return !DXFColorTable.isACI(primColor)
+            }
+            return false
+        }()
         let clampedOpacity = max(0.0, min(1.0, opacityMultiplier))
         func applyingOpacity(_ value: ColorRGBA) -> (UInt8, UInt8, UInt8, UInt8) {
             let alpha = UInt8(min(255, Double(value.a) * clampedOpacity))
@@ -387,7 +404,7 @@ public enum CADPrimitiveGenerator {
         }
 
         func makeLineSpec(p1: SDL_FPoint, p2: SDL_FPoint, weight: Double, z: Double, color: (UInt8, UInt8, UInt8, UInt8)) -> PrimitiveSpec {
-            return PrimitiveSpec(type: .line, points: [p1, p2], rects: [], corners: [], z: z, color: color, lineWeight: weight, geomWidth: transformedGeomWidth)
+            return PrimitiveSpec(type: .line, points: [p1, p2], rects: [], corners: [], z: z, color: color, lineWeight: weight, geomWidth: transformedGeomWidth, isTrueColor: effectiveIsTrueColor)
         }
 
         func makePathSpecs(points: [SDL_FPoint], dashPattern: [Double]?, scale: Double, weight: Double, z: Double, color: (UInt8, UInt8, UInt8, UInt8)) -> [PrimitiveSpec] {
@@ -426,7 +443,7 @@ public enum CADPrimitiveGenerator {
                 // If the dash cycle is extremely small relative to the path length,
                 // or if we would generate more than 10000 dash cycles, treat it as solid (continuous).
                 if cycleLength > 1e-6 && (pathLength / cycleLength) > 10000.0 {
-                    return [PrimitiveSpec(type: .lines, points: points, rects: [], corners: [], z: z, color: color, lineWeight: weight, geomWidth: transformedGeomWidth)]
+                    return [PrimitiveSpec(type: .lines, points: points, rects: [], corners: [], z: z, color: color, lineWeight: weight, geomWidth: transformedGeomWidth, isTrueColor: effectiveIsTrueColor)]
                 }
                 
                 if steps.isEmpty { return [] }
@@ -561,11 +578,11 @@ public enum CADPrimitiveGenerator {
                 endDash()
                 
                 return dashedPolylines.map {
-                    PrimitiveSpec(type: .lines, points: $0, rects: [], corners: [], z: z, color: color, lineWeight: weight, geomWidth: transformedGeomWidth)
+                    PrimitiveSpec(type: .lines, points: $0, rects: [], corners: [], z: z, color: color, lineWeight: weight, geomWidth: transformedGeomWidth, isTrueColor: effectiveIsTrueColor)
                 }
             }
             
-            return [PrimitiveSpec(type: .lines, points: points, rects: [], corners: [], z: z, color: color, lineWeight: weight, geomWidth: transformedGeomWidth)]
+            return [PrimitiveSpec(type: .lines, points: points, rects: [], corners: [], z: z, color: color, lineWeight: weight, geomWidth: transformedGeomWidth, isTrueColor: effectiveIsTrueColor)]
         }
 
         var specs: [PrimitiveSpec] = []
@@ -578,7 +595,8 @@ public enum CADPrimitiveGenerator {
                 PrimitiveSpec(
                     type: .point,
                     points: [renderPoint(wp)],
-                    rects: [], corners: [], z: z, color: finalColor))
+                    rects: [], corners: [], z: z, color: finalColor,
+                    isTrueColor: effectiveIsTrueColor))
 
         case .line(let start, let end, _):
             let ws = transform.transformPoint(start)
@@ -621,7 +639,8 @@ public enum CADPrimitiveGenerator {
                         renderPoint(c3),
                         renderPoint(c4),
                     ],
-                    z: z, color: finalColor))
+                    z: z, color: finalColor,
+                    isTrueColor: effectiveIsTrueColor))
 
         case .polygon(let points, _):
             var wp = points.map { p -> SDL_FPoint in
@@ -661,7 +680,8 @@ public enum CADPrimitiveGenerator {
                             points: [renderPoint(p0), renderPoint(p1)],
                             rects: [], corners: [], z: z, color: finalColor,
                             lineWeight: lineWeight,
-                            geomWidth: width))
+                            geomWidth: width,
+                            isTrueColor: effectiveIsTrueColor))
                     }
                 }
             } else if dashPattern != nil && !path.lineTypeGenerationEnabled {
@@ -709,12 +729,14 @@ public enum CADPrimitiveGenerator {
             specs.append(
                 PrimitiveSpec(
                     type: .fillRect,
-                    points: [], rects: [], corners: triangles, z: z, color: finalColor))
+                    points: [], rects: [], corners: triangles, z: z, color: finalColor,
+                    isTrueColor: effectiveIsTrueColor))
 
         case .fillComplexPolygon(let outer, let holes, _):
             let s = CADTessellator.computeMultiLoopFillSpecs(
                 outer: outer, holes: holes, transform: transform,
-                color: finalColor, z: z, renderOrigin: renderOrigin)
+                color: finalColor, z: z, renderOrigin: renderOrigin,
+                isTrueColor: effectiveIsTrueColor)
             specs.append(s)
 
         case .gradient(let outer, let holes, _, let gradAngle, let c1, let c2):
@@ -860,7 +882,8 @@ public enum CADPrimitiveGenerator {
                 // widths for pen strokes; CADVertexBufferBuilder recognizes this path.
                 lineWeight: baseLineWeight,
                 geomWidth: 0.0,
-                segmentLineWeights: segmentWidths))
+                segmentLineWeights: segmentWidths,
+                isTrueColor: effectiveIsTrueColor))
             
         case .text(let pos, let text, let height, let rotation, let style, let alignH, let alignV, let mtextWidth, _):
             let fontFile = CADFontManager.resolveTextStyleFont(
@@ -912,7 +935,8 @@ public enum CADPrimitiveGenerator {
                         geomWidth: geomWidth,
                         textStyleFonts: textStyleFonts,
                         linetypePatterns: linetypePatterns,
-                        renderOrigin: renderOrigin
+                        renderOrigin: renderOrigin,
+                        isTrueColor: effectiveIsTrueColor
                     )
                     localSpecs.append(contentsOf: s)
                     localZ += 0.01
@@ -958,7 +982,8 @@ public enum CADPrimitiveGenerator {
                     transform: transform,
                     color: bgColor,
                     z: backgroundZ,
-                    renderOrigin: renderOrigin))
+                    renderOrigin: renderOrigin,
+                    isTrueColor: effectiveIsTrueColor))
             }
             if pattern.uppercased() == "SOLID" || pattern.isEmpty {
                 specs.append(CADTessellator.computeMultiLoopFillSpecs(
@@ -967,7 +992,8 @@ public enum CADPrimitiveGenerator {
                     transform: transform,
                     color: finalColor,
                     z: foregroundZ,
-                    renderOrigin: renderOrigin))
+                    renderOrigin: renderOrigin,
+                    isTrueColor: effectiveIsTrueColor))
             } else {
                 // Patterned hatch: generate line pattern with zoom-aware adaptive spacing.
                 // When zoomed out, scale up spacing so hatch lines don't explode primitive count
@@ -1001,7 +1027,8 @@ public enum CADPrimitiveGenerator {
                             z: foregroundZ, color: finalColor,
                             lineWeight: 0.0, geomWidth: 0.0,
                             isHatchLine: true,
-                            hatchSpacing: spacing))
+                            hatchSpacing: spacing,
+                            isTrueColor: effectiveIsTrueColor))
                     case .point(let p, _):
                         specs.append(PrimitiveSpec(
                             type: .point,
@@ -1010,7 +1037,8 @@ public enum CADPrimitiveGenerator {
                             z: foregroundZ, color: finalColor,
                             lineWeight: 0.0, geomWidth: 0.0,
                             isHatchLine: true,
-                            hatchSpacing: spacing))
+                            hatchSpacing: spacing,
+                            isTrueColor: effectiveIsTrueColor))
                     default:
                         break
                     }
@@ -1033,7 +1061,8 @@ public enum CADPrimitiveGenerator {
                     transform: transform,
                     color: bgColor,
                     z: backgroundZ,
-                    renderOrigin: renderOrigin))
+                    renderOrigin: renderOrigin,
+                    isTrueColor: effectiveIsTrueColor))
             }
             if pattern.uppercased() == "SOLID" || pattern.isEmpty {
                 specs.append(CADTessellator.computeMultiLoopFillSpecs(
@@ -1042,7 +1071,8 @@ public enum CADPrimitiveGenerator {
                     transform: transform,
                     color: finalColor,
                     z: foregroundZ,
-                    renderOrigin: renderOrigin))
+                    renderOrigin: renderOrigin,
+                    isTrueColor: effectiveIsTrueColor))
             } else {
                 let transformedOuter = outer.map { transform.transformPoint($0) }
                 let transformedHoles = holes.map { $0.map { transform.transformPoint($0) } }
@@ -1072,7 +1102,8 @@ public enum CADPrimitiveGenerator {
                             z: foregroundZ, color: finalColor,
                             lineWeight: 0.0, geomWidth: 0.0,
                             isHatchLine: true,
-                            hatchSpacing: spacing))
+                            hatchSpacing: spacing,
+                            isTrueColor: effectiveIsTrueColor))
                     case .point(let p, _):
                         specs.append(PrimitiveSpec(
                             type: .point,
@@ -1081,7 +1112,8 @@ public enum CADPrimitiveGenerator {
                             z: foregroundZ, color: finalColor,
                             lineWeight: 0.0, geomWidth: 0.0,
                             isHatchLine: true,
-                            hatchSpacing: spacing))
+                            hatchSpacing: spacing,
+                            isTrueColor: effectiveIsTrueColor))
                     default:
                         break
                     }
@@ -1120,7 +1152,8 @@ public enum CADPrimitiveGenerator {
                     linetypePatterns: linetypePatterns,
                     opacityMultiplier: opacityMultiplier,
                     renderOrigin: renderOrigin,
-                    splineTessellationDivisor: splineTessellationDivisor))
+                    splineTessellationDivisor: splineTessellationDivisor,
+                    isTrueColor: effectiveIsTrueColor))
             }
         }
         return specs

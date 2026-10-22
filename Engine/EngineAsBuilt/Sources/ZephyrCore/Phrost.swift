@@ -262,6 +262,7 @@ public final class RenderPrimitive: @unchecked Sendable {
     public var sdlColor: SDL_FColor
     public var adjustedColorLight: (UInt8, UInt8, UInt8, UInt8)
     public var adjustedColorDark: (UInt8, UInt8, UInt8, UInt8)
+    public var isTrueColor: Bool = false
     public var isScreenSpace: Bool
     public var lineWeight: Double = 0.0
     public var geomWidth: Double = 0.0
@@ -342,7 +343,8 @@ public final class RenderPrimitive: @unchecked Sendable {
         id: SpriteID, type: PrimitiveType, z: Double,
         color: (r: UInt8, g: UInt8, b: UInt8, a: UInt8),
         isScreenSpace: Bool,
-        gradientData: GradientData? = nil
+        gradientData: GradientData? = nil,
+        isTrueColor: Bool = false
     ) {
         self.id = id
         self.type = type
@@ -361,6 +363,7 @@ public final class RenderPrimitive: @unchecked Sendable {
         self.adjustedColorDark = (dark.r, dark.g, dark.b, dark.a)
         self.isScreenSpace = isScreenSpace
         self.gradientData = gradientData
+        self.isTrueColor = isTrueColor || gradientData != nil
     }
 }
 
@@ -378,6 +381,7 @@ public final class GeometryManager: @unchecked Sendable {
     /// Maps entity handle (UUID) → entity index (UInt32).
     public var handleToEntityIndex: [UUID: UInt32] = [:]
     public var renderOrigin: CADRenderOrigin = .zero
+    public var autoContrastTrueColor: Bool = true
 
     // MARK: Spatial Grid (lazy-built when primitive count exceeds threshold)
     private static let spatialGridThreshold: Int = 4_000

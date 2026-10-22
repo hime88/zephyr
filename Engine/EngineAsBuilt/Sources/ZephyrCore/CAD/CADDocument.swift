@@ -37,6 +37,8 @@ public struct CADDocumentSnapshot: Sendable {
     public let leaderStyles: [String: CADLeaderStyle]
     public let currentLeaderStyleName: String
     public let linetypePatterns: [String: [Double]]
+    public let globalLineTypeScale: Double
+    public let autoContrastTrueColor: Bool
     public let dxfRoundTripPayload: DXFRoundTripPayload?
     /// Names of image assets currently referenced by entities (not the raw Data blobs).
     /// The actual `imageStore` lives on `CADDocument` and persists across undo/redo.
@@ -64,6 +66,8 @@ public struct CADDocumentSnapshot: Sendable {
         leaderStyles: [String: CADLeaderStyle] = ["Standard": .standard],
         currentLeaderStyleName: String = "Standard",
         linetypePatterns: [String: [Double]] = [:],
+        globalLineTypeScale: Double = 1.0,
+        autoContrastTrueColor: Bool = true,
         dxfRoundTripPayload: DXFRoundTripPayload? = nil,
         imageAssetNames: Set<String> = [],
         xrefFadePercent: Int = 50,
@@ -87,6 +91,8 @@ public struct CADDocumentSnapshot: Sendable {
         self.leaderStyles = leaderStyles.isEmpty ? ["Standard": .standard] : leaderStyles
         self.currentLeaderStyleName = currentLeaderStyleName
         self.linetypePatterns = linetypePatterns
+        self.globalLineTypeScale = globalLineTypeScale
+        self.autoContrastTrueColor = autoContrastTrueColor
         self.dxfRoundTripPayload = dxfRoundTripPayload
         self.imageAssetNames = imageAssetNames
     }
@@ -104,6 +110,8 @@ public struct CADDocumentSnapshot: Sendable {
         leaderStyles: [String: CADLeaderStyle] = ["Standard": .standard],
         currentLeaderStyleName: String = "Standard",
         linetypePatterns: [String: [Double]] = [:],
+        globalLineTypeScale: Double = 1.0,
+        autoContrastTrueColor: Bool = true,
         dxfRoundTripPayload: DXFRoundTripPayload? = nil,
         imageAssetNames: Set<String> = []
     ) {
@@ -123,6 +131,8 @@ public struct CADDocumentSnapshot: Sendable {
             leaderStyles: leaderStyles,
             currentLeaderStyleName: currentLeaderStyleName,
             linetypePatterns: linetypePatterns,
+            globalLineTypeScale: globalLineTypeScale,
+            autoContrastTrueColor: autoContrastTrueColor,
             dxfRoundTripPayload: dxfRoundTripPayload,
             imageAssetNames: imageAssetNames)
     }
@@ -350,6 +360,19 @@ public final class CADDocument {
     /// DXF linetype dash pattern definitions (e.g. "DASHED" -> [10.0, 5.0]).
     /// Key is the uppercased linetype name. Saved/loaded in EAB for accurate round-trip.
     public var linetypePatterns: [String: [Double]] = [:]
+
+    /// Global linetype scale factor (AutoCAD LTSCALE sysvar). Multiplies all entity linetype scales.
+    public var globalLineTypeScale: Double = 1.0 {
+        didSet { markNeedsRegeneration() }
+    }
+
+    /// When true (default), true colors (gradients, explicit 24-bit RGB values) are adjusted
+    /// by the viewport auto-contrast guard just like ACI colors.
+    /// When false, true colors render in their exact RGB values without auto-contrast clamp,
+    /// while AutoCAD Color Index (ACI) colors retain auto-contrast.
+    public var autoContrastTrueColor: Bool = true {
+        didSet { markNeedsRegeneration() }
+    }
 
     /// Raw DXF classes/objects retained for lossless round-trip of native entities.
     public var dxfRoundTripPayload: DXFRoundTripPayload?
@@ -3030,6 +3053,8 @@ public final class CADDocument {
         leaderStyles: [String: CADLeaderStyle] = ["Standard": .standard],
         currentLeaderStyleName: String = "Standard",
         linetypePatterns: [String: [Double]] = [:],
+        globalLineTypeScale: Double = 1.0,
+        autoContrastTrueColor: Bool = true,
         activeLayerID: UUID? = nil,
         imageStore: [String: CADImageAsset] = [:],
         xrefHostFolder: String? = nil,
@@ -3045,6 +3070,8 @@ public final class CADDocument {
         self.leaderStyles = leaderStyles.isEmpty ? ["Standard": .standard] : leaderStyles
         self.currentLeaderStyleName = self.leaderStyles.keys.first(where: { $0.caseInsensitiveCompare(currentLeaderStyleName) == .orderedSame }) ?? "Standard"
         self.linetypePatterns = linetypePatterns
+        self.globalLineTypeScale = globalLineTypeScale
+        self.autoContrastTrueColor = autoContrastTrueColor
         self.imageStore = imageStore
         importMediaDefinitions(image: imageDefinitions, pdf: pdfDefinitions)
         for layer in layers { layerTable[layer.handle] = layer }
@@ -3079,6 +3106,8 @@ public final class CADDocument {
         leaderStyles: [String: CADLeaderStyle] = ["Standard": .standard],
         currentLeaderStyleName: String = "Standard",
         linetypePatterns: [String: [Double]] = [:],
+        globalLineTypeScale: Double = 1.0,
+        autoContrastTrueColor: Bool = true,
         activeLayerID: UUID? = nil,
         imageStore: [String: CADImageAsset] = [:]
     ) {
@@ -3097,6 +3126,8 @@ public final class CADDocument {
             leaderStyles: leaderStyles,
             currentLeaderStyleName: currentLeaderStyleName,
             linetypePatterns: linetypePatterns,
+            globalLineTypeScale: globalLineTypeScale,
+            autoContrastTrueColor: autoContrastTrueColor,
             activeLayerID: activeLayerID,
             imageStore: imageStore)
     }
@@ -3157,6 +3188,8 @@ public final class CADDocument {
             leaderStyles: leaderStyles,
             currentLeaderStyleName: currentLeaderStyleName,
             linetypePatterns: linetypePatterns,
+            globalLineTypeScale: globalLineTypeScale,
+            autoContrastTrueColor: autoContrastTrueColor,
             dxfRoundTripPayload: dxfRoundTripPayload ?? dxfRoundTripPayloadFallback,
             imageAssetNames: names,
             xrefFadePercent: xrefFadePercent,
@@ -3202,6 +3235,8 @@ public final class CADDocument {
             leaderStyles: base.leaderStyles,
             currentLeaderStyleName: base.currentLeaderStyleName,
             linetypePatterns: base.linetypePatterns,
+            globalLineTypeScale: base.globalLineTypeScale,
+            autoContrastTrueColor: base.autoContrastTrueColor,
             dxfRoundTripPayload: base.dxfRoundTripPayload,
             imageAssetNames: base.imageAssetNames,
             xrefFadePercent: base.xrefFadePercent,
@@ -3254,6 +3289,8 @@ public final class CADDocument {
         leaderStyles = snapshot.leaderStyles
         currentLeaderStyleName = snapshot.currentLeaderStyleName
         linetypePatterns = snapshot.linetypePatterns
+        globalLineTypeScale = snapshot.globalLineTypeScale
+        autoContrastTrueColor = snapshot.autoContrastTrueColor
         dxfRoundTripPayload = snapshot.dxfRoundTripPayload
         imageDefinitions = snapshot.imageDefinitions
         pdfDefinitions = snapshot.pdfDefinitions

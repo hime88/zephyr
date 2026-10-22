@@ -361,6 +361,17 @@ public enum DXFColorTable {
         return (Int32(color.r) << 16) | (Int32(color.g) << 8) | Int32(color.b)
     }
 
+    /// Returns true if the RGBA color matches an AutoCAD Color Index (ACI 1...255) standard color.
+    public static func isACI(_ color: ColorRGBA) -> Bool {
+        for i in 1..<256 {
+            let p = _dxfPalette[i]
+            if p[0] == color.r && p[1] == color.g && p[2] == color.b {
+                return true
+            }
+        }
+        return false
+    }
+
     /// ACI palette table (indices 1-255), used by rgbaToACI
     private static let _dxfPalette: [[UInt8]] = {
         // Map ACI → RGB using the existing aciToRGBA logic

@@ -562,7 +562,10 @@ public enum EABWriter {
         w.writeFloat64(0)                                      // constraintTimestamp
         // activeLayerID (added in EAB v4)
         w.writeUUID(document.activeLayerID ?? UUID(uuid: (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)))
-        w.writeUInt32(0)                                       // custom byte count
+        // custom bytes: 1 byte autoContrastTrueColor + 8 bytes globalLineTypeScale
+        w.writeUInt32(9)                                       // custom byte count
+        w.writeUInt8(document.autoContrastTrueColor ? 1 : 0)
+        w.writeFloat64(document.globalLineTypeScale)
         return w.build()
     }
 

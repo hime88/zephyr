@@ -37,4 +37,20 @@ final class CommandAutocompleteTests: XCTestCase {
         XCTAssertEqual(redo?.syntax, "[<count>]")
         XCTAssertEqual(redo?.bareEnterExecutes, true)
     }
+
+    func testAutoContrastIsDiscoverableCommand() {
+        let processor = CADCommandProcessor()
+
+        XCTAssertEqual(processor.matchCommands(input: "AUTOCONTRAST").first?.descriptor.canonicalName, "AUTOCONTRAST")
+        XCTAssertEqual(processor.matchCommands(input: "AUTO").first?.descriptor.canonicalName, "AUTOCONTRAST")
+        XCTAssertEqual(processor.matchCommands(input: "CONTRAST").first?.descriptor.canonicalName, "AUTOCONTRAST")
+        XCTAssertEqual(processor.matchCommands(input: "TRUECOLORCONTRAST").first?.descriptor.canonicalName, "AUTOCONTRAST")
+
+        let desc = CommandDescriptor.allCommands.first { $0.canonicalName == "AUTOCONTRAST" }
+        XCTAssertNotNil(desc)
+        XCTAssertEqual(desc?.aliases, ["CONTRAST", "TRUECOLORCONTRAST"])
+        XCTAssertEqual(desc?.syntax, "[ON|OFF]")
+        XCTAssertEqual(desc?.bareEnterExecutes, false)
+        XCTAssertEqual(desc?.category, .settings)
+    }
 }

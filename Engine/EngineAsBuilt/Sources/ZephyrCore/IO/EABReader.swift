@@ -98,6 +98,8 @@ public enum EABReader {
                 leaderStyles: components.leaderStyles,
                 currentLeaderStyleName: components.currentLeaderStyleName,
                 linetypePatterns: components.linetypePatterns,
+                globalLineTypeScale: components.globalLineTypeScale,
+                autoContrastTrueColor: components.autoContrastTrueColor,
                 activeLayerID: components.activeLayerID,
                 imageStore: components.imageStore,
                 xrefHostFolder: components.xrefHostFolder,
@@ -128,7 +130,9 @@ public enum EABReader {
         xrefHostFolder: String?,
         unloadedXrefs: Set<UUID>,
         imageDefinitions: [CADImageDefinition],
-        pdfDefinitions: [CADPdfDefinition]
+        pdfDefinitions: [CADPdfDefinition],
+        globalLineTypeScale: Double,
+        autoContrastTrueColor: Bool
     ) {
         let data = try Data(contentsOf: url)
         return try readDocument(from: data)
@@ -216,6 +220,8 @@ public enum EABReader {
                 leaderStyles: components.leaderStyles,
                 currentLeaderStyleName: components.currentLeaderStyleName,
                 linetypePatterns: components.linetypePatterns,
+                globalLineTypeScale: components.globalLineTypeScale,
+                autoContrastTrueColor: components.autoContrastTrueColor,
                 activeLayerID: components.activeLayerID,
                 imageStore: components.imageStore,
                 xrefHostFolder: components.xrefHostFolder,
@@ -256,12 +262,14 @@ public enum EABReader {
                     textStyles: components.textStyles,
                     dimensionStyles: components.dimensionStyles,
                     linetypePatterns: components.linetypePatterns,
+                    globalLineTypeScale: components.globalLineTypeScale,
+                    autoContrastTrueColor: components.autoContrastTrueColor,
                     activeLayerID: components.activeLayerID,
                     imageStore: components.imageStore,
-                xrefHostFolder: components.xrefHostFolder,
-                unloadedXrefs: components.unloadedXrefs,
-                imageDefinitions: components.imageDefinitions,
-                pdfDefinitions: components.pdfDefinitions
+                    xrefHostFolder: components.xrefHostFolder,
+                    unloadedXrefs: components.unloadedXrefs,
+                    imageDefinitions: components.imageDefinitions,
+                    pdfDefinitions: components.pdfDefinitions
                 )
                 views.append(DrawingView(name: "Recovered", kind: .model, document: doc,
                                          cameraState: CameraState(offsetX: 0, offsetY: 0, zoom: 1, rotation: 0)))
@@ -292,7 +300,9 @@ public enum EABReader {
         xrefHostFolder: String?,
         unloadedXrefs: Set<UUID>,
         imageDefinitions: [CADImageDefinition],
-        pdfDefinitions: [CADPdfDefinition]
+        pdfDefinitions: [CADPdfDefinition],
+        globalLineTypeScale: Double,
+        autoContrastTrueColor: Bool
     ) {
         let header = try parseHeader(from: data)
         let rawTableOffset = header.sectionTableOffset; guard rawTableOffset <= UInt64(Int.max) else { throw EABError.readError("Section table offset exceeds Int.max") }; let entries = try parseSectionTable(from: data, at: Int(rawTableOffset))
@@ -308,6 +318,8 @@ public enum EABReader {
         var currentLeaderStyleName = "Standard"
         var linetypePatterns: [String: [Double]] = [:]
         var activeLayerID: UUID? = nil
+        var autoContrastTrueColor = true
+        var globalLineTypeScale = 1.0
         var loadedImageStore: [String: CADImageAsset] = [:]
         var xrefHostFolder: String? = nil
         var unloadedXrefs: Set<UUID> = []
@@ -343,7 +355,10 @@ public enum EABReader {
             case .images:
                 loadedImageStore = try parseImageStore(reader)
             case .metadata:
-                activeLayerID = try parseMetadataActiveLayer(reader)
+                let meta = try parseMetadataPayload(reader)
+                activeLayerID = meta.activeLayerID
+                autoContrastTrueColor = meta.autoContrastTrueColor
+                globalLineTypeScale = meta.globalLineTypeScale
             case .xrefs:
                 let parsed = parseXrefs(reader)
                 xrefHostFolder = parsed.hostFolder
@@ -367,7 +382,8 @@ public enum EABReader {
         return (layers, blocks, entities, constraints, solvedTransforms, header.unit,
                 textStyles, dimensionStyles, leaderStyles, currentLeaderStyleName,
                 linetypePatterns, activeLayerID, loadedImageStore,
-                xrefHostFolder, unloadedXrefs, imageDefinitions, pdfDefinitions)
+                xrefHostFolder, unloadedXrefs, imageDefinitions, pdfDefinitions,
+                globalLineTypeScale, autoContrastTrueColor)
     }
 
     private static func parseXrefs(
@@ -476,7 +492,9 @@ public enum EABReader {
         xrefHostFolder: String?,
         unloadedXrefs: Set<UUID>,
         imageDefinitions: [CADImageDefinition],
-        pdfDefinitions: [CADPdfDefinition]
+        pdfDefinitions: [CADPdfDefinition],
+        globalLineTypeScale: Double,
+        autoContrastTrueColor: Bool
     ) {
         let data = try Data(contentsOf: url)
         let header = try parseHeader(from: data)
@@ -503,6 +521,8 @@ public enum EABReader {
         var currentLeaderStyleName = "Standard"
         var linetypePatterns: [String: [Double]] = [:]
         var activeLayerID: UUID? = nil
+        var autoContrastTrueColor = true
+        var globalLineTypeScale = 1.0
         var loadedImageStore: [String: CADImageAsset] = [:]
         var xrefHostFolder: String? = nil
         var unloadedXrefs: Set<UUID> = []
@@ -542,7 +562,10 @@ public enum EABReader {
             case .images:
                 loadedImageStore = try parseImageStore(reader)
             case .metadata:
-                activeLayerID = try parseMetadataActiveLayer(reader)
+                let meta = try parseMetadataPayload(reader)
+                activeLayerID = meta.activeLayerID
+                autoContrastTrueColor = meta.autoContrastTrueColor
+                globalLineTypeScale = meta.globalLineTypeScale
             case .xrefs:
                 let parsed = parseXrefs(reader)
                 xrefHostFolder = parsed.hostFolder
@@ -566,7 +589,8 @@ public enum EABReader {
         return (layers, blocks, entities, constraints, solvedTransforms, header.unit,
                 textStyles, dimensionStyles, leaderStyles, currentLeaderStyleName,
                 linetypePatterns, activeLayerID, loadedImageStore,
-                xrefHostFolder, unloadedXrefs, imageDefinitions, pdfDefinitions)
+                xrefHostFolder, unloadedXrefs, imageDefinitions, pdfDefinitions,
+                globalLineTypeScale, autoContrastTrueColor)
     }
 
     // MARK: - Header Parsing
@@ -1107,13 +1131,19 @@ public enum EABReader {
         return store
     }
 
-    // MARK: - Metadata Active Layer Parsing
+    // MARK: - Metadata Parsing
 
-    /// Reads only the activeLayerID from the metadata section.
+    private struct MetadataPayload {
+        let activeLayerID: UUID?
+        let autoContrastTrueColor: Bool
+        let globalLineTypeScale: Double
+    }
+
+    /// Reads activeLayerID, autoContrastTrueColor, and globalLineTypeScale from the metadata section.
     /// The metadata format is: createdAt(f64), modifiedAt(f64), author(string),
     /// appNameLen(u16)+appName(bytes), version(u32×3), constraintTimestamp(f64),
-    /// activeLayerID(uuid), customByteCount(u32).
-    private static func parseMetadataActiveLayer(_ r: BinaryReader) throws -> UUID? {
+    /// activeLayerID(uuid), customByteCount(u32) [autoContrastTrueColor(u8) + globalLineTypeScale(f64)].
+    private static func parseMetadataPayload(_ r: BinaryReader) throws -> MetadataPayload {
         _ = r.readFloat64()  // createdAt
         _ = r.readFloat64()  // modifiedAt
         _ = r.readString()   // author
@@ -1123,7 +1153,29 @@ public enum EABReader {
         _ = r.readFloat64()  // constraintTimestamp
         let layerID = r.readUUID()
         let allZeros = UUID(uuid: (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0))
-        return layerID == allZeros ? nil : layerID
+        let activeID = layerID == allZeros ? nil : layerID
+
+        var autoContrastTrueColor = true
+        var globalLineTypeScale = 1.0
+
+        if r.remaining >= 4 {
+            let customByteCount = r.readUInt32()
+            if customByteCount >= 9 && r.remaining >= 9 {
+                autoContrastTrueColor = r.readUInt8() != 0
+                globalLineTypeScale = r.readFloat64()
+                if customByteCount > 9 && r.remaining >= Int(customByteCount - 9) {
+                    _ = r.readBytes(count: Int(customByteCount - 9))
+                }
+            } else if customByteCount > 0 && r.remaining >= Int(customByteCount) {
+                _ = r.readBytes(count: Int(customByteCount))
+            }
+        }
+
+        return MetadataPayload(
+            activeLayerID: activeID,
+            autoContrastTrueColor: autoContrastTrueColor,
+            globalLineTypeScale: globalLineTypeScale
+        )
     }
 
     // MARK: - BVH Tree Parsing

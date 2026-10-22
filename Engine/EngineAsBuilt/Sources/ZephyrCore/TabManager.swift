@@ -77,19 +77,25 @@ public struct DrawingView {
     public var cameraState: CameraState
     public var selectionState: SelectionState = .empty
     public var backgroundColor: ColorRGBA?
+    public var autoContrastTrueColor: Bool {
+        get { document.autoContrastTrueColor }
+        set { document.autoContrastTrueColor = newValue }
+    }
 
     public init(
         name: String,
         kind: DXFDrawingViewKind,
         document: CADDocument,
         cameraState: CameraState = .default,
-        backgroundColor: ColorRGBA? = nil
+        backgroundColor: ColorRGBA? = nil,
+        autoContrastTrueColor: Bool = true
     ) {
         self.name = name
         self.kind = kind
         self.document = document
         self.cameraState = cameraState
         self.backgroundColor = backgroundColor
+        self.document.autoContrastTrueColor = autoContrastTrueColor
     }
 }
 

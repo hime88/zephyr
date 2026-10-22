@@ -61,8 +61,21 @@ enum LispEntityAdapter {
             dotted(.int(62), .int(entityACI(entity: entity))),
         ]
         let layer = document.layer(for: entity.layerID)
-        if let lineType = layer?.lineType, lineType.uppercased() != "CONTINUOUS" {
+        let effectiveLineType: String? = {
+            if let ltv = entity.xdata["dxf.lineType"], case .string(let s) = ltv { return s }
+            return layer?.lineType
+        }()
+        if let lineType = effectiveLineType, lineType.uppercased() != "CONTINUOUS" {
             pairs.append(dotted(.int(6), .string(lineType)))
+        }
+        if let ltScale = entity.xdata["dxf.lineTypeScale"], case .double(let s) = ltScale {
+            pairs.append(dotted(.int(48), .real(s)))
+        }
+        if let lw = entity.xdata["dxf.lineWeight"], case .double(let w) = lw {
+            pairs.append(dotted(.int(370), .int(Int((w * 100.0).rounded()))))
+        }
+        if let c24 = entity.xdata["dxf.color24"], case .int(let val) = c24 {
+            pairs.append(dotted(.int(420), .int(val)))
         }
         pairs += geometryPairs(entity: entity, document: document)
         return lispList(pairs)
@@ -476,12 +489,22 @@ enum LispEntityAdapter {
     static func makeEntity(
         from assoc: DxfAssoc, document: CADDocument, name: String, keepHandle: UUID? = nil
     ) throws -> CADEntity {
-        for code in [6, 48, 60, 370] {
-            if assoc.first(code) != nil {
-                throw LispError.hostError(
-                    "\(name): entity-level override (group \(code)) is not supported; " +
-                        "set it on the layer instead")
+        var xdata: [String: XDataValue] = [:]
+        if let lineType = assoc.string(6) {
+            let canon = lineType.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if canon != "BYLAYER" && !canon.isEmpty {
+                xdata["dxf.lineType"] = .string(canon)
             }
+        }
+        if let ltScale = assoc.double(48) {
+            xdata["dxf.lineTypeScale"] = .double(ltScale)
+        }
+        if let lw = assoc.int(370) {
+            xdata["dxf.lineWeight"] = .double(Double(lw) / 100.0)
+        }
+        if let rgb = assoc.int(420), rgb >= 0 {
+            xdata["dxf.color24"] = .int(rgb)
+            xdata["dxf.isTrueColor"] = .int(1)
         }
         guard let typeName = assoc.string(0)?.uppercased() else {
             throw LispError.hostError("\(name): missing (0 . type) group")
@@ -537,7 +560,8 @@ enum LispEntityAdapter {
         return CADEntity(
             handle: keepHandle ?? UUID(),
             layerID: layerID,
-            localGeometry: [primitive])
+            localGeometry: [primitive],
+            xdata: xdata)
     }
 
     private static func colorFromAssoc(_ assoc: DxfAssoc, name: String) throws -> ColorRGBA? {

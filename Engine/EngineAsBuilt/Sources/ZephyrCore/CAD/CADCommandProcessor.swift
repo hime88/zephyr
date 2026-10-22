@@ -320,6 +320,7 @@ public struct CommandDescriptor: Sendable {
         CommandDescriptor(canonicalName: "MLEADERSTYLE", aliases: ["MLS"], category: .settings, syntax: "", description: "Create and edit multileader styles"),
         CommandDescriptor(canonicalName: "THEME",      aliases: ["DARKMODE", "LIGHTMODE"], category: .settings, syntax: "[DARK|LIGHT]", description: "Toggle or set the UI theme (dark/light mode)"),
         CommandDescriptor(canonicalName: "FPS",        aliases: [],                        category: .settings, syntax: "", description: "Toggle FPS counter in the title bar"),
+        CommandDescriptor(canonicalName: "AUTOCONTRAST", aliases: ["CONTRAST", "TRUECOLORCONTRAST"], category: .settings, syntax: "[ON|OFF]", description: "Toggle auto-contrast clamping for 24-bit TrueColors and gradients"),
         CommandDescriptor(canonicalName: "SET-BACKGROUND", aliases: ["SETBG", "BACKGROUND"], category: .settings, syntax: "<index|hex>", description: "Set viewport background color (ACI index 1-255 or hex RRGGBB)"),
         CommandDescriptor(canonicalName: "GRID",            aliases: [],                category: .settings, syntax: "", description: "Toggle the background grid on/off"),
         CommandDescriptor(canonicalName: "GRID SNAP",       aliases: [],                category: .settings, syntax: "", description: "Toggle snapping to grid intersections on/off"),
@@ -1284,6 +1285,39 @@ public final class CADCommandProcessor {
                 print("[CAD] Background set to ACI \(aci) (RGB \(Int(r*255)),\(Int(g*255)),\(Int(b*255)))")
             } else {
                 print("[CAD] Invalid color: '\(arg)'. Use ACI index (0-255) or hex RRGGBB (e.g. BD20FF).")
+            }
+            clearCommand()
+        // --- Auto-Contrast ---
+        case "AUTOCONTRAST", "TRUECOLORCONTRAST", "CONTRAST":
+            guard let engine = engine else { clearCommand(); return }
+            let doc = engine.tabManager.activeDocument
+            doc.autoContrastTrueColor.toggle()
+            doc.markNeedsRegeneration()
+            print("[CAD] TrueColor auto-contrast: \(doc.autoContrastTrueColor ? "ON" : "OFF")")
+            clearCommand()
+        case _ where upper.hasPrefix("AUTOCONTRAST ") || upper.hasPrefix("TRUECOLORCONTRAST ") || upper.hasPrefix("CONTRAST "):
+            guard let engine = engine else { clearCommand(); return }
+            let prefixLen: Int
+            if upper.hasPrefix("AUTOCONTRAST ") { prefixLen = 13 }
+            else if upper.hasPrefix("TRUECOLORCONTRAST ") { prefixLen = 18 }
+            else { prefixLen = 9 } // "CONTRAST "
+            let arg = String(upper.dropFirst(prefixLen)).trimmingCharacters(in: .whitespaces)
+            let doc = engine.tabManager.activeDocument
+            switch arg {
+            case "ON", "1", "TRUE":
+                doc.autoContrastTrueColor = true
+                doc.markNeedsRegeneration()
+                print("[CAD] TrueColor auto-contrast: ON")
+            case "OFF", "0", "FALSE":
+                doc.autoContrastTrueColor = false
+                doc.markNeedsRegeneration()
+                print("[CAD] TrueColor auto-contrast: OFF")
+            case "TOGGLE":
+                doc.autoContrastTrueColor.toggle()
+                doc.markNeedsRegeneration()
+                print("[CAD] TrueColor auto-contrast: \(doc.autoContrastTrueColor ? "ON" : "OFF")")
+            default:
+                print("[CAD] Usage: AUTOCONTRAST [ON|OFF]")
             }
             clearCommand()
         // --- Simplify Complex Blocks ---

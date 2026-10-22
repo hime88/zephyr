@@ -33,6 +33,7 @@ final class LispVarStore: @unchecked Sendable {
         "APERTURE": .int(10),
         "AUNITS": .int(0),
         "AUPREC": .int(0),
+        "AUTOCONTRAST": .int(1),
         "BLIPMODE": .int(0),
         "CECOLOR": .string("BYLAYER"),
         "CELTSCALE": .real(1),
@@ -117,6 +118,10 @@ final class LispVarStore: @unchecked Sendable {
         _ name: String, document: CADDocument, activeCommand: String?
     ) -> LispValue? {
         switch name {
+        case "AUTOCONTRAST":
+            return .int(document.autoContrastTrueColor ? 1 : 0)
+        case "LTSCALE":
+            return .real(document.globalLineTypeScale)
         case "CLAYER":
             guard let id = document.activeLayerID,
                   let layer = document.layer(for: id)
@@ -161,6 +166,34 @@ final class LispVarStore: @unchecked Sendable {
             return "cannot modify read-only system variable: \(name)"
         }
         switch name {
+        case "AUTOCONTRAST":
+            let intVal: Int?
+            switch value {
+            case .int(let i): intVal = i
+            case .real(let r): intVal = Int(r)
+            default: intVal = nil
+            }
+            guard let intVal, (0...1).contains(intVal) else {
+                return "AUTOCONTRAST requires 0 or 1"
+            }
+            document.autoContrastTrueColor = (intVal != 0)
+            document.markNeedsRegeneration()
+            store(name, value)
+            return nil
+        case "LTSCALE":
+            let realVal: Double?
+            switch value {
+            case .real(let r): realVal = r
+            case .int(let i): realVal = Double(i)
+            default: realVal = nil
+            }
+            guard let realVal, realVal > 0, realVal.isFinite else {
+                return "LTSCALE requires a positive non-zero real number"
+            }
+            document.globalLineTypeScale = realVal
+            document.markNeedsRegeneration()
+            store(name, value)
+            return nil
         case "CLAYER":
             guard case let .string(layerName) = value else {
                 return "CLAYER requires a layer name string"

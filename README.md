@@ -284,6 +284,7 @@ SELECT, MOVE, ROTATE, SCALE, PAN, ZOOM
 | SELECTALL | `SELALL` | Select all entities in the active layer |
 | VPORTS | | Split the main view into tiled panes showing different tabs (`2V`, `2H`, `SINGLE`, `JOIN`, `TOGGLE`, `?`) |
 | VPMAX / VPMIN | | Maximize the focused pane / restore the saved arrangement |
+| AUTOCONTRAST | `TRUECOLORCONTRAST`, `CONTRAST` | Toggle viewport auto-contrast adjustment for 24-bit TrueColors and gradients (`ON`/`OFF`, default `ON`). Preserves contrast for standard ACI colors |
 
 ### Snap Engine
 9 anchor types with two-tier filtering (AABB proximity → exact distance):
@@ -379,7 +380,7 @@ Native AutoLISP engine with **305 builtins** — the full inventoried set, verif
   (setq i (1+ i)))
 ```
 
-Scripted command calls include `(command "INSERT" ...)` and, for images/PDFs, `(command "-ATTACH" path [page] point [scale [rotation]])`. The xref system variables (`REFPATHTYPE`, `VISRETAIN`, `BINDTYPE`, `XDWGFADECTL`, `XREFNOTIFY`, `XLOADCTL`) work through `getvar`/`setvar`, and `(tblsearch "BLOCK" name)` returns an xref's saved path (group 1) and flags (group 70).
+Scripted command calls include `(command "INSERT" ...)`, `(command "_CHPROP" ...)` (color, layer, linetype, ltscale, lineweight), and, for images/PDFs, `(command "-ATTACH" path [page] point [scale [rotation]])`. Drawing properties and system variables (`CELTYPE`, `CELTSCALE`, `CELWEIGHT`, `CECOLOR`, `LTSCALE`, `AUTOCONTRAST`, plus xref variables `REFPATHTYPE`, `VISRETAIN`, `BINDTYPE`, `XDWGFADECTL`, `XREFNOTIFY`, `XLOADCTL`) work through `getvar`/`setvar`, and `(tblsearch "BLOCK" name)` returns an xref's saved path (group 1) and flags (group 70).
 
 Runnable examples live in `Engine/EngineAsBuilt/Tools/lisp/examples/` (`SHAPES`, `SELCOUNT`, `REDCIRCLES`, `INPUTDEMO`) — `LOAD` one and run its command. Each is executed by `LispExamplesTests`, so they double as compatibility checks. Loaded `c:` routines stay resident for the session and run by bare name (built-ins win on collision); `setq` globals persist across `EVAL` runs too.
 
@@ -407,6 +408,7 @@ Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, ActiveX
 ### Display & Theme
 - **Dark/Light theme** toggle (`THEME` command or toolbar button).
 - **Background color** — settable via `SET-BACKGROUND <hex|ACI>`.
+- **Auto-contrast toggle** — `AUTOCONTRAST [ON/OFF]` toggles viewport auto-contrast clamping for 24-bit TrueColors and gradient fills while preserving contrast adjustment for standard ACI 1–255 colors (persisted per document in `.eab`).
 - **Display palette generation counter** ensures line colors update immediately on background/theme change without requiring a zoom.
 - **Anti-aliased line rendering** toggle (`AALINES`/`AA`).
 - **FPS counter** (`FPS` toggle, shown in titlebar).
