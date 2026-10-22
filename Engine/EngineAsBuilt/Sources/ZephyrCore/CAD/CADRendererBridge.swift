@@ -1283,10 +1283,14 @@ public final class CADRendererBridge {
                                     let preview = vt.text.prefix(40).replacingOccurrences(of: "\n", with: "\\n")
                                     print("[CADBridge] SHX text '\(preview)...' → \(textPrims.count) line primitives (height=\(vt.height))")
                                 }
+                                let strokeWidth = shapeFont.map {
+                                    $0.strokeWidthRatio > 0 ? (worldHeight * $0.strokeWidthRatio * 1.05) : 0.0
+                                } ?? 0.0
                                 var z = baseZ
                                 for prim in textPrims {
                                     let s = CADPrimitiveGenerator.computePrimitiveSpecs(
                                         from: prim, transform: .identity, color: color, z: z,
+                                        geomWidth: strokeWidth,
                                         textStyleFonts: snapshot.textStyleFonts,
                                         linetypePatterns: snapshot.linetypePatterns,
                                         renderOrigin: renderOrigin,

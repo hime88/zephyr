@@ -29,16 +29,72 @@ import Foundation
 /// - Glyph data: vector/special bytes, terminated by byte 0
 public final class SHXShapeFont: @unchecked Sendable {
 
-    /// Decoded glyph: a list of line segments in glyph-local coordinates.
+    /// A polygon with outer boundary and optional hole loops, used for filled outline fonts.
+    public struct GlyphPolygon: Sendable {
+        public let outer: [(x: Double, y: Double)]
+        public let holes: [[(x: Double, y: Double)]]
+
+        public init(outer: [(x: Double, y: Double)], holes: [[(x: Double, y: Double)]] = []) {
+            self.outer = outer
+            self.holes = holes
+        }
+    }
+
+    /// Decoded glyph: a list of line segments in glyph-local coordinates,
+    /// plus optional filled polygons for outline shape fonts.
     public struct GlyphShape: Sendable {
         public let segments: [(x1: Double, y1: Double, x2: Double, y2: Double)]
+        public let filledPolygons: [GlyphPolygon]
+        public let openSegments: [(x1: Double, y1: Double, x2: Double, y2: Double)]
         /// Advance width to next character position.
         public let advanceX: Double
+
+        public init(
+            segments: [(x1: Double, y1: Double, x2: Double, y2: Double)],
+            filledPolygons: [GlyphPolygon] = [],
+            openSegments: [(x1: Double, y1: Double, x2: Double, y2: Double)] = [],
+            advanceX: Double
+        ) {
+            self.segments = segments
+            self.filledPolygons = filledPolygons
+            self.openSegments = openSegments
+            self.advanceX = advanceX
+        }
     }
 
     /// The total height of the font (from top descender to bottom ascender).
     /// All glyph coordinates are relative to origin at baseline-left.
     public private(set) var fontHeight: Double = 21.0
+
+    /// Whether this font represents closed outline shapes (e.g. HELV_OUT, OUTLINE)
+    /// that should be filled solid rather than drawn as wireframe strokes.
+    public private(set) var isOutlineFont: Bool = false
+
+    /// The stroke width ratio relative to glyph height for rendering multi-stroke or bold fonts.
+    /// When > 0, the renderer assigns a geometric model width (`height * strokeWidthRatio`)
+    /// so the strokes overlap and render as solid bold glyphs rather than hollow wireframes.
+    public private(set) var strokeWidthRatio: Double = 0.0
+
+    public func setOutlineFont(_ isOutline: Bool) {
+        guard self.isOutlineFont != isOutline else { return }
+        self.isOutlineFont = isOutline
+        if isOutline {
+            for (code, glyph) in glyphs {
+                if glyph.filledPolygons.isEmpty && !glyph.segments.isEmpty {
+                    let (polygons, openSegs) = Self.assembleGlyphPolygons(from: glyph.segments)
+                    glyphs[code] = GlyphShape(
+                        segments: glyph.segments,
+                        filledPolygons: polygons,
+                        openSegments: openSegs,
+                        advanceX: glyph.advanceX)
+                }
+            }
+        }
+    }
+
+    public func setStrokeWidthRatio(_ ratio: Double) {
+        self.strokeWidthRatio = ratio
+    }
 
     private var glyphs: [Int: GlyphShape] = [:]
 
@@ -63,12 +119,12 @@ public final class SHXShapeFont: @unchecked Sendable {
     /// Load an SHX font from a file URL.
     public init(url: URL) throws {
         let data = try Data(contentsOf: url, options: .mappedIfSafe)
-        try parse(data: data)
+        try parse(data: data, sourceName: url.lastPathComponent)
     }
 
     /// Load an SHX font from in-memory data.
-    public init(data: Data) throws {
-        try parse(data: data)
+    public init(data: Data, sourceName: String? = nil) throws {
+        try parse(data: data, sourceName: sourceName)
     }
 
     // MARK: - Parsing
@@ -124,7 +180,15 @@ public final class SHXShapeFont: @unchecked Sendable {
         }
     }
 
-    private func parse(data: Data) throws {
+    private func parse(data: Data, sourceName: String? = nil) throws {
+        if let sourceName {
+            let lower = sourceName.lowercased()
+            if lower.contains("outline") || lower.contains("_out") || lower.contains("timesout") {
+                self.isOutlineFont = true
+            }
+        }
+
+        var shape0Name: String? = nil
         var reader = BinaryReader(data: data)
         let header = reader.readString()
         
@@ -152,7 +216,12 @@ public final class SHXShapeFont: @unchecked Sendable {
             _ = reader.readUInt16() // length
             
             // Read font name
-            _ = reader.readString() // fontName
+            let fontName = reader.readString()
+            shape0Name = fontName
+            let lowerFontName = fontName.lowercased()
+            if lowerFontName.contains("outline") || lowerFontName.contains("_out") || lowerFontName.contains("timesout") {
+                self.isOutlineFont = true
+            }
             let above = Double(reader.readUInt8())
             _ = reader.readUInt8() // below
             _ = reader.readUInt8() // mode
@@ -215,7 +284,12 @@ public final class SHXShapeFont: @unchecked Sendable {
                 if ref.index == 0 {
                     // Font metadata shape
                     var subReader = BinaryReader(data: rawGlyphData)
-                    _ = subReader.readString()
+                    let name0 = subReader.readString()
+                    shape0Name = name0
+                    let lowerShape0 = name0.lowercased()
+                    if lowerShape0.contains("outline") || lowerShape0.contains("_out") || lowerShape0.contains("timesout") {
+                        self.isOutlineFont = true
+                    }
                     if subReader.pos < rawGlyphData.count {
                         let above = Double(subReader.readUInt8())
                         if above > 0 {
@@ -264,7 +338,12 @@ public final class SHXShapeFont: @unchecked Sendable {
                 
                 if ref.index == 0 {
                     var subReader = BinaryReader(data: glyphData)
-                    _ = subReader.readString() // skip name if any
+                    let name0 = subReader.readString()
+                    shape0Name = name0
+                    let lowerShape0 = name0.lowercased()
+                    if lowerShape0.contains("outline") || lowerShape0.contains("_out") || lowerShape0.contains("timesout") {
+                        self.isOutlineFont = true
+                    }
                     if subReader.pos < glyphData.count {
                         let above = Double(subReader.readUInt8())
                         if above > 0 {
@@ -287,8 +366,69 @@ public final class SHXShapeFont: @unchecked Sendable {
         } else {
             throw SHXError.parseFailed("Unsupported font type: \(fontType)")
         }
+
+        self.strokeWidthRatio = Self.detectStrokeWidthRatio(
+            sourceName: sourceName,
+            shape0Name: shape0Name,
+            fontHeight: self.fontHeight,
+            glyphs: self.glyphs
+        )
         
-        print("[SHX] Parsed font. Glyphs count: \(glyphs.count)")
+        print("[SHX] Parsed font. Glyphs count: \(glyphs.count), isOutlineFont: \(isOutlineFont), strokeWidthRatio: \(strokeWidthRatio)")
+    }
+
+    private static func detectStrokeWidthRatio(
+        sourceName: String?,
+        shape0Name: String?,
+        fontHeight: Double,
+        glyphs: [Int: GlyphShape]
+    ) -> Double {
+        guard fontHeight > 0 else { return 0.0 }
+        let name = ((sourceName ?? "") + " " + (shape0Name ?? "")).lowercased()
+
+        // Explicit multi-stroke font naming checks
+        if name.contains("romand") || name.contains("duplex") || name.contains("-d") || name.contains("2d") {
+            return 1.0 / fontHeight
+        }
+        if name.contains("romant") || name.contains("triplex") || name.contains("-t") || name.contains("3d") {
+            return 1.0 / fontHeight
+        }
+        if name.contains("bold") {
+            return 1.0 / fontHeight
+        }
+        if name.contains("romanc") || name.contains("italicc") || name.contains("italict") || name.contains("gothic") {
+            return 1.0 / fontHeight
+        }
+
+        // Geometric parallel-stroke detection:
+        // In multi-stroke fonts (e.g. duplex/triplex), glyph 'I' (ASCII 73) or '1' (ASCII 49)
+        // consists of 2+ parallel vertical strokes spaced ~1.0 unit apart (<= 0.1 * fontHeight).
+        // Single-stroke fonts (simplex, txt, isocp, romans) have only 1 vertical line in 'I'.
+        if let iGlyph = glyphs[73] ?? glyphs[49] {
+            var verticalXs: [Double] = []
+            for seg in iGlyph.segments {
+                let dx = abs(seg.x2 - seg.x1)
+                let dy = abs(seg.y2 - seg.y1)
+                if dx < 1e-4 && dy > fontHeight * 0.4 {
+                    verticalXs.append(seg.x1)
+                }
+            }
+            if verticalXs.count >= 2 {
+                verticalXs.sort()
+                var minSpacing = Double.infinity
+                for idx in 0..<(verticalXs.count - 1) {
+                    let d = verticalXs[idx + 1] - verticalXs[idx]
+                    if d > 0.01 && d < minSpacing {
+                        minSpacing = d
+                    }
+                }
+                if minSpacing <= 0.1 * fontHeight {
+                    return minSpacing / fontHeight
+                }
+            }
+        }
+
+        return 0.0
     }
 
     /// Decode a single shape from binary data.
@@ -687,7 +827,147 @@ public final class SHXShapeFont: @unchecked Sendable {
         }
 
         interpret(data, offset: offset, length: length, depth: 0)
-        return GlyphShape(segments: segments, advanceX: x)
+        let polygons: [GlyphPolygon]
+        let openSegs: [(x1: Double, y1: Double, x2: Double, y2: Double)]
+        if self.isOutlineFont {
+            (polygons, openSegs) = Self.assembleGlyphPolygons(from: segments)
+        } else {
+            polygons = []
+            openSegs = segments
+        }
+        return GlyphShape(
+            segments: segments,
+            filledPolygons: polygons,
+            openSegments: openSegs,
+            advanceX: x)
+    }
+
+    // MARK: - Outline Polygon Assembly
+
+    /// Reconstructs closed loops and nested holes from decoded line segments.
+    private static func assembleGlyphPolygons(
+        from segments: [(x1: Double, y1: Double, x2: Double, y2: Double)]
+    ) -> (polygons: [GlyphPolygon], openSegments: [(x1: Double, y1: Double, x2: Double, y2: Double)]) {
+        guard !segments.isEmpty else { return ([], []) }
+
+        var remaining = segments
+        var closedLoops: [[(x: Double, y: Double)]] = []
+        var openChains: [[(x: Double, y: Double)]] = []
+
+        while !remaining.isEmpty {
+            let first = remaining.removeFirst()
+            var chain = [(x: first.x1, y: first.y1), (x: first.x2, y: first.y2)]
+            var extended = true
+            while extended {
+                extended = false
+                let head = chain.first!
+                let tail = chain.last!
+                let closeTol = 1e-4
+                if chain.count >= 3 && hypot(head.x - tail.x, head.y - tail.y) < closeTol {
+                    break
+                }
+                for i in 0..<remaining.count {
+                    let seg = remaining[i]
+                    if hypot(seg.x1 - tail.x, seg.y1 - tail.y) < closeTol {
+                        chain.append((x: seg.x2, y: seg.y2))
+                        remaining.remove(at: i)
+                        extended = true
+                        break
+                    } else if hypot(seg.x2 - tail.x, seg.y2 - tail.y) < closeTol {
+                        chain.append((x: seg.x1, y: seg.y1))
+                        remaining.remove(at: i)
+                        extended = true
+                        break
+                    } else if hypot(seg.x2 - head.x, seg.y2 - head.y) < closeTol {
+                        chain.insert((x: seg.x1, y: seg.y1), at: 0)
+                        remaining.remove(at: i)
+                        extended = true
+                        break
+                    } else if hypot(seg.x1 - head.x, seg.y1 - head.y) < closeTol {
+                        chain.insert((x: seg.x2, y: seg.y2), at: 0)
+                        remaining.remove(at: i)
+                        extended = true
+                        break
+                    }
+                }
+            }
+            if chain.count >= 3 && hypot(chain.first!.x - chain.last!.x, chain.first!.y - chain.last!.y) < 1e-4 {
+                // Remove the duplicate closing point so polygon vertices are unique
+                chain.removeLast()
+                closedLoops.append(chain)
+            } else {
+                openChains.append(chain)
+            }
+        }
+
+        var openSegments: [(x1: Double, y1: Double, x2: Double, y2: Double)] = []
+        for chain in openChains {
+            for i in 0..<(chain.count - 1) {
+                openSegments.append((x1: chain[i].x, y1: chain[i].y, x2: chain[i+1].x, y2: chain[i+1].y))
+            }
+        }
+
+        guard !closedLoops.isEmpty else {
+            return ([], openSegments)
+        }
+
+        func signedArea(_ pts: [(x: Double, y: Double)]) -> Double {
+            var sum = 0.0
+            for i in 0..<pts.count {
+                let p1 = pts[i]
+                let p2 = pts[(i + 1) % pts.count]
+                sum += (p1.x * p2.y - p2.x * p1.y)
+            }
+            return sum * 0.5
+        }
+
+        func pointInPoly(pt: (x: Double, y: Double), poly: [(x: Double, y: Double)]) -> Bool {
+            var inside = false
+            var j = poly.count - 1
+            for i in 0..<poly.count {
+                let pi = poly[i]
+                let pj = poly[j]
+                if ((pi.y > pt.y) != (pj.y > pt.y)) &&
+                   (pt.x < (pj.x - pi.x) * (pt.y - pi.y) / (pj.y - pi.y) + pi.x) {
+                    inside.toggle()
+                }
+                j = i
+            }
+            return inside
+        }
+
+        // Sort closed loops descending by absolute area so outer loops come before inner holes
+        let sortedLoops = closedLoops.sorted(by: { abs(signedArea($0)) > abs(signedArea($1)) })
+
+        var outers: [[(x: Double, y: Double)]] = []
+        var holesForOuter: [[[(x: Double, y: Double)]]] = []
+
+        for loop in sortedLoops {
+            let cx = loop.reduce(0.0, { $0 + $1.x }) / Double(loop.count)
+            let cy = loop.reduce(0.0, { $0 + $1.y }) / Double(loop.count)
+
+            var parentIdx: Int? = nil
+            for (idx, outLoop) in outers.enumerated() {
+                if pointInPoly(pt: (x: cx, y: cy), poly: outLoop) {
+                    parentIdx = idx
+                    break
+                }
+            }
+
+            if let pIdx = parentIdx {
+                holesForOuter[pIdx].append(loop)
+            } else {
+                outers.append(loop)
+                holesForOuter.append([])
+            }
+        }
+
+        var polygons: [GlyphPolygon] = []
+        for (i, outer) in outers.enumerated() {
+            polygons.append(GlyphPolygon(outer: outer, holes: holesForOuter[i]))
+        }
+
+        return (polygons, openSegments)
     }
 
 
@@ -722,7 +1002,8 @@ public final class SHXShapeFont: @unchecked Sendable {
         alignV: Int = 0,
         widthFactor: Double = 1.0,
         obliqueAngle: Double = 0.0,
-        maxWidth: Double? = nil
+        maxWidth: Double? = nil,
+        fillOutline: Bool = true
     ) -> [CADPrimitive] {
         var primitives: [CADPrimitive] = []
         let scaleY = height / fontHeight
@@ -832,23 +1113,69 @@ public final class SHXShapeFont: @unchecked Sendable {
                 } else if let glyph = glyphs[codePoint] {
                     charAdvance = glyph.advanceX
                     
-                    for seg in glyph.segments {
-                        let lx1 = (offsetX + cursorX + seg.x1) * scaleX
-                        let ly1 = -(currentLineOffsetY + seg.y1) * scaleY
-                        let lx2 = (offsetX + cursorX + seg.x2) * scaleX
-                        let ly2 = -(currentLineOffsetY + seg.y2) * scaleY
+                    if fillOutline && self.isOutlineFont && !glyph.filledPolygons.isEmpty {
+                        for poly in glyph.filledPolygons {
+                            let worldOuter = poly.outer.map { pt -> Vector3 in
+                                let lx = (offsetX + cursorX + pt.x) * scaleX
+                                let ly = -(currentLineOffsetY + pt.y) * scaleY
+                                let sx = lx - ly * shear
+                                let wx = origin.x + sx * cosR - ly * sinR
+                                let wy = origin.y + sx * sinR + ly * cosR
+                                return Vector3(x: wx, y: wy, z: origin.z)
+                            }
+                            let worldHoles = poly.holes.map { hole -> [Vector3] in
+                                hole.map { pt -> Vector3 in
+                                    let lx = (offsetX + cursorX + pt.x) * scaleX
+                                    let ly = -(currentLineOffsetY + pt.y) * scaleY
+                                    let sx = lx - ly * shear
+                                    let wx = origin.x + sx * cosR - ly * sinR
+                                    let wy = origin.y + sx * sinR + ly * cosR
+                                    return Vector3(x: wx, y: wy, z: origin.z)
+                                }
+                            }
+                            if worldHoles.isEmpty {
+                                primitives.append(.fillPolygon(points: worldOuter))
+                            } else {
+                                primitives.append(.fillComplexPolygon(outer: worldOuter, holes: worldHoles))
+                            }
+                        }
+                        for seg in glyph.openSegments {
+                            let lx1 = (offsetX + cursorX + seg.x1) * scaleX
+                            let ly1 = -(currentLineOffsetY + seg.y1) * scaleY
+                            let lx2 = (offsetX + cursorX + seg.x2) * scaleX
+                            let ly2 = -(currentLineOffsetY + seg.y2) * scaleY
 
-                        let sx1 = lx1 - ly1 * shear
-                        let wx1 = origin.x + sx1 * cosR - ly1 * sinR
-                        let wy1 = origin.y + sx1 * sinR + ly1 * cosR
-                        let sx2 = lx2 - ly2 * shear
-                        let wx2 = origin.x + sx2 * cosR - ly2 * sinR
-                        let wy2 = origin.y + sx2 * sinR + ly2 * cosR
+                            let sx1 = lx1 - ly1 * shear
+                            let wx1 = origin.x + sx1 * cosR - ly1 * sinR
+                            let wy1 = origin.y + sx1 * sinR + ly1 * cosR
+                            let sx2 = lx2 - ly2 * shear
+                            let wx2 = origin.x + sx2 * cosR - ly2 * sinR
+                            let wy2 = origin.y + sx2 * sinR + ly2 * cosR
 
-                        primitives.append(.line(
-                            start: Vector3(x: wx1, y: wy1, z: origin.z),
-                            end: Vector3(x: wx2, y: wy2, z: origin.z)
-                        ))
+                            primitives.append(.line(
+                                start: Vector3(x: wx1, y: wy1, z: origin.z),
+                                end: Vector3(x: wx2, y: wy2, z: origin.z)
+                            ))
+                        }
+                    } else {
+                        for seg in glyph.segments {
+                            let lx1 = (offsetX + cursorX + seg.x1) * scaleX
+                            let ly1 = -(currentLineOffsetY + seg.y1) * scaleY
+                            let lx2 = (offsetX + cursorX + seg.x2) * scaleX
+                            let ly2 = -(currentLineOffsetY + seg.y2) * scaleY
+
+                            let sx1 = lx1 - ly1 * shear
+                            let wx1 = origin.x + sx1 * cosR - ly1 * sinR
+                            let wy1 = origin.y + sx1 * sinR + ly1 * cosR
+                            let sx2 = lx2 - ly2 * shear
+                            let wx2 = origin.x + sx2 * cosR - ly2 * sinR
+                            let wy2 = origin.y + sx2 * sinR + ly2 * cosR
+
+                            primitives.append(.line(
+                                start: Vector3(x: wx1, y: wy1, z: origin.z),
+                                end: Vector3(x: wx2, y: wy2, z: origin.z)
+                            ))
+                        }
                     }
                 } else {
                     charAdvance = spaceAdvance
@@ -950,7 +1277,8 @@ public final class SHXShapeFont: @unchecked Sendable {
         maxWidth: Double? = nil,
         lineSpacingFactor: Double = 1.0,
         lineSpacingStyle: Int = 1,
-        textStyleFonts: [String: String] = [:]
+        textStyleFonts: [String: String] = [:],
+        fillOutline: Bool = true
     ) -> [CADPrimitive] {
         let defaultHeight = max(formatted.defaultHeight, 1e-9)
         let entityWidthFactor = max(widthFactor, 1e-9)
@@ -1381,14 +1709,45 @@ public final class SHXShapeFont: @unchecked Sendable {
                 let shear = tan(glyph.oblique)
 
                 if let shape = glyph.font.glyphs[codePoint] {
-                    for segment in shape.segments {
-                        let localX1 = offsetX + cursor + (segment.x1 + shear * segment.y1) * scaleX
-                        let localY1 = lineTop + glyph.height - segment.y1 * scaleY
-                        let localX2 = offsetX + cursor + (segment.x2 + shear * segment.y2) * scaleX
-                        let localY2 = lineTop + glyph.height - segment.y2 * scaleY
-                        primitives.append(.line(
-                            start: worldPoint(localX1, localY1),
-                            end: worldPoint(localX2, localY2)))
+                    if fillOutline && glyph.font.isOutlineFont && !shape.filledPolygons.isEmpty {
+                        for poly in shape.filledPolygons {
+                            let worldOuter = poly.outer.map { pt in
+                                let localX = offsetX + cursor + (pt.x + shear * pt.y) * scaleX
+                                let localY = lineTop + glyph.height - pt.y * scaleY
+                                return worldPoint(localX, localY)
+                            }
+                            let worldHoles = poly.holes.map { hole in
+                                hole.map { pt in
+                                    let localX = offsetX + cursor + (pt.x + shear * pt.y) * scaleX
+                                    let localY = lineTop + glyph.height - pt.y * scaleY
+                                    return worldPoint(localX, localY)
+                                }
+                            }
+                            if worldHoles.isEmpty {
+                                primitives.append(.fillPolygon(points: worldOuter))
+                            } else {
+                                primitives.append(.fillComplexPolygon(outer: worldOuter, holes: worldHoles))
+                            }
+                        }
+                        for seg in shape.openSegments {
+                            let localX1 = offsetX + cursor + (seg.x1 + shear * seg.y1) * scaleX
+                            let localY1 = lineTop + glyph.height - seg.y1 * scaleY
+                            let localX2 = offsetX + cursor + (seg.x2 + shear * seg.y2) * scaleX
+                            let localY2 = lineTop + glyph.height - seg.y2 * scaleY
+                            primitives.append(.line(
+                                start: worldPoint(localX1, localY1),
+                                end: worldPoint(localX2, localY2)))
+                        }
+                    } else {
+                        for segment in shape.segments {
+                            let localX1 = offsetX + cursor + (segment.x1 + shear * segment.y1) * scaleX
+                            let localY1 = lineTop + glyph.height - segment.y1 * scaleY
+                            let localX2 = offsetX + cursor + (segment.x2 + shear * segment.y2) * scaleX
+                            let localY2 = lineTop + glyph.height - segment.y2 * scaleY
+                            primitives.append(.line(
+                                start: worldPoint(localX1, localY1),
+                                end: worldPoint(localX2, localY2)))
+                        }
                     }
                 }
 

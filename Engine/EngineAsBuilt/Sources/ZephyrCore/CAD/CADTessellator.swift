@@ -194,13 +194,13 @@ public enum CADTessellator {
                     }
                     
                     let minDistance = minSqDist == Float.infinity ? 0 : sqrt(minSqDist)
-                    if !inside || minDistance < 0.03 {
-                        // Nudge towards centroid
+                    if !inside || minDistance < 1e-4 {
+                        // Nudge towards centroid, safe relative to distance to prevent inverting small holes
                         let dirX = centroid.x - pt.x
                         let dirY = centroid.y - pt.y
                         let dist = sqrt(dirX*dirX + dirY*dirY)
                         if dist > 1e-4 {
-                            let nudgeDist: Float = 0.05
+                            let nudgeDist = min(Float(0.005), dist * 0.05)
                             pt.x += (dirX / dist) * nudgeDist
                             pt.y += (dirY / dist) * nudgeDist
                         }

@@ -922,6 +922,10 @@ public enum CADPrimitiveGenerator {
                     print("[PrimGen] SHX text '\(preview)...' → \(textPrims.count) line primitives (h=\(finalHeight))")
                 }
 
+                let strokeWidth = font.strokeWidthRatio > 0
+                    ? max(geomWidth, finalHeight * font.strokeWidthRatio * 1.05)
+                    : geomWidth
+
                 var localZ = z
                 for prim in textPrims {
                     let s = computePrimitiveSpecs(
@@ -932,7 +936,7 @@ public enum CADPrimitiveGenerator {
                         lineType: lineType,
                         lineWeight: lineWeight,
                         lineTypeScale: lineTypeScale,
-                        geomWidth: geomWidth,
+                        geomWidth: strokeWidth,
                         textStyleFonts: textStyleFonts,
                         linetypePatterns: linetypePatterns,
                         renderOrigin: renderOrigin,

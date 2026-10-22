@@ -141,4 +141,88 @@ final class SHXShapeFontTests: XCTestCase {
         XCTAssertEqual(b.minY, -38.0, accuracy: 0.02)
         XCTAssertEqual(b.maxY, -2.0, accuracy: 0.02)
     }
+
+    // MARK: - Outline Shape Font Filling
+
+    func testOutlineFontDetectionAndFilling() throws {
+        let path = findTestFile("Fonts/HELV_OUT.SHX")
+        let font = try SHXShapeFont(url: URL(fileURLWithPath: path))
+        XCTAssertTrue(font.isUsable)
+        XCTAssertTrue(font.isOutlineFont)
+
+        // "A" in an outline font should produce a filled complex polygon with 1 hole
+        let aPrims = font.renderText("A", origin: .zero, height: font.fontHeight, fillOutline: true)
+        let aComplex = aPrims.compactMap { prim -> (outer: [Vector3], holes: [[Vector3]])? in
+            if case .fillComplexPolygon(let outer, let holes, _) = prim { return (outer, holes) }
+            return nil
+        }
+        XCTAssertEqual(aComplex.count, 1)
+        XCTAssertEqual(aComplex.first?.holes.count, 1)
+
+        // "V" in an outline font should produce a filled simple polygon (0 holes)
+        let vPrims = font.renderText("V", origin: .zero, height: font.fontHeight, fillOutline: true)
+        let vPolys = vPrims.compactMap { prim -> [Vector3]? in
+            if case .fillPolygon(let pts, _) = prim { return pts }
+            return nil
+        }
+        XCTAssertEqual(vPolys.count, 1)
+        XCTAssertGreaterThanOrEqual(vPolys.first?.count ?? 0, 7)
+
+        // When fillOutline is false, outline fonts render as line strokes (wireframe)
+        let wireframePrims = font.renderText("A", origin: .zero, height: font.fontHeight, fillOutline: false)
+        XCTAssertTrue(wireframePrims.allSatisfy { prim in
+            if case .line = prim { return true }
+            return false
+        })
+
+        // Multi-character title "PVC"
+        let titlePrims = font.renderText("PVC", origin: .zero, height: font.fontHeight, fillOutline: true)
+        let filledCount = titlePrims.filter { prim in
+            switch prim {
+            case .fillPolygon, .fillComplexPolygon: return true
+            default: return false
+            }
+        }.count
+        XCTAssertEqual(filledCount, 3)
+    }
+
+    func testStickFontRemainsLinesOnly() throws {
+        let font = try loadIsocp()
+        XCTAssertFalse(font.isOutlineFont)
+
+        let prims = font.renderText("AVO", origin: .zero, height: font.fontHeight, fillOutline: true)
+        XCTAssertFalse(prims.isEmpty)
+        XCTAssertTrue(prims.allSatisfy { prim in
+            if case .line = prim { return true }
+            return false
+        })
+    }
+
+    func testMultiStrokeFontsDetectedAndHavePositiveStrokeWidthRatio() throws {
+        let boldPath = findTestFile("Fonts/bold.shx")
+        let boldFont = try SHXShapeFont(url: URL(fileURLWithPath: boldPath))
+        XCTAssertFalse(boldFont.isOutlineFont)
+        XCTAssertGreaterThan(boldFont.strokeWidthRatio, 0.0)
+
+        // Bold and duplex fonts should render clean line primitives, not mixed broken polygons
+        let boldPrims = boldFont.renderText("PVC LATERAL 123", origin: .zero, height: 60.0, fillOutline: true)
+        XCTAssertFalse(boldPrims.isEmpty)
+        XCTAssertTrue(boldPrims.allSatisfy { prim in
+            if case .line = prim { return true }
+            return false
+        })
+
+        let romandPath = findTestFile("Fonts/romand.shx")
+        let romandFont = try SHXShapeFont(url: URL(fileURLWithPath: romandPath))
+        XCTAssertFalse(romandFont.isOutlineFont)
+        XCTAssertGreaterThan(romandFont.strokeWidthRatio, 0.0)
+        XCTAssertEqual(romandFont.strokeWidthRatio, 1.0 / 21.0, accuracy: 1e-4)
+
+        let romandPrims = romandFont.renderText("PVC LATERAL AND RAISER", origin: .zero, height: 21.0, fillOutline: true)
+        XCTAssertFalse(romandPrims.isEmpty)
+        XCTAssertTrue(romandPrims.allSatisfy { prim in
+            if case .line = prim { return true }
+            return false
+        })
+    }
 }
