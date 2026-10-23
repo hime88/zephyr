@@ -25,7 +25,7 @@ env:
   SDL3_IMAGE_VERSION: "3.4.8"
   ZLIB_NG_VERSION: "2.3.3"
   PDFIUM_TAG: "chromium%2F7891"
-  SWIFT_VERSION: "6.4.0"
+  SWIFT_VERSION: "6.4.1"
   DXC_VERSION: "v1.8.2407"
   DXC_ASSET: "linux_dxc_2024_07_31.x86_64.tar.gz"
   DEV_ROOT: "~/dev"

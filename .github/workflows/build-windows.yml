@@ -25,7 +25,7 @@ env:
   SDL3_IMAGE_VERSION: "3.4.8"
   ZLIB_NG_VERSION: "2.3.3"
   PDFIUM_TAG: "chromium%2F7891"
-  SWIFT_VERSION: "6.4.0"
+  SWIFT_VERSION: "6.4.1"
   DEV_ROOT: "C:/dev"
 
 jobs:
@@ -328,7 +328,7 @@ jobs:
       - name: Install Swift
         uses: SwiftyLab/setup-swift@v1
         with:
-          swift-version: '6.4.0'
+          swift-version: '6.4.1'
 
       # ------------------------------------------------------------------
       # 6. Locate Visual Studio and DXC

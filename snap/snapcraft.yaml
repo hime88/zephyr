@@ -207,8 +207,8 @@ parts:
 
       # 1. Swift toolchain (pinned to SWIFT_VERSION in build-linux.yml).
       case "$CRAFT_TARGET_ARCH" in
-        amd64) swift_url="https://download.swift.org/swift-6.4.0-release/ubuntu2404/swift-6.4.0-RELEASE/swift-6.4.0-RELEASE-ubuntu24.04.tar.gz" ;;
-        arm64) swift_url="https://download.swift.org/swift-6.4.0-release/ubuntu2404-aarch64/swift-6.4.0-RELEASE/swift-6.4.0-RELEASE-ubuntu24.04-aarch64.tar.gz" ;;
+        amd64) swift_url="https://download.swift.org/swift-6.4.1-release/ubuntu2404/swift-6.4.1-RELEASE/swift-6.4.1-RELEASE-ubuntu24.04.tar.gz" ;;
+        arm64) swift_url="https://download.swift.org/swift-6.4.1-release/ubuntu2404-aarch64/swift-6.4.1-RELEASE/swift-6.4.1-RELEASE-ubuntu24.04-aarch64.tar.gz" ;;
         *) echo "unsupported arch: $CRAFT_TARGET_ARCH" >&2; exit 1 ;;
       esac
       curl -sSL -o swift.tar.gz "$swift_url"
