@@ -1,63 +1,70 @@
 # Changelog
 
-Monthly digest condensed from the git history. Instead of per-release notes, all changes are grouped by calendar month and summarized by topic under **Features**, **Bug Fixes**, and **Performance**.
-
-> Generated from 304 commits (2026-06-23 → 2026-10-23).
+Monthly digest condensed from the git history. Instead of per-release notes, all changes are grouped by calendar month and summarized under **New Features** (brand-new capabilities), **New Commands** (new drawing/modify commands on existing features), **Improvements** (refinements to existing features), **DXF & File Formats**, **Bug Fixes**, **Maintenance** (toolchain, packaging, CI, housekeeping), and **Performance**. Fixes and refinements made to a feature during the same month it ships are folded into that feature's entry rather than listed again.
 
 ## October 2026
 
-116 commits · 2026-10-08 – 2026-10-23
+### New Features
+- **AutoLISP support** — native engine (FDScript merge), 305/305 dispatch, file picker, persistent session, `c:` command dispatch, and examples; scripted CAD commands with multi-call support; app-wide system variables that survive LOAD/EVAL and wire `GRID`/`ORTHO`/`POLAR` to `GRIDMODE`/`ORTHOMODE`/`POLARMODE`
+- **Ribbon** — AutoLISP-defined command chrome in a dockable window: tabs/panels/items, procedural icons, working flyouts, live enable/check state from system variables, classic `File/Edit/View` menu bar, labels-only and icons+labels presentations with the dock node resizing to the active presentation, and hot reload of `lisp/ribbon.lsp` (`RIBBON`, `RIBBONMODE`, `RIBBONRELOAD`); the definition ships as an editable per-user file that reloads on save and survives a failed parse, and no longer gets re-seeded over your edits
+- **Multi-window editing** — float/dock OS windows and independent model views, with per-window status bars and window-local selection and gestures
+- **Split view workspace** — visible always-on gutters with hairline borders and 3-dot grip handles, resize mouse cursors (`ResizeEW` / `ResizeNS`), smooth divider dragging with grab-offset compensation, double-click a divider to reset to 50/50, and per-pane identity badges showing `<tab> · <view>` (faded on hover so CAD picking is never obstructed)
+- **Linux support**
+- **Unclamped TrueColor rendering** — `AUTOCONTRAST` disables the viewport's contrast clamping for 24-bit TrueColors and gradients, so vector artwork and other non-CAD drawings show the colors you actually picked instead of adjusted ones (standard ACI 1–255 colors stay clamped); persisted per document
 
-### Features
-- Verb/Noun modify command workflow: `MOVE`, `ROTATE`, `SCALE`, `COPY`, `ERASE`, `COPYCLIP`, and `COPYBASE` now support selecting objects after invoking the command (prompting "Select objects..."), with interactive click, window/crossing rectangle selection, and Enter/Space/Right-click confirmation; command prompt banners now render for active modify commands; Ribbon buttons and Modify menu items remain active without pre-selection.
-- Ribbon definition resolution: removed automatic seeding into user AppData so updates to the bundled `ribbon.lsp` apply immediately unless the user explicitly places a custom definition in AppData.
-- AutoLISP support: native engine (FDScript merge), full dispatch, file picker, persistent session, `c:` command dispatch, and examples
-- Scripted CAD commands with multi-call support
-- AUTOCONTRAST command and TrueColor contrast toggle
-- Gradient hatches via -HATCH, GF* system variables, and `entmake`; island detection in the Hatch UI
-- Layer property sorting
-- UNDO/REDO registered as commands with ribbon buttons
-- INSERT, DWG/DXF external references (xrefs), and ATTACH media references
-- DXF MLINE support; DXF entity handles preserved in xdata
-- AutoCAD-style OFFSET command
-- Properties panel: multi-select entity picker, copy support, and empty state
-- Multi-window tab management: tab reorder, float/dock OS windows, split panes, independent model views, per-window status bars, ImGui contexts, and radial nav
-- Linux support with Snap, AppImage, and Flatpak packaging (x64 and ARM64)
-- Catppuccin themes and dropdown/slider contrast; Hatch and PenStroke UI theming
-- Improved TRIM command
-- Ribbon: AutoLISP-defined command chrome in a dockable window — tabs/panels/items, procedural icons, flyouts, live enable/check state from system variables, classic `File/Edit/View` menu bar, labels-only and icons+labels presentations, and hot reload of `lisp/ribbon.lsp` (`RIBBON`, `RIBBONMODE`, `RIBBONRELOAD`)
-- Ribbon definition ships as an editable file: `lisp/ribbon.lsp` is copied into the per-user app-data directory on first run, reloads itself after a save, and leaves the previous layout live if an edit fails to parse
-- Ribbon presentation control: one button cycles menu bar → labels only → icons + labels, and a docked ribbon resizes to whichever presentation is active so the canvas reclaims the space
-- Unified Escape/Enter/Space keyboard workflow: single Escape cascade that cancels editors, gestures, commands, snaps and selection one layer at a time, with grip and drag cancelled back to their pre-drag snapshot; Space now commits like Enter while preserving custom Space handling in TRIM and EXPLODE; idle Enter repeats the last command
-- Swift 6.4 migration; SDL3 3.4.18 and SDL3_image 3.4.8
-- macOS Universal binary and bundled Swift runtime
-- Website and docs: Linux support, AutoLISP, OFFSET, corrected downloads, roadmap
+### New Commands
+- **INSERT** — insert a block or drawing file as a block reference
+- **XATTACH / XREF** — attach a drawing as an external reference and manage references from the External References palette
+- **ATTACH, IMAGEATTACH, PDFATTACH** — attach a drawing, raster image, or PDF page as a live reference
+- **OFFSET** (`O`) — make a parallel copy of one object at a distance or through a point: Through, Erase, Layer and Multiple options, a live preview once the object is picked, Undo/Exit without leaving the command, and `OFFSETGAPTYPE` corner style for polylines
+- **UNDO / REDO** — registered, with ribbon buttons
+- **VPEQUAL** (`EQUALIZE`) — resize all split panes to equal sizes across nested layouts
+- **VPRESIZE** — grow (`+`) or shrink (`-`) the focused pane by a percentage of its parent split
+
+### Improvements
+- **Verb/Noun modify workflow** — `MOVE`, `ROTATE`, `SCALE`, `COPY`, `ERASE`, `COPYCLIP`, and `COPYBASE` now accept a selection made *after* the command is invoked ("Select objects..."), with click, window/crossing rectangle selection and Enter/Space/Right-click confirmation; command prompt banners render for active modify commands
+- **TRIM** — AutoCAD-style options: cutting-edge selection, box and fence batch trimming, eRase sub-mode, and in-session undo
+- **Tab management** — tab reorder, split panes, and tabs that follow the window they belong to
+- **Keyboard pane navigation** — `Ctrl+Alt+Arrow` (`Cmd+Alt+Arrow` on macOS) nudges the focused pane's divider in that direction
+- **Gradient hatches** — via `-HATCH`, `GF*` system variables and `entmake`; island detection in the Hatch UI
+- **Escape/Enter/Space** — one Escape cascade that cancels editors, gestures, commands, snaps and selection a layer at a time, with grip and drag cancelled back to their pre-drag snapshot; Space now commits like Enter while preserving custom Space handling in TRIM and EXPLODE; idle Enter repeats the last command
+- **Properties panel** — multi-select entity picker, copy support, and an empty state
+- **Layer property sorting**
+- **Themes** — Catppuccin palettes, dropdown/slider contrast, and full theming for the Hatch and PenStroke UI
+
+### DXF & File Formats
+- **MLINE support** — plus DXF entity handles preserved in xdata
+- **References on the wire** — INSERT/xref and ATTACH payload handling, with `REFPATHTYPE` 0/2 mapping
+- **Gradient hatch write-back** — `GF*` system variables and `entmake` support
 
 ### Bug Fixes
-- CAD modify commands (`MOVE`, etc.) snapping bypass: base point selection during active modify commands now correctly honors active entity snap targets (circle quadrants/center, line endpoints, midpoints) instead of falling back to raw mouse coordinates.
-- SHX shape fonts: fractional arcs, clockwise octant arcs, multi-stroke outline behavior, and hole nudging
-- Exploding rectangles and compound entities into separate elements
-- Angled gradient hatch projection
-- Concurrent CADDocument access crash prevention
-- AutoLISP: Enter handling, CRLF comments, stuck "Lisp running" prompt, and load failures
-- Hatch editing undo/redo history registration
-- Float-window input dead zones, pane divider drag, click-to-raise, and white flash on view swap
-- Enter-to-finish in LINE and Polyline; command bar and autocomplete always render on top
-- ODA download 404 and teardown hardening; first-run setup popup
-- Windows builds missing DLLs; engine init crash; `igInputText` warnings
-- Swift 6.4/macOS build fixes (reverted APIs requiring macOS 26/27, header-only shim targets, zlib-ng)
-- CI fixes across Windows, macOS, and Linux; DXC pinned for glibc 2.35 compatibility; REFPATHTYPE 0/2 mapping
-- `test.ps1` test-runner wrapper: sets the SDL3/zlib-ng build environment, detects host arch and Visual Studio, pre-builds the test bundle, and propagates exit codes
-- Ribbon flyouts ("More" dropdowns) opened without drawing anything: a popup is only rendered in frames where `BeginPopup` is submitted, and the flyout code skipped it unless the button had just been clicked
-- Docked ribbon kept the taller dock-node height after the presentation changed; the node is now resized with the active mode
-- AutoLISP system variables are app-wide instead of per-run, so `(setvar …)` survives across LOAD/EVAL and is readable by UI chrome; `GRID`, `ORTHO` and `POLAR` now keep `GRIDMODE`, `ORTHOMODE` and `POLARMODE` in step with the viewport
-- Feature commands registered without a descriptor (`PENSTROKE`, `REVCLOUD`, `TABLE`, `IMAGE`, `CLIP`) were missing from the command catalog and any menu built from it
+- **`HSPLIT` / `VPORTS 2H`** — after `VSPLIT`, fixed variable shadowing in `PaneLayout.split` recursion where child splits inherited their parent's axis instead of the requested one
+- **Snapping in modify commands** — base point selection during `MOVE` and friends now honors active entity snap targets (circle quadrants/center, line endpoints, midpoints) instead of falling back to raw mouse coordinates
+- **SHX shape fonts** — fractional arcs, clockwise octant arcs, multi-stroke outline behavior, and hole nudging
+- **Explode** — rectangles and compound entities split into separate elements
+- **Gradient hatches** — angled gradient projection
+- **`CADDocument` concurrency** — crash prevention on concurrent access
+- **Hatch editing** — undo/redo history registration
+- **Floating windows** — input dead zones, pane divider drag, click-to-raise, and white flash on view swap
+- **LINE / Polyline** — Enter-to-finish; command bar and autocomplete always render on top
+- **ODA setup** — download 404 and teardown hardening; first-run setup popup
+- **Windows builds** — missing DLLs, crash when engine init fails, and `igInputText` String-pointer warnings
+- **Per-window state** — ImGui contexts, window-local main tab and selection gestures, long EAB strings, and a quieter initial load
+
+### Maintenance
+- **Swift 6.4 migration** — toolchain bump and `zlib-ng` fix
+- **Dependencies** — SDL3 3.4.18 and SDL3_image 3.4.8
+- **macOS bundles** — Universal binary and bundled Swift runtime
+- **Linux packaging** — Snap, AppImage and Flatpak (x64 and ARM64); DXC pinned to v1.8.2407 for glibc 2.35 compatibility
+- **CI** — build fixes across Windows, macOS and Linux; Linux CI on every push
+- **`test.ps1`** — test-runner wrapper that sets the SDL3/zlib-ng build environment, detects host arch and Visual Studio, pre-builds the test bundle, and propagates exit codes
+- **Website and docs** — Linux support, AutoLISP, OFFSET, corrected downloads, roadmap
 
 ### Performance
-- DXF import: 1.99 s → 0.91 s (per-entity string format hoisting, byte-scanning of group pairs, skipping code-page conversion)
-- NURBS: single scratch buffer per evaluation instead of three arrays
-- EAB/SHX single byte helper with safe loads, gated by golden digests
-- Performance harness and baseline for the Swift 6.4 branch
+- **DXF import** — 2.2× faster: per-entity string format hoisting, byte-scanning of group pairs, skipping code-page conversion
+- **NURBS** — single scratch buffer per evaluation instead of three arrays
+- **EAB/SHX** — one byte helper with safe loads, gated by golden digests
+- **Swift 6.4 branch** — performance harness and baseline
 
 ## September 2026
 
