@@ -128,7 +128,7 @@ cp -L "$ZLIB_NG_LIB"/libz-ng.so* "$BIN_DIR/" 2>/dev/null || echo "WARNING: no li
 [ -n "$PDFIUM_SO" ] && cp -L "$PDFIUM_SO" "$BIN_DIR/"
 
 # Stage Fonts, Plot Styles, Patterns
-for asset in "Fonts" "Plot Styles" "Patterns"; do
+for asset in "Fonts" "Plot Styles" "Patterns" "lisp"; do
     if [ -d "$SWIFT_DIR/$asset" ]; then
         rm -rf "$BIN_DIR/$asset"
         cp -R "$SWIFT_DIR/$asset" "$BIN_DIR/"

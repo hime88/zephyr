@@ -270,7 +270,7 @@ jobs:
           cp "$BIN_DIR"/libz-ng.so* "$STAGE_DIR/"
           cp "$BIN_DIR"/libpdfium.so "$STAGE_DIR/" 2>/dev/null || echo "(no libpdfium.so)"
           cp "$BIN_DIR"/*.spv "$STAGE_DIR/"
-          for asset in "Fonts" "Plot Styles" "Patterns"; do
+          for asset in "Fonts" "Plot Styles" "Patterns" "lisp"; do
             if [ -d "$BIN_DIR/$asset" ]; then
               cp -R "$BIN_DIR/$asset" "$STAGE_DIR/"
             fi
@@ -307,7 +307,7 @@ jobs:
           cp -L "$BIN_DIR"/libpdfium.so "$APPDIR/usr/lib/" 2>/dev/null || true
           cp -L "$BIN_DIR"/libpdfium.so "$APPDIR/usr/bin/" 2>/dev/null || true
           cp -L "$BIN_DIR"/*.spv "$APPDIR/usr/bin/"
-          for asset in "Fonts" "Plot Styles" "Patterns"; do
+          for asset in "Fonts" "Plot Styles" "Patterns" "lisp"; do
             if [ -d "$BIN_DIR/$asset" ]; then
               cp -R "$BIN_DIR/$asset" "$APPDIR/usr/bin/"
             fi
@@ -375,7 +375,7 @@ jobs:
           cp -L "$BIN_DIR"/libz-ng.so* "$STAGE_PAYLOAD/" 2>/dev/null || true
           cp -L "$BIN_DIR"/libpdfium.so "$STAGE_PAYLOAD/" 2>/dev/null || true
           cp -L "$BIN_DIR"/*.spv "$STAGE_PAYLOAD/"
-          for asset in "Fonts" "Plot Styles" "Patterns"; do
+          for asset in "Fonts" "Plot Styles" "Patterns" "lisp"; do
             if [ -d "$BIN_DIR/$asset" ]; then
               cp -R "$BIN_DIR/$asset" "$STAGE_PAYLOAD/"
             fi
