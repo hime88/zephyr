@@ -11,6 +11,11 @@ public enum PaneSplitAxis {
     case stacked
 }
 
+/// Arrow direction for keyboard divider nudges.
+public enum PaneNudgeDirection {
+    case left, right, up, down
+}
+
 /// Float rectangle in window points.
 public struct PaneRect {
     public var x: Float
@@ -57,10 +62,16 @@ public indirect enum PaneNode {
 /// Pure value type (no engine references) so geometry and structure stay
 /// unit-testable. Tab-assignment policy lives on the engine.
 public struct PaneLayout {
-    /// Hit width of dividers in points (visual line is thinner).
-    public static let dividerHitWidth: Float = 7
+    /// Visible gap between sibling panes in points. Leaves are inset by half
+    /// of it on each side of a cut, so pane boundaries are always visible.
+    public static let gutterWidth: Float = 6
+    /// Hit width of dividers in points: the gutter plus a little slop on
+    /// each side so the strip is easy to grab.
+    public static let dividerHitWidth: Float = 10
     /// Minimum pane width/height in points.
     public static let minPaneSize: Float = 80
+    /// Default step for keyboard divider nudges (fraction of the split).
+    public static let nudgeStep: Float = 0.05
 
     public var root: PaneNode
     public var focusedLeafID: UUID
@@ -161,19 +172,23 @@ public struct PaneLayout {
         }
     }
 
+    /// Child rects of a split. The cut sits at `ratio` of the extent and the
+    /// gutter is carved symmetrically around it.
     private func splitRects(rect: PaneRect, axis: PaneSplitAxis, ratio: Float) -> (PaneRect, PaneRect) {
         let r = max(0.01, min(0.99, ratio))
         switch axis {
         case .sideBySide:
             let cut = rect.w * r
+            let half = min(Self.gutterWidth * 0.5, cut, rect.w - cut)
             return (
-                PaneRect(x: rect.x, y: rect.y, w: cut, h: rect.h),
-                PaneRect(x: rect.x + cut, y: rect.y, w: rect.w - cut, h: rect.h))
+                PaneRect(x: rect.x, y: rect.y, w: cut - half, h: rect.h),
+                PaneRect(x: rect.x + cut + half, y: rect.y, w: rect.w - cut - half, h: rect.h))
         case .stacked:
             let cut = rect.h * r
+            let half = min(Self.gutterWidth * 0.5, cut, rect.h - cut)
             return (
-                PaneRect(x: rect.x, y: rect.y, w: rect.w, h: cut),
-                PaneRect(x: rect.x, y: rect.y + cut, w: rect.w, h: rect.h - cut))
+                PaneRect(x: rect.x, y: rect.y, w: rect.w, h: cut - half),
+                PaneRect(x: rect.x, y: rect.y + cut + half, w: rect.w, h: rect.h - cut - half))
         }
     }
 
@@ -203,7 +218,8 @@ public struct PaneLayout {
         collectDividers(second, rect: b, into: &out)
     }
 
-    /// Leaf containing a window point, or nil when outside the canvas.
+    /// Leaf containing a window point, or nil when outside the canvas or in
+    /// a gutter between panes (gutters belong to the divider widgets).
     public func hitTest(point: (x: Float, y: Float), canvas: PaneRect) -> PaneNode? {
         guard canvas.contains(x: point.x, y: point.y) else { return nil }
         return hitTest(point: point, node: root, rect: canvas)
@@ -218,7 +234,10 @@ public struct PaneLayout {
             if a.contains(x: point.x, y: point.y) {
                 return hitTest(point: point, node: first, rect: a)
             }
-            return hitTest(point: point, node: second, rect: b)
+            if b.contains(x: point.x, y: point.y) {
+                return hitTest(point: point, node: second, rect: b)
+            }
+            return nil
         }
     }
 
@@ -250,21 +269,25 @@ public struct PaneLayout {
         return newLeafID
     }
 
+    /// Recursively split `targetID` along `newAxis`. Existing splits keep
+    /// their own axis (`nodeAxis`); the two names must stay distinct — when
+    /// the binding shadowed the parameter, every split below the root
+    /// inherited its parent's axis (VSPLIT then HSPLIT split side-by-side).
     private func split(
-        node: PaneNode, targetID: UUID, axis: PaneSplitAxis,
+        node: PaneNode, targetID: UUID, axis newAxis: PaneSplitAxis,
         newLeafID: UUID, newTabID: UUID?
     ) -> PaneNode {
         switch node {
         case .leaf(let id, let tabID) where id == targetID:
             return .split(
-                id: UUID(), axis: axis, ratio: 0.5,
+                id: UUID(), axis: newAxis, ratio: 0.5,
                 first: .leaf(id: id, tabID: tabID),
                 second: .leaf(id: newLeafID, tabID: newTabID))
-        case .split(let id, let axis, let ratio, let first, let second):
+        case .split(let id, let nodeAxis, let ratio, let first, let second):
             return .split(
-                id: id, axis: axis, ratio: ratio,
-                first: split(node: first, targetID: targetID, axis: axis, newLeafID: newLeafID, newTabID: newTabID),
-                second: split(node: second, targetID: targetID, axis: axis, newLeafID: newLeafID, newTabID: newTabID))
+                id: id, axis: nodeAxis, ratio: ratio,
+                first: split(node: first, targetID: targetID, axis: newAxis, newLeafID: newLeafID, newTabID: newTabID),
+                second: split(node: second, targetID: targetID, axis: newAxis, newLeafID: newLeafID, newTabID: newTabID))
         case .leaf:
             return node
         }
@@ -343,37 +366,133 @@ public struct PaneLayout {
     /// minimum pane size. Canvas is the FULL canvas (ratios are relative to
     /// each split's own rect, resolved by walking the tree).
     public mutating func setRatioFromPoint(splitID: UUID, point: (x: Float, y: Float), canvas: PaneRect) {
-        root = setRatio(node: root, splitID: splitID, point: point, rect: canvas)
+        root = updateRatio(node: root, splitID: splitID, rect: canvas) { axis, rect, _ in
+            switch axis {
+            case .sideBySide: return (point.x - rect.x) / rect.w
+            case .stacked: return (point.y - rect.y) / rect.h
+            }
+        }
     }
 
-    private func setRatio(
-        node: PaneNode, splitID: UUID,
-        point: (x: Float, y: Float), rect: PaneRect
+    /// Set a split's ratio directly (e.g. double-click reset to 0.5),
+    /// clamped to the minimum pane size within `canvas`.
+    public mutating func setRatio(splitID: UUID, ratio: Float, canvas: PaneRect) {
+        root = updateRatio(node: root, splitID: splitID, rect: canvas) { _, _, _ in ratio }
+    }
+
+    /// Current ratio of a split (nil for unknown IDs).
+    public func ratio(of splitID: UUID) -> Float? {
+        ratio(of: splitID, in: root)
+    }
+
+    private func ratio(of splitID: UUID, in node: PaneNode) -> Float? {
+        guard case .split(let id, _, let ratio, let first, let second) = node else { return nil }
+        if id == splitID { return ratio }
+        return self.ratio(of: splitID, in: first) ?? self.ratio(of: splitID, in: second)
+    }
+
+    /// Walk to `splitID` tracking its rect, then replace its ratio with
+    /// `compute(axis, rect, currentRatio)` clamped so both sides keep at
+    /// least `minPaneSize` (plus their half of the gutter).
+    private func updateRatio(
+        node: PaneNode, splitID: UUID, rect: PaneRect,
+        _ compute: (PaneSplitAxis, PaneRect, Float) -> Float
     ) -> PaneNode {
         guard case .split(let id, let axis, let ratio, let first, let second) = node else {
             return node
         }
         if id == splitID {
-            let total: Float
-            let pos: Float
-            switch axis {
-            case .sideBySide:
-                total = rect.w
-                pos = point.x - rect.x
-            case .stacked:
-                total = rect.h
-                pos = point.y - rect.y
-            }
-            guard total > Self.minPaneSize * 2 else { return node }
-            let lo = Self.minPaneSize / total
-            let clamped = max(lo, min(1 - lo, pos / total))
+            let total: Float = axis == .sideBySide ? rect.w : rect.h
+            let minSide = Self.minPaneSize + Self.gutterWidth * 0.5
+            guard total > minSide * 2 else { return node }
+            let lo = minSide / total
+            let clamped = max(lo, min(1 - lo, compute(axis, rect, ratio)))
             return .split(id: id, axis: axis, ratio: clamped, first: first, second: second)
         }
         let (a, b) = splitRects(rect: rect, axis: axis, ratio: ratio)
         return .split(
             id: id, axis: axis, ratio: ratio,
-            first: setRatio(node: first, splitID: splitID, point: point, rect: a),
-            second: setRatio(node: second, splitID: splitID, point: point, rect: b))
+            first: updateRatio(node: first, splitID: splitID, rect: a, compute),
+            second: updateRatio(node: second, splitID: splitID, rect: b, compute))
+    }
+
+    // MARK: Equalize / nudge
+
+    /// Give every pane an equal share along each run of same-axis splits
+    /// (`A | B | C` → thirds; `A | (B / C)` → halves both ways).
+    public mutating func equalizeAll() {
+        root = equalize(root)
+    }
+
+    private func equalize(_ node: PaneNode) -> PaneNode {
+        guard case .split(let id, let axis, _, let first, let second) = node else { return node }
+        let a = Float(span(first, along: axis))
+        let b = Float(span(second, along: axis))
+        return .split(
+            id: id, axis: axis, ratio: a / (a + b),
+            first: equalize(first), second: equalize(second))
+    }
+
+    /// Number of panes laid out side by side along `axis` within `node`.
+    private func span(_ node: PaneNode, along axis: PaneSplitAxis) -> Int {
+        if case .split(_, let nodeAxis, _, let first, let second) = node, nodeAxis == axis {
+            return span(first, along: axis) + span(second, along: axis)
+        }
+        return 1
+    }
+
+    /// Splits from the root down to `leafID`, each with the side the leaf is
+    /// on. Empty when the leaf is the root or unknown.
+    public func ancestorSplits(of leafID: UUID)
+        -> [(id: UUID, axis: PaneSplitAxis, ratio: Float, leafInFirst: Bool)]
+    {
+        var path: [(id: UUID, axis: PaneSplitAxis, ratio: Float, leafInFirst: Bool)] = []
+        _ = collectAncestors(root, leafID: leafID, into: &path)
+        return path
+    }
+
+    private func collectAncestors(
+        _ node: PaneNode, leafID: UUID,
+        into path: inout [(id: UUID, axis: PaneSplitAxis, ratio: Float, leafInFirst: Bool)]
+    ) -> Bool {
+        switch node {
+        case .leaf(let id, _):
+            return id == leafID
+        case .split(let id, let axis, let ratio, let first, let second):
+            path.append((id, axis, ratio, true))
+            if collectAncestors(first, leafID: leafID, into: &path) { return true }
+            path[path.count - 1].leafInFirst = false
+            if collectAncestors(second, leafID: leafID, into: &path) { return true }
+            path.removeLast()
+            return false
+        }
+    }
+
+    /// Move the divider nearest the focused pane on the arrow's axis by
+    /// `step` (fraction of that split) in the arrow's direction.
+    /// - Returns: False when no ancestor split runs along that axis.
+    @discardableResult
+    public mutating func nudgeFocused(
+        _ direction: PaneNudgeDirection, step: Float = PaneLayout.nudgeStep, canvas: PaneRect
+    ) -> Bool {
+        let axis: PaneSplitAxis = (direction == .left || direction == .right) ? .sideBySide : .stacked
+        guard let split = ancestorSplits(of: focusedLeafID).last(where: { $0.axis == axis }) else {
+            return false
+        }
+        let sign: Float = (direction == .right || direction == .down) ? 1 : -1
+        setRatio(splitID: split.id, ratio: split.ratio + sign * step, canvas: canvas)
+        return true
+    }
+
+    /// Grow (positive) or shrink (negative) the focused pane along its
+    /// immediate parent split by `delta` (fraction of that split).
+    /// - Returns: False when the layout is not split.
+    @discardableResult
+    public mutating func resizeFocused(by delta: Float, canvas: PaneRect) -> Bool {
+        guard let split = ancestorSplits(of: focusedLeafID).last else { return false }
+        let ratio = split.leafInFirst ? split.ratio + delta : split.ratio - delta
+        setRatio(splitID: split.id, ratio: ratio, canvas: canvas)
+        return true
     }
 
     // MARK: Tab assignment

@@ -109,7 +109,8 @@
               (zr-item "HSPLIT" "Split Stacked" nil)
               (zr-item "UNSPLIT" "Remove Splits" nil)
               (zr-item "VPMAX" "Maximize Pane" nil)
-              (zr-item "VPMIN" "Restore Panes" nil)))
+              (zr-item "VPMIN" "Restore Panes" nil)
+              (zr-item "VPEQUAL" "Equalize Panes" nil)))
           (zr-sep)
           (zr-sub "Display"
             (list
@@ -374,6 +375,7 @@
                 (list
                   (zr-small "VPMAX"     "Maximize Pane" "vport" nil)
                   (zr-item "VPMIN"     "Restore Panes" nil)
+                  (zr-item "VPEQUAL"   "Equalize Panes" nil)
                   (zr-item "CLOSEPANE" "Close Pane"    nil)))))
 
           (zr-panel "Display"

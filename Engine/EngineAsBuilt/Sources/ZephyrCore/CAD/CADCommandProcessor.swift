@@ -213,6 +213,8 @@ public struct CommandDescriptor: Sendable {
         CommandDescriptor(canonicalName: "CLOSEPANE",  aliases: [],                category: .view,    syntax: "", description: "Close the focused pane (VPORTS JOIN)"),
         CommandDescriptor(canonicalName: "VPMAX",      aliases: [],                category: .view,    syntax: "", description: "Maximize the focused pane"),
         CommandDescriptor(canonicalName: "VPMIN",      aliases: [],                category: .view,    syntax: "", description: "Restore the split arrangement saved by VPMAX"),
+        CommandDescriptor(canonicalName: "VPEQUAL",    aliases: ["EQUALIZE"],      category: .view,    syntax: "", description: "Resize all split panes to equal sizes"),
+        CommandDescriptor(canonicalName: "VPRESIZE",   aliases: [],                category: .view,    syntax: "[+|-]percent", description: "Grow (+) or shrink (-) the focused pane by a percentage of its parent split", bareEnterExecutes: true),
         // --- Draw ---
         CommandDescriptor(canonicalName: "LINE",       aliases: ["L"],             category: .draw,    syntax: "", description: "Draw a line segment by picking two points"),
         CommandDescriptor(canonicalName: "POLYLINE",   aliases: ["PL", "PLINE"],   category: .draw,    syntax: "", description: "Draw a multi-segment polyline"),
@@ -863,6 +865,25 @@ public final class CADCommandProcessor {
         case "VPMIN":
             if engine?.vpMinRestore() == false {
                 print("[CAD] No saved split arrangement to restore.")
+            }
+            clearCommand()
+        case "VPEQUAL", "EQUALIZE":
+            if engine?.equalizeMainPanes() == false {
+                print("[CAD] The main view is not split.")
+            }
+            clearCommand()
+        case _ where upper == "VPRESIZE" || upper.hasPrefix("VPRESIZE "):
+            let argument = String(upper.dropFirst("VPRESIZE".count))
+                .trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "%", with: "")
+            if argument.isEmpty {
+                print("[CAD] Usage: VPRESIZE <+N|-N>  (percent of the focused pane's parent split, e.g. VPRESIZE +10)")
+            } else if let percent = Float(argument.hasPrefix("+") ? String(argument.dropFirst()) : argument) {
+                if engine?.resizeFocusedPane(by: percent / 100) == false {
+                    print("[CAD] The main view is not split.")
+                }
+            } else {
+                print("[CAD] VPRESIZE expects a signed percentage (got '\(argument)').")
             }
             clearCommand()
         case _ where upper == "VPORTS" || upper.hasPrefix("VPORTS "):

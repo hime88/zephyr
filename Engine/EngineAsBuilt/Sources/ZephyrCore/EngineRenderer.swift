@@ -191,6 +191,10 @@ public final class EngineRenderer {
     /// This catches every pan source, including radial navigation callbacks.
     internal var _panProxyActiveThisFrame: Bool = false
     internal var _lastRenderedCameraOffset: (x: Double, y: Double)? = nil
+    /// Divider currently being dragged: its split ID, the grab offset from
+    /// the cut along the drag axis (so the cut doesn't jump to the cursor),
+    /// and whether a double-click reset suppressed the drag until release.
+    private var _paneDividerGrab: (id: UUID, offset: Float, suppressed: Bool)? = nil
 
     public init(engine: PhrostEngine) {
         self.engine = engine
@@ -1526,7 +1530,8 @@ public final class EngineRenderer {
         SDL_EndGPURenderPass(renderPass)
     }
 
-    /// Divider drag handles plus the focused-pane outline.
+    /// Pane gutters, divider drag handles, the focused-pane outline, and
+    /// per-pane identity badges.
     ///
     /// Each divider's invisible button lives in its own strip-sized window:
     /// widget calls need a current window (the split frame has none open at
@@ -1534,7 +1539,18 @@ public final class EngineRenderer {
     /// or activate), and a canvas-sized host window would make
     /// `WantCaptureMouse` true over the whole canvas, swallowing CAD input.
     /// A window exactly covering the hit strip captures only there.
+    ///
+    /// Gutters are always painted (not just on hover) so pane boundaries
+    /// stay visible; hovering shows a resize cursor, dragging tints the
+    /// gutter gold, and double-clicking resets that split to 50/50.
     private func renderPaneDividers(canvas: PaneRect, focusedID: UUID) {
+        let theme = engine.ui.theme
+        // Background list, not foreground: chrome must stay under popup
+        // windows (e.g. command autocomplete).
+        let dl = igGetBackgroundDrawList(nil)
+        let mouse = ImGuiGetIO()?.pointee.MousePos ?? ImVec2(x: -1, y: -1)
+        let gutterHalf = PaneLayout.gutterWidth * 0.5
+
         for divider in engine.mainPanes.dividers(canvas: canvas) {
             ImGuiSetNextWindowPos(
                 ImVec2(x: divider.rect.x, y: divider.rect.y),
@@ -1556,53 +1572,163 @@ public final class EngineRenderer {
                 | Int32(ImGuiWindowFlags_NoNavFocus.rawValue)
             var hovered = false
             var active = false
+            var activated = false
+            var deactivated = false
+            var doubleClicked = false
             if igBegin("##panedividerwin_\(divider.id.uuidString)", &open, stripFlags) {
                 _ = ImGuiInvisibleButton("##panedivider", ImVec2(x: divider.rect.w, y: divider.rect.h), 0)
                 hovered = ImGuiIsItemHovered(0)
                 active = ImGuiIsItemActive()
+                activated = ImGuiIsItemActivated()
+                deactivated = ImGuiIsItemDeactivated()
+                doubleClicked = hovered && ImGuiIsMouseDoubleClicked(0)
             }
             igEnd()
             ImGuiPopStyleVar(1)
+
+            // Cut position along the drag axis (centre of the hit strip).
+            let isSideBySide = divider.axis == .sideBySide
+            let cut = isSideBySide
+                ? divider.rect.x + divider.rect.w * 0.5
+                : divider.rect.y + divider.rect.h * 0.5
+            let mouseAlong = isSideBySide ? mouse.x : mouse.y
+
             if hovered || active {
-                // Background list, not foreground: chrome lines must stay
-                // under popup windows (e.g. command autocomplete).
-                let dl = igGetBackgroundDrawList(nil)
-                let col = active
-                    ? igGetColorU32_Vec4(engine.ui.theme.brandGold)
-                    : igGetColorU32_Vec4(ImVec4(x: 1, y: 1, z: 1, w: 0.35))
-                switch divider.axis {
-                case .sideBySide:
-                    let cx = divider.rect.x + divider.rect.w * 0.5
-                    ImDrawListAddLine(
-                        dl, ImVec2(x: cx, y: divider.rect.y),
-                        ImVec2(x: cx, y: divider.rect.y + divider.rect.h),
-                        col, active ? 3.0 : 2.0)
-                case .stacked:
-                    let cy = divider.rect.y + divider.rect.h * 0.5
-                    ImDrawListAddLine(
-                        dl, ImVec2(x: divider.rect.x, y: cy),
-                        ImVec2(x: divider.rect.x + divider.rect.w, y: cy),
-                        col, active ? 3.0 : 2.0)
+                ImGuiSetMouseCursor(Int32(
+                    isSideBySide
+                        ? ImGuiMouseCursor_ResizeEW.rawValue
+                        : ImGuiMouseCursor_ResizeNS.rawValue))
+            }
+            if activated {
+                _paneDividerGrab = (divider.id, mouseAlong - cut, false)
+            }
+            if doubleClicked {
+                engine.mainPanes.setRatio(splitID: divider.id, ratio: 0.5, canvas: canvas)
+                if _paneDividerGrab?.id == divider.id {
+                    _paneDividerGrab?.suppressed = true
+                }
+            } else if active, let grab = _paneDividerGrab, grab.id == divider.id, !grab.suppressed {
+                let target = mouseAlong - grab.offset
+                engine.mainPanes.setRatioFromPoint(
+                    splitID: divider.id,
+                    point: isSideBySide ? (target, mouse.y) : (mouse.x, target),
+                    canvas: canvas)
+            }
+            if deactivated, _paneDividerGrab?.id == divider.id {
+                _paneDividerGrab = nil
+            }
+
+            // Gutter: always painted so pane boundaries are visible.
+            let gMin = isSideBySide
+                ? ImVec2(x: cut - gutterHalf, y: divider.rect.y)
+                : ImVec2(x: divider.rect.x, y: cut - gutterHalf)
+            let gMax = isSideBySide
+                ? ImVec2(x: cut + gutterHalf, y: divider.rect.y + divider.rect.h)
+                : ImVec2(x: divider.rect.x + divider.rect.w, y: cut + gutterHalf)
+            let fill: ImVec4
+            if active {
+                fill = theme.brandGold
+            } else if hovered {
+                fill = ImVec4(x: theme.brandGold.x, y: theme.brandGold.y, z: theme.brandGold.z, w: 0.55)
+            } else {
+                fill = theme.panelBg
+            }
+            ImDrawListAddRectFilled(dl, gMin, gMax, igGetColorU32_Vec4(fill), 0.0, 0)
+            if !active && !hovered {
+                // Hairline edges keep the gutter readable on any background.
+                let edge = igGetColorU32_Vec4(theme.border)
+                if isSideBySide {
+                    ImDrawListAddLine(dl, ImVec2(x: gMin.x, y: gMin.y), ImVec2(x: gMin.x, y: gMax.y), edge, 1.0)
+                    ImDrawListAddLine(dl, ImVec2(x: gMax.x, y: gMin.y), ImVec2(x: gMax.x, y: gMax.y), edge, 1.0)
+                } else {
+                    ImDrawListAddLine(dl, ImVec2(x: gMin.x, y: gMin.y), ImVec2(x: gMax.x, y: gMin.y), edge, 1.0)
+                    ImDrawListAddLine(dl, ImVec2(x: gMin.x, y: gMax.y), ImVec2(x: gMax.x, y: gMax.y), edge, 1.0)
                 }
             }
-            if active, let io = ImGuiGetIO() {
-                let mp = io.pointee.MousePos
-                engine.mainPanes.setRatioFromPoint(
-                    splitID: divider.id, point: (mp.x, mp.y), canvas: canvas)
+
+            // Grip: three dots at the middle of the gutter.
+            let gripColor = igGetColorU32_Vec4(
+                active ? theme.panelBg : (hovered ? theme.textPrimary : theme.textDim))
+            let mid = isSideBySide
+                ? ImVec2(x: cut, y: divider.rect.y + divider.rect.h * 0.5)
+                : ImVec2(x: divider.rect.x + divider.rect.w * 0.5, y: cut)
+            for i in -1...1 {
+                let offset = Float(i) * 6
+                let p = isSideBySide
+                    ? ImVec2(x: mid.x, y: mid.y + offset)
+                    : ImVec2(x: mid.x + offset, y: mid.y)
+                ImDrawListAddCircleFilled(dl, p, 1.5, gripColor, 8)
             }
         }
 
         // Gold outline around the focused pane (background list, like the
-        // divider lines, so it never paints over popup windows).
+        // gutters, so it never paints over popup windows). Drawn inside the
+        // leaf rect so it doesn't sit on the gutter.
         let leaves = engine.mainPanes.leafRects(canvas: canvas)
         if let focused = leaves.first(where: { $0.id == focusedID }) {
-            let dl = igGetBackgroundDrawList(nil)
             ImDrawListAddRect(
                 dl,
                 ImVec2(x: focused.rect.x + 1, y: focused.rect.y + 1),
                 ImVec2(x: focused.rect.x + focused.rect.w - 1, y: focused.rect.y + focused.rect.h - 1),
-                igGetColorU32_Vec4(engine.ui.theme.brandGold), 0.0, 2.0, 0)
+                igGetColorU32_Vec4(theme.brandGold), 0.0, 2.0, 0)
         }
+
+        renderPaneBadges(leaves: leaves, focusedID: focusedID, mouse: mouse)
+    }
+
+    /// Top-left identity badge per pane: `<tab> · <view>`. The focused pane's
+    /// badge is gold; others are muted. A badge fades while the cursor is
+    /// over it so it never hides geometry being picked.
+    private func renderPaneBadges(
+        leaves: [(id: UUID, tabID: UUID?, rect: PaneRect)],
+        focusedID: UUID,
+        mouse: ImVec2
+    ) {
+        let theme = engine.ui.theme
+        let dl = igGetBackgroundDrawList(nil)
+        let padX: Float = 6
+        let padY: Float = 2
+        let inset: Float = 6
+        for leaf in leaves {
+            let label = paneBadgeLabel(leafID: leaf.id, tabID: leaf.tabID, focusedID: focusedID)
+            let textSize = ImGuiCalcTextSize(label, nil, false, -1)
+            let pillW = textSize.x + padX * 2
+            let pillH = textSize.y + padY * 2
+            // Skip panes too small to fit the badge without crowding.
+            guard leaf.rect.w > pillW + inset * 4, leaf.rect.h > pillH + inset * 4 else { continue }
+            let pMin = ImVec2(x: leaf.rect.x + inset, y: leaf.rect.y + inset)
+            let pMax = ImVec2(x: pMin.x + pillW, y: pMin.y + pillH)
+            let underMouse = mouse.x >= pMin.x && mouse.x < pMax.x
+                && mouse.y >= pMin.y && mouse.y < pMax.y
+            let fade: Float = underMouse ? 0.2 : 1.0
+            let isFocused = leaf.id == focusedID
+            let bg = isFocused
+                ? ImVec4(x: theme.brandGold.x, y: theme.brandGold.y, z: theme.brandGold.z, w: 0.9 * fade)
+                : ImVec4(x: theme.panelBg.x, y: theme.panelBg.y, z: theme.panelBg.z, w: 0.75 * fade)
+            let fg = isFocused
+                ? ImVec4(x: 0.08, y: 0.08, z: 0.08, w: fade)
+                : ImVec4(x: theme.textDim.x, y: theme.textDim.y, z: theme.textDim.z, w: fade)
+            pushBackgroundClip(leaf.rect)
+            ImDrawListAddRectFilled(dl, pMin, pMax, igGetColorU32_Vec4(bg), 4.0, 0)
+            ImDrawListAddText(
+                dl, ImVec2(x: pMin.x + padX, y: pMin.y + padY),
+                igGetColorU32_Vec4(fg), label, nil)
+            popBackgroundClip()
+        }
+    }
+
+    /// Badge text for a pane: tab name plus the drawing view it shows.
+    private func paneBadgeLabel(leafID: UUID, tabID: UUID?, focusedID: UUID) -> String {
+        guard let tabID, let tab = engine.tabManager.tab(for: tabID) else { return "(empty)" }
+        guard !tab.drawingViews.isEmpty else { return tab.displayName }
+        var viewIndex = tab.activeViewIndex
+        if !(leafID == focusedID && tabID == engine.tabManager.activeTab?.id) {
+            viewIndex = engine.paneViews.entry(leafID: leafID, tabID: tabID)?.viewIndex
+                ?? tab.activeViewIndex
+        }
+        viewIndex = min(max(viewIndex, 0), tab.drawingViews.count - 1)
+        let viewName = tab.drawingViews[viewIndex].name
+        return viewName.isEmpty ? tab.displayName : "\(tab.displayName) · \(viewName)"
     }
 
     /// Push a CAD camera matrix (plus drag/grip hidden handles for primary

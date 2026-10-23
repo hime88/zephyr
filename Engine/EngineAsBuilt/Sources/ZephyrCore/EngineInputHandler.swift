@@ -744,6 +744,19 @@ internal final class EngineInputHandler {
                     if engine.io.pointee.KeyShift {
                         engine.commandProcessor.executeCommand("PDFIMPORT")
                     }
+                // ── Ctrl/Cmd+Alt+Arrow nudges the focused pane's divider ──
+                case SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT, SDL_SCANCODE_UP, SDL_SCANCODE_DOWN:
+                    let altHeld = (engine.io != nil && engine.io.pointee.KeyAlt)
+                        || (keyMod & SDL_KMOD_ALT) != 0
+                    guard altHeld, engine.mainPanes.isSplit else { break }
+                    let direction: PaneNudgeDirection
+                    switch e.key.scancode {
+                    case SDL_SCANCODE_LEFT: direction = .left
+                    case SDL_SCANCODE_RIGHT: direction = .right
+                    case SDL_SCANCODE_UP: direction = .up
+                    default: direction = .down
+                    }
+                    _ = engine.nudgeFocusedPane(direction)
                 default:
                     break
                 }

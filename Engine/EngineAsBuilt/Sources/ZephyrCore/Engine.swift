@@ -1361,6 +1361,38 @@ public final class PhrostEngine {
         return toggleMainPanes()
     }
 
+    /// The main canvas as a `PaneRect` (nil before the first layout).
+    private var mainPaneCanvas: PaneRect? {
+        guard let c = ui.drawingViewportRect else { return nil }
+        return PaneRect(x: c.x, y: c.y, w: c.w, h: c.h)
+    }
+
+    /// Give every split pane an equal share (VPEQUAL).
+    /// - Returns: False when the main view is not split.
+    @discardableResult
+    public func equalizeMainPanes() -> Bool {
+        guard mainPanes.isSplit else { return false }
+        mainPanes.equalizeAll()
+        return true
+    }
+
+    /// Move the divider nearest the focused pane (Ctrl+Alt+Arrow).
+    /// - Returns: False when no divider runs along that axis.
+    @discardableResult
+    public func nudgeFocusedPane(_ direction: PaneNudgeDirection) -> Bool {
+        guard mainPanes.isSplit, let canvas = mainPaneCanvas else { return false }
+        return mainPanes.nudgeFocused(direction, canvas: canvas)
+    }
+
+    /// Grow (positive) or shrink (negative) the focused pane by `delta`
+    /// (fraction of its parent split) — VPRESIZE.
+    /// - Returns: False when the main view is not split.
+    @discardableResult
+    public func resizeFocusedPane(by delta: Float) -> Bool {
+        guard mainPanes.isSplit, let canvas = mainPaneCanvas else { return false }
+        return mainPanes.resizeFocused(by: delta, canvas: canvas)
+    }
+
     /// Activate the focused pane's tab after a structural pane change.
     private func activatePaneTab() {
         if let tabID = mainPanes.focusedTabID,
