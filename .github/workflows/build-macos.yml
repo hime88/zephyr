@@ -336,6 +336,7 @@ jobs:
           cp -R Fonts "$APP_RESOURCES/"
           cp -R "Plot Styles" "$APP_RESOURCES/" || true
           cp -R Patterns "$APP_RESOURCES/" || true
+          cp -R lisp "$APP_RESOURCES/" || true
           cp Shaders/*.msl "$APP_RESOURCES/"
 
           # Copy Frameworks

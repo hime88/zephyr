@@ -248,7 +248,7 @@ parts:
       cp -L "$bin_dir/Zephyr" "$bin_dir"/libSDL3*.so* "$bin_dir"/libz-ng.so* "$dest/"
       cp -L "$bin_dir"/libpdfium.so "$dest/" 2>/dev/null || echo "(no libpdfium.so staged)"
       cp -L "$bin_dir"/*.spv "$dest/"
-      for asset in "Fonts" "Plot Styles" "Patterns"; do
+      for asset in "Fonts" "Plot Styles" "Patterns" "lisp"; do
         if [ -d "$bin_dir/$asset" ]; then
           cp -R "$bin_dir/$asset" "$dest/"
         fi

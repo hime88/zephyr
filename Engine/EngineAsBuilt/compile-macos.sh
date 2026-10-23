@@ -44,6 +44,7 @@ mkdir -p "$BUILD_DIR"
 cp -R Fonts "$BUILD_DIR/"
 cp -R "Plot Styles" "$BUILD_DIR/" || true
 cp -R Patterns "$BUILD_DIR/" || true
+cp -R lisp "$BUILD_DIR/" || true
 cp Shaders/*.msl "$BUILD_DIR/"
 if [ -f "libpdfium.dylib" ]; then
     cp libpdfium.dylib "$BUILD_DIR/"
