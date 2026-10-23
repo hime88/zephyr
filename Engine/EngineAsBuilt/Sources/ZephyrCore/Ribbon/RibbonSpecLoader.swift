@@ -171,21 +171,14 @@ public final class RibbonSpecLoader {
         }
     }
 
-    /// Copies the bundled definition into the user support directory the
-    /// first time the app runs, so it is editable. Returns the user file
-    /// when one exists afterwards.
+    /// No-op: user definitions are only loaded if placed manually by the user,
+    /// preventing stale user copies from shadowing app updates.
     @discardableResult
     public static func seedUserDefinitionIfNeeded(
         fileManager: FileManager = .default,
         bundled: URL? = nil
     ) -> URL? {
-        let source = bundled
-            ?? bundledFileURL()
-            ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-                .appendingPathComponent("lisp/ribbon.lsp")
-        guard let target = userFileURL() else { return nil }
-        // Nothing to seed from: the loader falls back to the built-in model.
-        return seed(from: source, to: target, fileManager: fileManager)
+        return nil
     }
 
     // MARK: - Reload

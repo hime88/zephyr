@@ -93,11 +93,9 @@ struct ZephyrApp {
         print("Engine shut down.")
     }
 
-    /// Seeds `<appSupport>/Zephyr/lisp/ribbon.lsp` from the bundled default
-    /// and attaches the loader that owns the live ribbon model.
+    /// Attaches the loader that owns the live ribbon model.
     private static func setupRibbon(on engine: PhrostEngine) {
         engine.commandProcessor.synchronizeToggleSysvars(engine: engine)
-        RibbonSpecLoader.seedUserDefinitionIfNeeded()
         let loader = RibbonSpecLoader(
             processor: engine.commandProcessor,
             documentProvider: { [weak engine] in

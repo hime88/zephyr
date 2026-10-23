@@ -42,8 +42,7 @@ struct CommandLineUI {
 
         if !isCommandLineActive {
             _wasCommandLineActive = false
-            if engine.commandProcessor.activeFeatureCommand != nil,
-               let prompt = engine.commandProcessor.commandPrompt,
+            if let prompt = engine.commandProcessor.commandPrompt,
                !prompt.isEmpty {
                 renderPassiveFeaturePrompt(engine: engine, prompt: prompt, dw: dw)
             }
@@ -116,8 +115,7 @@ struct CommandLineUI {
         let enteredCmdLine = igBegin("##CmdLine", nil, wflags)
         igBringWindowToDisplayFront(igGetCurrentWindow())
         if enteredCmdLine {
-            if featureInputActive,
-               let commandPrompt = engine.commandProcessor.commandPrompt,
+            if let commandPrompt = engine.commandProcessor.commandPrompt,
                !commandPrompt.isEmpty {
                 ImGuiPushStyleColor(Int32(ImGuiCol_Text.rawValue), engine.ui.theme.textPrimary)
                 ImGuiTextWrappedV(commandPrompt)

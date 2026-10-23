@@ -86,10 +86,10 @@
           (zr-item "UNDO" "Undo" (list (zr-enable (zr-undoable))))
           (zr-item "REDO" "Redo" (list (zr-enable (zr-redoable))))
           (zr-sep)
-          (zr-item "ERASE" "Erase" (list (zr-enable (zr-sel 1))))
+          (zr-item "ERASE" "Erase" nil)
           (zr-sub "Clipboard"
             (list
-              (zr-item "COPYCLIP" "Copy" (list (zr-enable (zr-sel 1))))
+              (zr-item "COPYCLIP" "Copy" nil)
               (zr-item "PASTECLIP" "Paste" nil)
               (zr-item "PASTEORIG" "Paste to Original Coordinates" nil)))
           (zr-sep)
@@ -185,19 +185,19 @@
 
       (zr-menu "Modify"
         (list
-          (zr-item "MOVE" "Move" (list (zr-enable (zr-sel 1))))
-          (zr-item "COPY" "Copy" (list (zr-enable (zr-sel 1))))
-          (zr-item "ROTATE" "Rotate" (list (zr-enable (zr-sel 1))))
-          (zr-item "SCALE" "Scale" (list (zr-enable (zr-sel 1))))
-          (zr-item "ALIGN" "Align" (list (zr-enable (zr-sel 1))))
-          (zr-item "ERASE" "Erase" (list (zr-enable (zr-sel 1))))
+          (zr-item "MOVE" "Move" nil)
+          (zr-item "COPY" "Copy" nil)
+          (zr-item "ROTATE" "Rotate" nil)
+          (zr-item "SCALE" "Scale" nil)
+          (zr-item "ALIGN" "Align" nil)
+          (zr-item "ERASE" "Erase" nil)
           (zr-sep)
-          (zr-item "TRIM" "Trim" (list (zr-enable (zr-sel 1))))
+          (zr-item "TRIM" "Trim" nil)
           (zr-item "OFFSET" "Offset" nil)
           (zr-item "FILLET" "Fillet" nil)
           (zr-item "CHAMFER" "Chamfer" nil)
           (zr-item "JOIN" "Join" (list (zr-enable (zr-sel 1))))
-          (zr-item "EXPLODE" "Explode" (list (zr-enable (zr-sel 1))))
+          (zr-item "EXPLODE" "Explode" nil)
           (zr-item "MATCHPROP" "Match Properties" (list (zr-enable (zr-sel 1))))
           (zr-item "TORIENT" "Text Orient" (list (zr-enable (zr-sel 1))))
           (zr-sep)
@@ -258,11 +258,11 @@
 
           (zr-panel "Modify"
             (list
-              (zr-big   "MOVE"    "Move"   "move"   (list (zr-enable (zr-sel 1))))
-              (zr-big   "ERASE"   "Erase"  "erase"  (list (zr-enable (zr-sel 1))))
-              (zr-small "COPY"    "Copy"   "copy"   (list (zr-enable (zr-sel 1))))
-              (zr-small "ROTATE"  "Rotate" "rotate" (list (zr-enable (zr-sel 1))))
-              (zr-small "SCALE"   "Scale"  "scale"  (list (zr-enable (zr-sel 1))))
+              (zr-big   "MOVE"    "Move"   "move"   nil)
+              (zr-big   "ERASE"   "Erase"  "erase"  nil)
+              (zr-small "COPY"    "Copy"   "copy"   nil)
+              (zr-small "ROTATE"  "Rotate" "rotate" nil)
+              (zr-small "SCALE"   "Scale"  "scale"  nil)
               (zr-drop  "More"
                 (list
                   (zr-item "TRIM"      "Trim"       nil)

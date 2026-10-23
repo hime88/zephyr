@@ -362,6 +362,10 @@ internal final class EngineInputHandler {
                     // No clear here: an entity drag only becomes
                     // dragActive after the motion threshold, and the
                     // claim must survive until mouse-up to cover it.
+                } else if Int(e.button.button) == 3 && !handledByImGui {
+                    if engine.commandProcessor.isSelectingObjects {
+                        engine.commandProcessor.confirmObjectSelection()
+                    }
                 } else if Int(e.button.button) == SDL_BUTTON_MIDDLE && !handledByImGui {
                     engine.interaction.beginWindowGesture(
                         windowID: target.id, tabID: engine.tabManager.activeTab?.id)
@@ -614,8 +618,12 @@ internal final class EngineInputHandler {
            !engine.ui.layerMoveActive,
            !engine.interaction.gripActive,
            !engine.interaction.dragActive,
-           !engine.interaction.rectSelectActive,
-           let featureCmd = engine.commandProcessor.activeFeatureCommand {
+           !engine.interaction.rectSelectActive {
+            if engine.commandProcessor.isSelectingObjects {
+                engine.commandProcessor.confirmObjectSelection()
+                return
+            }
+            if let featureCmd = engine.commandProcessor.activeFeatureCommand {
             let spaceResult = featureCmd.handleKeyDown(
                 scancode: scancode,
                 engine: engine,
@@ -640,6 +648,7 @@ internal final class EngineInputHandler {
                 case .continue:
                     break  // fall through to global Space behaviour below
                 }
+            }
             }
         }
 
@@ -857,6 +866,8 @@ internal final class EngineInputHandler {
                 engine.ui.layerMoveActive = false
                 engine.ui.layerMoveBuffer = ""
                 engine.ui.layerMoveMatches = []
+            } else if engine.commandProcessor.isSelectingObjects {
+                engine.commandProcessor.confirmObjectSelection()
             } else if !engine.commandProcessor.pendingDistanceBuffer.isEmpty {
                 // Apply the accumulated distance.
                 engine.commandProcessor.executeCommand(engine.commandProcessor.pendingDistanceBuffer)

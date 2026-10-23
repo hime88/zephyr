@@ -172,11 +172,54 @@ public final class EngineLoopController {
         let (wx, wy) = engine.camera.screenToWorld(screenX: x, screenY: y, windowWidth: engine.windowWidth, windowHeight: engine.windowHeight)
         let shiftHeld = (engine.io != nil) ? engine.io.pointee.KeyShift : false
 
+        if interaction.rectSelectActive {
+            interaction.rectSelectActive = false
+            interaction.rectSelectPreviewHandles.removeAll()
+            let minX = min(interaction.rectSelectStartX, interaction.rectSelectCurrentX)
+            let minY = min(interaction.rectSelectStartY, interaction.rectSelectCurrentY)
+            let maxX = max(interaction.rectSelectStartX, interaction.rectSelectCurrentX)
+            let maxY = max(interaction.rectSelectStartY, interaction.rectSelectCurrentY)
+            let w = maxX - minX
+            let h = maxY - minY
+            if w > 0 || h > 0 {
+                let style: CADSelectionManager.RectSelectStyle =
+                    (x >= interaction.rectSelectScreenStartX) ? .window : .crossing
+                engine.cadSelection.selectInRect(
+                    worldX: minX, worldY: minY,
+                    worldW: w, worldH: h,
+                    document: engine.document,
+                    mode: interaction.cadRectSelectMode, style: style)
+                if engine.commandProcessor.isSelectingObjects {
+                    engine.commandProcessor.updateObjectSelectionPrompt()
+                }
+            }
+            return
+        }
+
         if engine.commandProcessor.activeCommand != nil {
             snapMgr.lockedSnap = nil
-            if engine.commandProcessor.activeCommand == "MOVE" {
-                engine.commandProcessor.handleCommandClick(worldX: wx, worldY: wy)
-            } else if let snap = snapMgr.currentSnapResult {
+            if engine.commandProcessor.isSelectingObjects {
+                let threshold = 8.0 / max(engine.camera.zoom, 0.001)
+                if let _ = engine.cadSelection.hitTest(
+                    worldX: wx,
+                    worldY: wy,
+                    document: engine.document,
+                    threshold: threshold,
+                    simplifyComplexBlocks: engine.simplifyComplexBlocks
+                ) {
+                    engine.commandProcessor.handleObjectSelectionClick(worldX: wx, worldY: wy)
+                } else {
+                    interaction.rectSelectActive = true
+                    interaction.rectSelectScreenStartX = x
+                    interaction.rectSelectStartX = wx
+                    interaction.rectSelectStartY = wy
+                    interaction.rectSelectCurrentX = wx
+                    interaction.rectSelectCurrentY = wy
+                    interaction.cadRectSelectMode = shiftHeld ? .subtract : .add
+                }
+                return
+            }
+            if let snap = snapMgr.currentSnapResult {
                 engine.commandProcessor.handleCommandClick(worldX: snap.worldPos.x, worldY: snap.worldPos.y)
             } else {
                 engine.commandProcessor.handleCommandClick(worldX: wx, worldY: wy)
@@ -203,27 +246,6 @@ public final class EngineLoopController {
             if result == .finished {
                 snapMgr.currentSnapResult = nil
                 engine.commandProcessor.finishFeatureCommand(engine: engine)
-            }
-            return
-        }
-
-        if interaction.rectSelectActive {
-            interaction.rectSelectActive = false
-            interaction.rectSelectPreviewHandles.removeAll()
-            let minX = min(interaction.rectSelectStartX, interaction.rectSelectCurrentX)
-            let minY = min(interaction.rectSelectStartY, interaction.rectSelectCurrentY)
-            let maxX = max(interaction.rectSelectStartX, interaction.rectSelectCurrentX)
-            let maxY = max(interaction.rectSelectStartY, interaction.rectSelectCurrentY)
-            let w = maxX - minX
-            let h = maxY - minY
-            if w > 0 || h > 0 {
-                let style: CADSelectionManager.RectSelectStyle =
-                    (x >= interaction.rectSelectScreenStartX) ? .window : .crossing
-                engine.cadSelection.selectInRect(
-                    worldX: minX, worldY: minY,
-                    worldW: w, worldH: h,
-                    document: engine.document,
-                    mode: interaction.cadRectSelectMode, style: style)
             }
             return
         }
@@ -549,10 +571,12 @@ public final class EngineLoopController {
         let snapWY = engine.snap.currentSnapResult?.worldPos.y ?? wy
 
         if engine.commandProcessor.activeCommand != nil {
-            if engine.commandProcessor.activeCommand == "MOVE" {
-                engine.commandProcessor.handleCommandMotion(worldX: wx, worldY: wy)
-            } else {
-                engine.commandProcessor.handleCommandMotion(worldX: snapWX, worldY: snapWY)
+            if !engine.commandProcessor.isSelectingObjects {
+                if let snap = engine.snap.currentSnapResult {
+                    engine.commandProcessor.handleCommandMotion(worldX: snap.worldPos.x, worldY: snap.worldPos.y)
+                } else {
+                    engine.commandProcessor.handleCommandMotion(worldX: wx, worldY: wy)
+                }
             }
         }
 
@@ -993,7 +1017,7 @@ public final class EngineLoopController {
         let interaction = engine.interaction
         
         let shouldSnap = (engine.commandProcessor.activeFeatureCommand?.isSnappingEnabled ?? false)
-            || (engine.commandProcessor.activeCommand == "MOVE")
+            || (engine.commandProcessor.activeCommand == "MOVE" && !engine.commandProcessor.isSelectingObjects)
             || interaction.gripActive
             || (interaction.dragActive && engine.cadSelection.hasSelection)
 

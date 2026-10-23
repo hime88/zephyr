@@ -62,14 +62,11 @@ public enum RibbonFallbackSpec {
                             title: "Modify",
                             items: [
                                 command(
-                                    "MOVE", "Move", "move", size: .large,
-                                    enabled: [.selectionAtLeast(1)]),
+                                    "MOVE", "Move", "move", size: .large),
                                 command(
-                                    "ERASE", "Erase", "erase", size: .large,
-                                    enabled: [.selectionAtLeast(1)]),
+                                    "ERASE", "Erase", "erase", size: .large),
                                 command(
-                                    "TRIM", "Trim", "trim",
-                                    enabled: [.selectionAtLeast(1)]),
+                                    "TRIM", "Trim", "trim"),
                                 command("OFFSET", "Offset", "offset"),
                                 command("ARRAY", "Array", "array"),
                             ]),

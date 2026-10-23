@@ -374,6 +374,10 @@ public final class CADCommandProcessor {
     public var commandBuffer: String = ""
     /// Stored reference point for two-point commands (MOVE, etc.).
     public internal(set) var commandRefPoint: (Double, Double)? = nil
+    /// True when an active command (e.g. MOVE, ROTATE, SCALE, COPY) was
+    /// invoked without a pre-existing selection and is currently waiting
+    /// for the user to select objects before proceeding.
+    public internal(set) var isSelectingObjects: Bool = false
     /// Autocomplete selection index into the current match list (0-based).
     public var commandSelectionIndex: Int = 0
     /// Last text for which matches were computed (avoids recalc every frame).
@@ -634,7 +638,12 @@ public final class CADCommandProcessor {
         // rejected command never poisons spacebar repeat.
         if rejectCommandIfLispActive(text) { return }
         let upper = text.uppercased().trimmingCharacters(in: .whitespaces)
-        guard !upper.isEmpty else { return }
+        if upper.isEmpty {
+            if isSelectingObjects {
+                confirmObjectSelection()
+            }
+            return
+        }
         lastExecutedCommand = text
 
         if handleDrawingViewCommand(text) {
@@ -949,22 +958,22 @@ public final class CADCommandProcessor {
         // --- Existing commands ---
         case "M", "MOVE":
             guard let engine = engine else { clearCommand(); return }
-            guard engine.cadSelection.hasSelection else {
-                clearCommand()
+            if !engine.cadSelection.hasSelection {
+                startCommand("MOVE", prompt: "Select objects to move, then press Enter", selectingObjects: true)
                 return
             }
             startCommand("MOVE", prompt: "Select base point")
         case "R", "ROTATE":
             guard let engine = engine else { clearCommand(); return }
-            guard engine.cadSelection.hasSelection else {
-                clearCommand()
+            if !engine.cadSelection.hasSelection {
+                startCommand("ROTATE", prompt: "Select objects to rotate, then press Enter", selectingObjects: true)
                 return
             }
             startCommand("ROTATE", prompt: "Pick rotation angle or drag")
         case "S", "SCALE":
             guard let engine = engine else { clearCommand(); return }
-            guard engine.cadSelection.hasSelection else {
-                clearCommand()
+            if !engine.cadSelection.hasSelection {
+                startCommand("SCALE", prompt: "Select objects to scale, then press Enter", selectingObjects: true)
                 return
             }
             startCommand("SCALE", prompt: "Pick scale factor or drag")
@@ -974,15 +983,19 @@ public final class CADCommandProcessor {
             activeFeatureCommand = cmd
             cmd.start(engine: engine, processor: self)
         case "E", "ERASE":
-            engine?.deleteSelected()
+            guard let engine = engine else { clearCommand(); return }
+            if !engine.cadSelection.hasSelection {
+                startCommand("ERASE", prompt: "Select objects to erase, then press Enter", selectingObjects: true)
+                return
+            }
+            engine.deleteSelected()
 
         // --- Copy / Paste (Modify) ---
         case "COPYCLIP":
             guard let engine = engine else { clearCommand(); return }
-            guard engine.cadSelection.hasSelection else {
-                print("[CAD] COPYCLIP requires entities to be selected.")
-                clearCommand()
-                break
+            if !engine.cadSelection.hasSelection {
+                startCommand("COPYCLIP", prompt: "Select objects to copy to clipboard, then press Enter", selectingObjects: true)
+                return
             }
             captureToClipboard(engine: engine)
             print("[CAD] Copied \(engine.cadSelection.selectedHandles.count) entities to clipboard.")
@@ -990,19 +1003,17 @@ public final class CADCommandProcessor {
 
         case "COPYBASE":
             guard let engine = engine else { clearCommand(); return }
-            guard engine.cadSelection.hasSelection else {
-                print("[CAD] COPYBASE requires entities to be selected.")
-                clearCommand()
-                break
+            if !engine.cadSelection.hasSelection {
+                startCommand("COPYBASE", prompt: "Select objects to copy with base point, then press Enter", selectingObjects: true)
+                return
             }
             startCommand("COPYBASE", prompt: "Specify base point")
 
         case "COPY", "CO", "CP":
             guard let engine = engine else { clearCommand(); return }
-            guard engine.cadSelection.hasSelection else {
-                print("[CAD] COPY requires entities to be selected.")
-                clearCommand()
-                break
+            if !engine.cadSelection.hasSelection {
+                startCommand("COPY", prompt: "Select objects to copy, then press Enter", selectingObjects: true)
+                return
             }
             // Duplicate selected entities in-place
             let result = engine.document.duplicateEntities(
@@ -1898,6 +1909,7 @@ public final class CADCommandProcessor {
         activeCommand = nil
         commandPrompt = nil
         commandRefPoint = nil
+        isSelectingObjects = false
         commandLineActive = false
         commandBuffer = ""
         pendingDistanceBuffer = ""
@@ -1959,10 +1971,11 @@ public final class CADCommandProcessor {
         }
     }
 
-    private func startCommand(_ name: String, prompt: String) {
+    internal func startCommand(_ name: String, prompt: String, selectingObjects: Bool = false) {
         activeCommand = name
         commandPrompt = prompt
         commandRefPoint = nil
+        isSelectingObjects = selectingObjects
         commandLineActive = false
         commandBuffer = ""
         pendingDistanceBuffer = ""
@@ -1973,6 +1986,93 @@ public final class CADCommandProcessor {
         _moveGhostWorldY = 0
         _moveCursorWorldX = 0
         _moveCursorWorldY = 0
+    }
+
+    internal func handleObjectSelectionClick(worldX: Double, worldY: Double) {
+        guard let engine = engine else { return }
+        let threshold = 8.0 / max(engine.camera.zoom, 0.001)
+        guard let handle = engine.cadSelection.hitTest(
+            worldX: worldX,
+            worldY: worldY,
+            document: engine.document,
+            threshold: threshold,
+            simplifyComplexBlocks: engine.simplifyComplexBlocks
+        ) else {
+            return
+        }
+
+        let shiftHeld = (engine.io != nil) ? engine.io.pointee.KeyShift : false
+        if shiftHeld {
+            engine.cadSelection.removeFromSelection(handle)
+        } else {
+            engine.cadSelection.addToSelection(handle)
+        }
+        updateObjectSelectionPrompt()
+    }
+
+    internal func updateObjectSelectionPrompt() {
+        guard let cmd = activeCommand else { return }
+        let count = engine?.cadSelection.selectedCount ?? 0
+        let countSuffix = count > 0 ? " (\(count) selected)" : ""
+        let action: String
+        switch cmd {
+        case "MOVE": action = "move"
+        case "ROTATE": action = "rotate"
+        case "SCALE": action = "scale"
+        case "COPY": action = "copy"
+        case "ERASE": action = "erase"
+        case "COPYCLIP": action = "copy to clipboard"
+        case "COPYBASE": action = "copy with base point"
+        default: action = cmd.lowercased()
+        }
+        commandPrompt = "Select objects to \(action), then press Enter\(countSuffix)"
+    }
+
+    public func confirmObjectSelection() {
+        guard isSelectingObjects else { return }
+        guard let engine = engine, engine.cadSelection.hasSelection else {
+            print("[CAD] No objects selected.")
+            clearCommand()
+            return
+        }
+        isSelectingObjects = false
+        switch activeCommand {
+        case "MOVE":
+            commandPrompt = "Select base point"
+        case "ROTATE":
+            commandPrompt = "Pick rotation angle or drag"
+        case "SCALE":
+            commandPrompt = "Pick scale factor or drag"
+        case "COPY":
+            let result = engine.document.duplicateEntities(
+                handles: engine.cadSelection.selectedHandles)
+            for newBlock in result.clonedBlocks {
+                engine.document.addBlock(newBlock)
+            }
+            var newHandles = Set<UUID>()
+            for entity in result.entities {
+                engine.document.addEntity(entity)
+                newHandles.insert(entity.handle)
+            }
+            engine.cadSelection.clearSelection()
+            for h in newHandles {
+                engine.cadSelection.addToSelection(h)
+            }
+            activeCommand = "MOVE"
+            commandPrompt = "Select base point"
+            print("[CAD] Copied \(newHandles.count) entities. Specify destination.")
+        case "ERASE":
+            engine.deleteSelected()
+            clearCommand()
+        case "COPYCLIP":
+            captureToClipboard(engine: engine)
+            print("[CAD] Copied \(engine.cadSelection.selectedHandles.count) entities to clipboard.")
+            clearCommand()
+        case "COPYBASE":
+            commandPrompt = "Specify base point"
+        default:
+            clearCommand()
+        }
     }
 
     // MARK: - Autocomplete Matching

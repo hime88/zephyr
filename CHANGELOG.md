@@ -9,6 +9,8 @@ Monthly digest condensed from the git history. Instead of per-release notes, all
 116 commits · 2026-10-08 – 2026-10-23
 
 ### Features
+- Verb/Noun modify command workflow: `MOVE`, `ROTATE`, `SCALE`, `COPY`, `ERASE`, `COPYCLIP`, and `COPYBASE` now support selecting objects after invoking the command (prompting "Select objects..."), with interactive click, window/crossing rectangle selection, and Enter/Space/Right-click confirmation; command prompt banners now render for active modify commands; Ribbon buttons and Modify menu items remain active without pre-selection.
+- Ribbon definition resolution: removed automatic seeding into user AppData so updates to the bundled `ribbon.lsp` apply immediately unless the user explicitly places a custom definition in AppData.
 - AutoLISP support: native engine (FDScript merge), full dispatch, file picker, persistent session, `c:` command dispatch, and examples
 - Scripted CAD commands with multi-call support
 - AUTOCONTRAST command and TrueColor contrast toggle
@@ -32,6 +34,7 @@ Monthly digest condensed from the git history. Instead of per-release notes, all
 - Website and docs: Linux support, AutoLISP, OFFSET, corrected downloads, roadmap
 
 ### Bug Fixes
+- CAD modify commands (`MOVE`, etc.) snapping bypass: base point selection during active modify commands now correctly honors active entity snap targets (circle quadrants/center, line endpoints, midpoints) instead of falling back to raw mouse coordinates.
 - SHX shape fonts: fractional arcs, clockwise octant arcs, multi-stroke outline behavior, and hole nudging
 - Exploding rectangles and compound entities into separate elements
 - Angled gradient hatch projection
