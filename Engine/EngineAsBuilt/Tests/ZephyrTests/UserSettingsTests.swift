@@ -17,7 +17,6 @@ final class UserSettingsTests: XCTestCase {
             "dataTablePanelVisible": false,
             "showPropertiesPanel": true,
             "showFPS": false,
-            "toolbarVisible": true,
             "radialNavVisible": false
         }
         """
@@ -50,6 +49,5 @@ final class UserSettingsTests: XCTestCase {
         XCTAssertFalse(captured.isDarkTheme)
         XCTAssertTrue(captured.layersPanelVisible)
         XCTAssertTrue(captured.hasCompletedSetup)
-        XCTAssertEqual(captured.toolbarVisible, ui.toolbarVisible)
     }
 }

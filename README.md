@@ -137,6 +137,16 @@ Zephyr's DXF pipeline runs entirely in Swift — a native port of [libdxfrw](htt
 | VPMAX | | Maximize the focused pane (arrangement is saved) |
 | VPMIN | | Restore the split arrangement saved by VPMAX |
 
+### Ribbon
+| Command | Alias | Description |
+|---|---|---|
+| RIBBON | | Show or hide the ribbon (a dockable window; position persists) |
+| RIBBONCLOSE | | Hide the ribbon |
+| RIBBONMODE | | Switch presentation: `RIBBONMODE menu`, `labels`, or `full`; bare Enter reports the current mode |
+| RIBBONRELOAD | | Re-read the AutoLISP ribbon definition (`lisp/ribbon.lsp`) |
+
+The ribbon's contents are **defined in AutoLISP**, not in the binary — see [Customizing the ribbon](#customizing-the-ribbon). That same file also defines the classic `File / Edit / View …` menu bar, because the ribbon's display control cycles three presentations of one definition: the **menu bar**, **labels only**, and **icons + labels**.
+
 #### Working with tabs
 
 - Click a file tab to activate that drawing. Drag it left or right to reorder it, or drag it out of the main window to float it.
@@ -384,6 +394,8 @@ Scripted command calls include `(command "INSERT" ...)`, `(command "_CHPROP" ...
 
 Runnable examples live in `Engine/EngineAsBuilt/Tools/lisp/examples/` (`SHAPES`, `SELCOUNT`, `REDCIRCLES`, `INPUTDEMO`) — `LOAD` one and run its command. Each is executed by `LispExamplesTests`, so they double as compatibility checks. Loaded `c:` routines stay resident for the session and run by bare name (built-ins win on collision); `setq` globals persist across `EVAL` runs too.
 
+The ribbon and its classic menu bar are also AutoLISP-defined (`lisp/ribbon.lsp`) — see [Customizing the ribbon](#customizing-the-ribbon); that is a declarative layout document, not a dialog toolkit.
+
 Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, the rest of the `vla-*`/`vlax-*` object model beyond `vl-load-com`, `vlax-ename->vla-object`, `vla-getboundingbox`, and `vlax-safearray->list`, and ARX/VLX/VBA application loading. Out-of-process COM interop (foreign ActiveX servers, type-library import) is Windows-only and not planned.
 
 ### UI
@@ -396,7 +408,28 @@ Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, the res
 - **External References palette** — One list for drawing xrefs, images, and PDF underlays: status, saved vs found-at path, size/date, and Load/Unload/Reload/Repath/Detach/Bind/Embed actions. Toggle with `XREF`.
 - **Radial navigation** — Right-click radial menu for pan, zoom, fit (`NAV` to toggle).
 - **Text editor** — Modal dialog for text creation/editing with font selection, height, rotation, alignment, and MTEXT width.
-- **Toolbar** — Quick-access buttons for open, save, save-as, import-PDF, tool modes, AA toggle, nav toggle, edit block, view rotation slider with reset, and dark/light theme toggle. Collapsible to mini-toolbar.
+- **Ribbon** — Tabs (Home, Insert, Annotate, View, Manage, Output, Custom) of panels with buttons, flyouts and live state: items grey out when the command cannot run (nothing selected, nothing to undo) and toggles like Grid/Ortho show their current state from the drawing's system variables. One control cycles the presentation: `File / Edit / View …` menu bar → labels-only ribbon → icons + labels. Dock it anywhere like the other panels; `RIBBON` toggles it and the layout persists.
+
+#### Customizing the ribbon
+
+`lisp/ribbon.lsp` defines the whole command chrome — tabs, panels, items, their order, labels, icons, tooltips and when they enable. It is created from the bundled default on first run at `Zephyr/lisp/ribbon.lsp` inside the app-data directory (`%LOCALAPPDATA%` on Windows, `~/Library/Application Support` on macOS), and reloads itself about a second after you save, or immediately with `RIBBONRELOAD`.
+
+```lisp
+(defun zephyr-ribbon ()
+  (zr-ribbon
+    (zr-menubar
+      (list (zr-menu "File"
+              (list (zr-item "NEW" "New" nil)
+                    (zr-item "OPEN" "Open..." nil)))))
+    (zr-tabs
+      (list (zr-tab "Home"
+              (list (zr-panel "Draw"
+                      (list (zr-big   "LINE"   "Line"   "line" nil)
+                            (zr-small "CIRCLE" "Circle" "circle"
+                              (list (zr-enable (zr-sel 1))))))))))))
+```
+
+Any registered command can be used, including your own `c:` routines (`(zr-big "MYTOOL" "My Tool" nil nil)`). Items can be enabled/checked from declarative predicates — `(zr-sel n)`, `(zr-nocmd)`, `(zr-cmd "TRIM")`, `(zr-undoable)`, `(zr-redoable)`, `(zr-dirty)`, `(zr-var "GRIDMODE" 1)`, `(zr-tabcount n)` — and labels interpolate system variables (`"Layer: %CLAYER%"`). The shipped file documents every helper at the top; a broken definition leaves the previous one live and prints the error.
 - **Status bar** — Coordinates, snap mode indicators, entity count, undo/redo depth, and an `XREF ⚠` warning when a reference is missing or needs reloading.
 
 ### Rendering Engine

@@ -39,6 +39,7 @@ modules:
       # Shaders and runtime assets (located via SDL_GetBasePath())
       - cp *.spv /app/bin/
       - cp -R Fonts /app/bin/
+      - cp -R lisp /app/bin/lisp
       - cp -R "Plot Styles" /app/bin/
       - cp -R Patterns /app/bin/
       # Desktop integration

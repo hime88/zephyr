@@ -80,6 +80,7 @@ final class LispVarStore: @unchecked Sendable {
         "OFFSETDIST": .real(-1),
         "OFFSETGAPTYPE": .int(0),
         "ORTHOMODE": .int(0),
+        "POLARMODE": .int(0),
         "OSMODE": .int(0),
         "PDMODE": .int(0),
         "PDSIZE": .real(0),

@@ -199,6 +199,11 @@ public struct CommandDescriptor: Sendable {
         CommandDescriptor(canonicalName: "TABRIGHT",   aliases: ["TABR"],          category: .draw,    syntax: "", description: "Move the active drawing tab one position right"),
         CommandDescriptor(canonicalName: "FILETAB",    aliases: [],                category: .draw,    syntax: "", description: "Show the file tabs at the top of the drawing area"),
         CommandDescriptor(canonicalName: "FILETABCLOSE", aliases: [],              category: .draw,    syntax: "", description: "Hide the file tabs at the top of the drawing area"),
+        // --- Ribbon (AutoLISP-defined command chrome) ---
+        CommandDescriptor(canonicalName: "RIBBON",      aliases: [],               category: .view,    syntax: "", description: "Show or hide the ribbon"),
+        CommandDescriptor(canonicalName: "RIBBONCLOSE", aliases: [],               category: .view,    syntax: "", description: "Hide the ribbon"),
+        CommandDescriptor(canonicalName: "RIBBONMODE",  aliases: [],               category: .view,    syntax: "[menu|labels|full]", description: "Switch the ribbon between the classic menu bar, labels, and icons + labels", bareEnterExecutes: true),
+        CommandDescriptor(canonicalName: "RIBBONRELOAD", aliases: [],              category: .settings, syntax: "", description: "Re-read the AutoLISP ribbon definition (lisp/ribbon.lsp)"),
         CommandDescriptor(canonicalName: "TABWINDOW",  aliases: ["TABW", "FLOAT"], category: .draw,    syntax: "", description: "Move the active drawing tab into its own window"),
         CommandDescriptor(canonicalName: "TABDOCK",    aliases: ["TABD", "DOCK"],  category: .draw,    syntax: "", description: "Dock the active floating tab back into the main window"),
         CommandDescriptor(canonicalName: "VPORTS",     aliases: [],                category: .view,    syntax: "2V|2H|SINGLE|JOIN|TOGGLE|?", description: "Split the main view into tiled panes showing different tabs"),
@@ -436,6 +441,12 @@ public final class CADCommandProcessor {
     /// Each run checks a copy in/out; the depth guard keeps runs single-flight.
     public var lispSession = LispEnvironment()
 
+    /// App-wide system-variable store, shared by every `LispCADHost` this
+    /// processor creates (LOAD/EVAL/c: runs and the ribbon definition load).
+    /// One store per app matches AutoCAD: memory sysvars set by one routine
+    /// are visible to the next, and the ribbon can read them per frame.
+    var lispVars = LispVarStore()
+
     public var arrayAssociativity: Bool =
         UserDefaults.standard.object(forKey: "Zephyr.ArrayAssociativity") as? Bool ?? true {
         didSet {
@@ -470,6 +481,78 @@ public final class CADCommandProcessor {
     // MARK: Initialization
 
     public init() {}
+
+    // MARK: - Chrome support (ribbon)
+
+    /// Best-effort canonical name of the running command, for UI predicates
+    /// such as the ribbon's `(zr-cmd "TRIM")`.
+    ///
+    /// Legacy interactive commands set `activeCommand`; feature commands do
+    /// not carry a name, so the type name minus the `Command` suffix is the
+    /// best available answer (`TrimCommand` -> `TRIM`).
+    public var activeCommandDisplayName: String? {
+        if let activeCommand { return activeCommand }
+        guard let feature = activeFeatureCommand else { return nil }
+        let typeName = String(describing: type(of: feature)).uppercased()
+        return typeName.hasSuffix("COMMAND")
+            ? String(typeName.dropLast("COMMAND".count))
+            : typeName
+    }
+
+    /// Keeps a toggle sysvar in step with the state a command just changed,
+    /// so `(zr-check (zr-var "GRIDMODE" 1))` follows the actual grid state.
+    private func syncToggleSysvar(
+        _ name: String, on: Bool, engine: PhrostEngine
+    ) {
+        _ = lispVars.set(
+            name, .int(on ? 1 : 0), document: engine.document)
+    }
+
+    /// Publishes the engine's current toggle states into the sysvar store,
+    /// so chrome that reads them (ribbon `check` predicates) agrees with the
+    /// viewport from the first frame. Called once at startup.
+    public func synchronizeToggleSysvars(engine: PhrostEngine) {
+        syncToggleSysvar("GRIDMODE", on: engine.snap.gridVisible, engine: engine)
+        syncToggleSysvar(
+            "ORTHOMODE", on: engine.snap.orthoEnabled, engine: engine)
+        syncToggleSysvar(
+            "POLARMODE", on: engine.snap.polarTrackingEnabled, engine: engine)
+    }
+
+    /// Every command a ribbon entry may reference: descriptor names and
+    /// aliases (the legacy dispatch surface plus documented commands), the
+    /// registered feature commands, and the loaded AutoLISP `c:` routines.
+    ///
+    /// Descriptors alone are not enough: several feature commands register
+    /// without one (`PENSTROKE`, `REVCLOUD`, `TABLE`, …), so the registry is
+    /// consulted too — otherwise the definition would silently drop them.
+    public var ribbonCommandCatalog: RibbonCommandCatalog {
+        var known = Set<String>()
+        for descriptor in CommandDescriptor.allCommands {
+            known.insert(descriptor.canonicalName.uppercased())
+            for alias in descriptor.aliases {
+                known.insert(alias.uppercased())
+            }
+        }
+        for name in featureCommandRegistry.keys {
+            known.insert(name.uppercased())
+        }
+        for name in lispSession.functions.keys where name.hasPrefix("C:") {
+            known.insert(String(name.dropFirst(2)).uppercased())
+        }
+        return RibbonCommandCatalog(known: known)
+    }
+
+    /// Read-only sysvar access for UI chrome (`%CLAYER%` labels and
+    /// `(zr-var …)` predicates). Reads the same app-wide store AutoLISP uses,
+    /// so a `(setvar …)` from a routine is reflected immediately.
+    public func systemVariable(_ name: String) -> LispValue? {
+        guard let engine else { return nil }
+        return lispVars.get(
+            name.uppercased(),
+            document: engine.document,
+            activeCommand: activeCommand)
+    }
 
     /// Called by `PhrostEngine.init?` to provide the engine reference after self is available.
     internal func configure(engine: PhrostEngine) {
@@ -697,6 +780,43 @@ public final class CADCommandProcessor {
             clearCommand()
         case "FILETABCLOSE":
             engine?.ui.fileTabsVisible = false
+            clearCommand()
+        // --- Ribbon (defined in AutoLISP: lisp/ribbon.lsp) ---
+        case "RIBBON":
+            guard let eng = engine else { clearCommand(); return }
+            eng.ui.ribbonVisible.toggle()
+            clearCommand()
+        case "RIBBONCLOSE":
+            engine?.ui.ribbonVisible = false
+            clearCommand()
+        case "RIBBONRELOAD":
+            guard let eng = engine else { clearCommand(); return }
+            if eng.ribbonLoader == nil {
+                print("[CAD] Ribbon support is not available in this build.")
+            } else {
+                eng.ribbonLoader?.reload()
+            }
+            clearCommand()
+        case _ where upper.hasPrefix("RIBBONMODE "):
+            guard let eng = engine else { clearCommand(); return }
+            let argument = String(upper.dropFirst("RIBBONMODE ".count))
+                .trimmingCharacters(in: .whitespaces)
+            switch argument {
+            case "MENU", "MENUBAR", "M":
+                eng.ui.ribbonMode = .menu
+            case "LABELS", "LABEL", "TEXT", "L":
+                eng.ui.ribbonMode = .labels
+            case "FULL", "ICONS", "F":
+                eng.ui.ribbonMode = .full
+            default:
+                print("[CAD] RIBBONMODE expects menu, labels or full (got '\(argument)').")
+            }
+            clearCommand()
+        case "RIBBONMODE":
+            if let eng = engine {
+                print("[CAD] Ribbon mode is '\(eng.ui.ribbonMode.rawValue)'. "
+                    + "Usage: RIBBONMODE [menu|labels|full]")
+            }
             clearCommand()
         case "TABW", "TABWINDOW", "FLOAT":
             if let id = engine?.tabManager.activeTab?.id {
@@ -1425,6 +1545,8 @@ public final class CADCommandProcessor {
         case "GRID":
             guard let engine = engine else { clearCommand(); return }
             engine.snap.gridVisible.toggle()
+            syncToggleSysvar(
+                "GRIDMODE", on: engine.snap.gridVisible, engine: engine)
             print("[CAD] Grid: \(engine.snap.gridVisible ? "ON" : "OFF")")
             clearCommand()
         case "GRID SNAP":
@@ -1462,6 +1584,9 @@ public final class CADCommandProcessor {
         case "POLAR":
             guard let engine = engine else { clearCommand(); return }
             engine.snap.polarTrackingEnabled.toggle()
+            syncToggleSysvar(
+                "POLARMODE", on: engine.snap.polarTrackingEnabled,
+                engine: engine)
             print("[CAD] Polar Tracking: \(engine.snap.polarTrackingEnabled ? "ON" : "OFF")")
             clearCommand()
         case _ where upper.hasPrefix("POLARANG "):
@@ -1491,6 +1616,8 @@ public final class CADCommandProcessor {
         case "ORTHO":
             guard let engine = engine else { clearCommand(); return }
             engine.snap.orthoEnabled.toggle()
+            syncToggleSysvar(
+                "ORTHOMODE", on: engine.snap.orthoEnabled, engine: engine)
             print("[CAD] Ortho: \(engine.snap.orthoEnabled ? "ON" : "OFF")")
             clearCommand()
         // --- Drawing Units ---

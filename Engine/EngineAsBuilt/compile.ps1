@@ -223,7 +223,7 @@ foreach ($dest in $destDirs) {
     Copy-Item -Path "$DevRoot\vcpkg\installed\$vcpkgTriplet\$iconvType\iconv-2.dll" -Destination $dest -Force -ErrorAction SilentlyContinue
 
     # Copy Fonts & Plot Styles
-    foreach ($asset in @("Fonts", "Plot Styles", "Patterns")) {
+    foreach ($asset in @("Fonts", "Plot Styles", "Patterns", "lisp")) {
         if (Test-Path "$swiftBuildDir\$asset") {
             $assetDest = "$dest\$asset"
             New-Item -ItemType Directory -Path $assetDest -Force | Out-Null

@@ -69,6 +69,11 @@ struct ZephyrApp {
         // and feature commands like CLEANSPECKLES.
         AppCommandRegistration.register(on: engine)
 
+        // Ribbon: the command chrome is defined in AutoLISP. Seed the user
+        // copy on first run, then load it — evaluation runs off-actor and the
+        // UI pumps the result once per frame, so startup never blocks.
+        setupRibbon(on: engine)
+
         // Wire up file browser callbacks for opening and saving DXF/EAB files.
         AppFileCallbacks.configure(on: engine)
         engine.windowCloseRequestHandler = { [weak engine] in
@@ -86,5 +91,24 @@ struct ZephyrApp {
         print("Starting render loop...")
         engine.loopController.run()
         print("Engine shut down.")
+    }
+
+    /// Seeds `<appSupport>/Zephyr/lisp/ribbon.lsp` from the bundled default
+    /// and attaches the loader that owns the live ribbon model.
+    private static func setupRibbon(on engine: PhrostEngine) {
+        engine.commandProcessor.synchronizeToggleSysvars(engine: engine)
+        RibbonSpecLoader.seedUserDefinitionIfNeeded()
+        let loader = RibbonSpecLoader(
+            processor: engine.commandProcessor,
+            documentProvider: { [weak engine] in
+                engine?.document ?? CADDocument()
+            },
+            selectionProvider: { [weak engine] in
+                engine?.cadSelection ?? CADSelectionManager()
+            })
+        loader.output = { text in print(text, terminator: "") }
+        engine.ribbonLoader = loader
+        loader.baselineFileTimestamp()
+        loader.requestReload(reason: "startup")
     }
 }

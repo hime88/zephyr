@@ -105,7 +105,11 @@ final class LispCommandTests: XCTestCase {
             XCTAssertTrue(descriptor?.bareEnterExecutes ?? false)
         }
         // Spot-check: other parameterized commands still wait for arguments.
-        let optionalArgumentCommands: Set<String> = ["LOAD", "SCRIPT", "UNDO", "REDO"]
+        // RIBBONMODE is the same deal as UNDO/REDO: bare Enter reports the
+        // current mode instead of waiting for a keyword.
+        let optionalArgumentCommands: Set<String> = [
+            "LOAD", "SCRIPT", "UNDO", "REDO", "RIBBONMODE",
+        ]
         let others = CommandDescriptor.allCommands.filter {
             !$0.syntax.isEmpty
                 && !optionalArgumentCommands.contains($0.canonicalName)

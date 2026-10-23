@@ -26,8 +26,15 @@ public struct UserSettings: Codable, Sendable {
 
     // MARK: - Misc UI
     public var showFPS: Bool
-    public var toolbarVisible: Bool
     public var radialNavVisible: Bool
+
+    // MARK: - Ribbon
+    /// Whether the ribbon window is open (`RIBBON`).
+    public var ribbonVisible: Bool
+    /// Persisted `RibbonDisplayMode` raw value (menu / labels / full).
+    public var ribbonMode: String
+    /// Title of the active ribbon tab; nil until the user picks one.
+    public var activeRibbonTab: String?
 
     // MARK: - First-run setup
     /// Whether the welcome/setup popup was completed. Pre-flag settings
@@ -60,9 +67,11 @@ public struct UserSettings: Codable, Sendable {
         dataTablePanelVisible: Bool,
         showPropertiesPanel: Bool,
         showFPS: Bool,
-        toolbarVisible: Bool,
         radialNavVisible: Bool,
         hasCompletedSetup: Bool,
+        ribbonVisible: Bool = true,
+        ribbonMode: String = "full",
+        activeRibbonTab: String? = nil,
         xrefPanelVisible: Bool = false,
         xrefRefPathType: Int = 1,
         xrefSearchPaths: [String] = [],
@@ -80,9 +89,11 @@ public struct UserSettings: Codable, Sendable {
         self.dataTablePanelVisible = dataTablePanelVisible
         self.showPropertiesPanel = showPropertiesPanel
         self.showFPS = showFPS
-        self.toolbarVisible = toolbarVisible
         self.radialNavVisible = radialNavVisible
         self.hasCompletedSetup = hasCompletedSetup
+        self.ribbonVisible = ribbonVisible
+        self.ribbonMode = ribbonMode
+        self.activeRibbonTab = activeRibbonTab
         self.xrefPanelVisible = xrefPanelVisible
         self.xrefRefPathType = xrefRefPathType
         self.xrefSearchPaths = xrefSearchPaths
@@ -103,7 +114,6 @@ public struct UserSettings: Codable, Sendable {
         dataTablePanelVisible: false,
         showPropertiesPanel: false,
         showFPS: false,
-        toolbarVisible: true,
         radialNavVisible: false,
         hasCompletedSetup: false
     )
@@ -130,12 +140,15 @@ public struct UserSettings: Codable, Sendable {
             ?? fallback.showPropertiesPanel
         showFPS = try box.decodeIfPresent(Bool.self, forKey: .showFPS)
             ?? fallback.showFPS
-        toolbarVisible = try box.decodeIfPresent(Bool.self, forKey: .toolbarVisible)
-            ?? fallback.toolbarVisible
         radialNavVisible = try box.decodeIfPresent(Bool.self, forKey: .radialNavVisible)
             ?? fallback.radialNavVisible
         hasCompletedSetup = try box.decodeIfPresent(Bool.self, forKey: .hasCompletedSetup)
             ?? fallback.hasCompletedSetup
+        ribbonVisible = try box.decodeIfPresent(Bool.self, forKey: .ribbonVisible)
+            ?? fallback.ribbonVisible
+        ribbonMode = try box.decodeIfPresent(String.self, forKey: .ribbonMode)
+            ?? fallback.ribbonMode
+        activeRibbonTab = try box.decodeIfPresent(String.self, forKey: .activeRibbonTab)
         xrefPanelVisible = try box.decodeIfPresent(Bool.self, forKey: .xrefPanelVisible)
             ?? fallback.xrefPanelVisible
         xrefRefPathType = try box.decodeIfPresent(Int.self, forKey: .xrefRefPathType)
@@ -167,9 +180,11 @@ public struct UserSettings: Codable, Sendable {
             dataTablePanelVisible: ui.dataTablePanelVisible,
             showPropertiesPanel: ui.showPropertiesPanel,
             showFPS: ui.showFPS,
-            toolbarVisible: ui.toolbarVisible,
             radialNavVisible: ui.radialNavVisible,
             hasCompletedSetup: ui.hasCompletedSetup,
+            ribbonVisible: ui.ribbonVisible,
+            ribbonMode: ui.ribbonMode.rawValue,
+            activeRibbonTab: ui.activeRibbonTab,
             xrefPanelVisible: ui.xrefPanelVisible,
             xrefRefPathType: ui.xrefRefPathType,
             xrefSearchPaths: ui.xrefSearchPaths,

@@ -97,7 +97,7 @@ public final class LispCommand: FeatureCommand {
         processor.lispInvocationDepth = 1
         let broker = LispInputBroker()
         broker.drainQueue()
-        let newHost = LispCADHost(
+        let newHost = Self.makeHost(
             document: engine.document,
             selection: engine.cadSelection,
             processor: processor,
@@ -128,6 +128,23 @@ public final class LispCommand: FeatureCommand {
             processor.commandBuffer = ""
             processor.commandSelectionIndex = 0
         }
+    }
+
+    /// Builds the evaluation host for one run. Always shares the processor's
+    /// app-wide sysvar store so `(setvar …)` survives across LOAD/EVAL runs
+    /// (AutoCAD parity) and is readable by the ribbon's live-state predicates.
+    static func makeHost(
+        document: CADDocument,
+        selection: CADSelectionManager,
+        processor: CADCommandProcessor,
+        broker: LispInputBroker
+    ) -> LispCADHost {
+        LispCADHost(
+            document: document,
+            selection: selection,
+            processor: processor,
+            broker: broker,
+            vars: processor.lispVars)
     }
 
     /// Native file-picker filter for the file-taking modes (nil = EVAL

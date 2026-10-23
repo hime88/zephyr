@@ -251,8 +251,6 @@ public final class EngineUIManager {
     
     // MARK: - UI State Properties
     
-    /// Whether the toolbar is visible.
-    public var toolbarVisible: Bool = true
     public var radialNavVisible: Bool = false
     public var showFPS: Bool = false
 
@@ -286,6 +284,17 @@ public final class EngineUIManager {
 
     /// Whether the file tab bar is visible (toggled via "FILETAB"/"FILETABCLOSE").
     public var fileTabsVisible: Bool = true
+
+    // MARK: - Ribbon
+
+    /// Whether the ribbon window is shown (toggled via "RIBBON"/"RIBBONCLOSE").
+    public var ribbonVisible: Bool = true
+    /// Ribbon presentation: classic menu bar, labels-only, or icons + labels.
+    /// Cycled by the ribbon's own mode button; persisted as its raw value.
+    public var ribbonMode: RibbonDisplayMode = .full
+    /// Title of the active ribbon tab. Persisted; the renderer falls back to
+    /// the first tab when the definition no longer contains it.
+    public var activeRibbonTab: String?
     public var fpsCacheFrame: Int = 15
 
     /// When true, the block editor close-confirmation popup is shown.

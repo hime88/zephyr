@@ -67,6 +67,12 @@ struct AppUI {
         let floatBlockBarShown = isFloat && hostedTab?.editingBlockID != nil
         let mainShownTab = isFloat ? nil : engine.mainShownTab()
         let shownTab = isFloat ? hostedTab : mainShownTab
+        // The AutoLISP ribbon definition is app-global: pump its loader once
+        // per main-window frame so RIBBONRELOAD finishes and auto-reload
+        // keeps working even while the ribbon is closed.
+        if !isFloat {
+            RibbonUI.poll(engine: engine)
+        }
         // Session-modal UIs (text editor, layer move, style managers,
         // block-close) render only in the window showing the active tab,
         // so they don't duplicate across every open window.
@@ -140,6 +146,12 @@ struct AppUI {
         // Main window only: a float window is a single document.
         if !isFloat && engine.ui.fileTabsVisible {
             TabBarUI.render(engine: engine, dw: dw)
+        }
+
+        // 1b. Ribbon — AutoLISP-defined command chrome in a dockable window
+        //     (menu bar, labels, or icons + labels). Toggled by RIBBON.
+        if !isFloat {
+            RibbonUI.render(engine: engine, dw: dw)
         }
 
         // 2. Side panels — Layers on the left. Layers are document-local,

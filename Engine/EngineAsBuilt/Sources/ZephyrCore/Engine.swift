@@ -218,6 +218,10 @@ public final class PhrostEngine {
     public private(set) var loopController: EngineLoopController!
     /// Registry of every OS window owned by the engine (main + auxiliaries).
     public let windowManager = EngineWindowManager()
+    /// Loads the AutoLISP ribbon definition and owns the live ribbon model.
+    /// Created by the app at startup (it needs the command processor); nil
+    /// until then, and the UI simply renders nothing while it is nil.
+    public var ribbonLoader: RibbonSpecLoader?
     /// Tab ID shown in the main window's canvas. Follows the active tab while
     /// it is docked; untouched while a float window is focused. Nil when every
     /// tab floats.
@@ -760,9 +764,13 @@ public final class PhrostEngine {
         self.ui.dataTablePanelVisible = settings.dataTablePanelVisible
         self.ui.showPropertiesPanel = settings.showPropertiesPanel
         self.ui.showFPS = settings.showFPS
-        self.ui.toolbarVisible = settings.toolbarVisible
         self.ui.hasCompletedSetup = settings.hasCompletedSetup
         self.ui.radialNavVisible = settings.radialNavVisible
+        self.ui.ribbonVisible = settings.ribbonVisible
+        self.ui.activeRibbonTab = settings.activeRibbonTab
+        if let mode = RibbonDisplayMode(rawValue: settings.ribbonMode) {
+            self.ui.ribbonMode = mode
+        }
 
         print("Zephyr Initialized Successfully")
     }

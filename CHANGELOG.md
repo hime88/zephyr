@@ -23,6 +23,7 @@ Monthly digest condensed from the git history. Instead of per-release notes, all
 - Linux support with Snap, AppImage, and Flatpak packaging (x64 and ARM64)
 - Catppuccin themes and dropdown/slider contrast; Hatch and PenStroke UI theming
 - Improved TRIM command
+- Ribbon: AutoLISP-defined command chrome in a dockable window — tabs/panels/items, procedural icons, flyouts, live enable/check state from system variables, classic `File/Edit/View` menu bar, labels-only and icons+labels presentations, and hot reload of `lisp/ribbon.lsp` (`RIBBON`, `RIBBONMODE`, `RIBBONRELOAD`)
 - Unified Escape/Enter/Space keyboard workflow: single Escape cascade that cancels editors, gestures, commands, snaps and selection one layer at a time, with grip and drag cancelled back to their pre-drag snapshot; Space now commits like Enter while preserving custom Space handling in TRIM and EXPLODE; idle Enter repeats the last command
 - Swift 6.4 migration; SDL3 3.4.18 and SDL3_image 3.4.8
 - macOS Universal binary and bundled Swift runtime
