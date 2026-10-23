@@ -61,7 +61,7 @@ On top of that, finding great cross-platform tools that treat macOS and Linux as
 ## Why Zephyr?
 
 - **QCAD/LibreCAD replacement** — DXF parsing that actually works: MText formatting, SHX shape fonts, NURBS splines, dimension styles, and title blocks all render correctly. No raw escape codes leaking into labels, no scrambled curves, no missing logos.
-- **AutoCAD LT alternative** — AutoCAD muscle memory preserved. `L`, `PL`, `C`, `REC`, `M`, `O`, `TR`, `J` all work. Command palette with fuzzy autocomplete, polar tracking, object snap tracking, grips, and a full snap engine.
+- **AutoCAD LT alternative** — AutoCAD muscle memory preserved. `L`, `PL`, `C`, `REC`, `M`, `O`, `TR`, `J` all work. Command palette with fuzzy autocomplete, polar tracking, object snap tracking, grips, and a full snap engine. The ribbon and its classic `File / Edit / View` menu bar are AutoLISP files you can rewrite, not compiled-in chrome.
 - **GPU-native** — Metal on macOS, Direct3D 12 on Windows, Vulkan on Linux. Single Swift rendering pipeline. 120 FPS canvas with pixel-perfect GPU picking. No OpenGL emulation layer.
 - **Free forever** — GPL v3. No account, no email gate, no subscription.
 
@@ -408,7 +408,7 @@ Not yet supported (Tier 2, clean errors for now): DCL dialogs, reactors, the res
 - **External References palette** — One list for drawing xrefs, images, and PDF underlays: status, saved vs found-at path, size/date, and Load/Unload/Reload/Repath/Detach/Bind/Embed actions. Toggle with `XREF`.
 - **Radial navigation** — Right-click radial menu for pan, zoom, fit (`NAV` to toggle).
 - **Text editor** — Modal dialog for text creation/editing with font selection, height, rotation, alignment, and MTEXT width.
-- **Ribbon** — Tabs (Home, Insert, Annotate, View, Manage, Output, Custom) of panels with buttons, flyouts and live state: items grey out when the command cannot run (nothing selected, nothing to undo) and toggles like Grid/Ortho show their current state from the drawing's system variables. One control cycles the presentation: `File / Edit / View …` menu bar → labels-only ribbon → icons + labels. Dock it anywhere like the other panels; `RIBBON` toggles it and the layout persists.
+- **Ribbon** — Tabs (Home, Insert, Annotate, View, Manage, Output, Custom) of panels with buttons, flyouts and live state: items grey out when the command cannot run (nothing selected, nothing to undo) and toggles like Grid/Ortho show their current state from the drawing's system variables. One control cycles the presentation: `File / Edit / View …` menu bar → labels-only ribbon → icons + labels. Dock it anywhere like the other panels — a docked ribbon shrinks to the active presentation so the canvas takes the space back — `RIBBON` toggles it and the layout persists.
 
 #### Customizing the ribbon
 
@@ -439,7 +439,7 @@ Any registered command can be used, including your own `c:` routines (`(zr-big "
 - **BVH spatial index** — Accelerated hit testing and viewport culling
 
 ### Display & Theme
-- **Dark/Light theme** toggle (`THEME` command or toolbar button).
+- **Dark/Light theme** toggle (`THEME` command, or the View ribbon's Display panel).
 - **Background color** — settable via `SET-BACKGROUND <hex|ACI>`.
 - **Auto-contrast toggle** — `AUTOCONTRAST [ON/OFF]` toggles viewport auto-contrast clamping for 24-bit TrueColors and gradient fills while preserving contrast adjustment for standard ACI 1–255 colors (persisted per document in `.eab`).
 - **Display palette generation counter** ensures line colors update immediately on background/theme change without requiring a zoom.

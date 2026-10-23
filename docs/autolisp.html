@@ -79,6 +79,7 @@ h2 { font-size:28px; letter-spacing:-.02em; margin:48px 0 16px; }
   text-align:left; padding:10px 16px; border-bottom:1px solid var(--border-soft); }
 .cmds td { padding:12px 16px; border-bottom:1px solid var(--border-soft); color:var(--text-2); }
 .cmds td:first-child { font-family:'Geist Mono',monospace; color:var(--accent); font-weight:500; white-space:nowrap; }
+.cmds.forms td:first-child { white-space:normal; }
 pre.example { background:var(--code-bg); border:1px solid var(--border-soft); border-radius:12px;
   padding:20px 24px; font-family:'Geist Mono',monospace; font-size:13px; line-height:1.6; overflow-x:auto; }
 .filters { display:flex; gap:8px; margin:8px 0 24px; flex-wrap:wrap; align-items:center; }
@@ -165,6 +166,74 @@ footer .wrap { display:flex; justify-content:space-between; gap:16px; flex-wrap:
             (subst '(62 . 1) (assoc 62 e) e)
             (append e (list '(62 . 1)))))
   (setq i (1+ i)))</pre>
+    <h2 id="ribbon">Defining the ribbon</h2>
+    <p>The ribbon and its classic <code>File</code> / <code>Edit</code> / <code>View</code> menu bar are not
+    compiled into the binary &mdash; they are an AutoLISP file, <code>lisp/ribbon.lsp</code>. It is copied into the
+    per-user app-data directory on first run, reloads itself about a second after you save, and keeps the previous
+    layout live if an edit fails to parse. Nothing here needs a rebuild or a restart.</p>
+    <p>A definition file defines one function, <code>zephyr-ribbon</code>, which returns the layout with the helpers
+    below. Everything else in the file may be ordinary AutoLISP &mdash; loops, conditionals, <code>append</code> &mdash;
+    so a ribbon can be generated from a table instead of typed out by hand.</p>
+    <table class="cmds forms">
+      <tr><th>FORM</th><th>MEANING</th></tr>
+      <tr><td>(zr-ribbon menubar tabs)</td><td>The whole definition: a menu bar section and/or a tab section (either may be <code>nil</code>)</td></tr>
+      <tr><td>(zr-menubar menus)</td><td>Classic menu bar, shown in the collapsed "menu" presentation</td></tr>
+      <tr><td>(zr-menu title items)</td><td>One top-level menu &mdash; <code>File</code>, <code>Edit</code>, <code>Draw</code>&hellip;</td></tr>
+      <tr><td>(zr-tabs tabs)</td><td>Ribbon tabs, shown in the "labels" and "icons" presentations</td></tr>
+      <tr><td>(zr-tab title panels)</td><td>One ribbon tab &mdash; <code>Home</code>, <code>Insert</code>&hellip;</td></tr>
+      <tr><td>(zr-panel title items)</td><td>One panel inside a tab, titled underneath the buttons</td></tr>
+      <tr><td>(zr-big cmd label icon opts)</td><td>Large ribbon button: icon above label</td></tr>
+      <tr><td>(zr-small cmd label icon opts)</td><td>Small ribbon button: icon beside label</td></tr>
+      <tr><td>(zr-item cmd label opts)</td><td>Menu entry (menus have no icon column)</td></tr>
+      <tr><td>(zr-drop label items)</td><td>Ribbon flyout / menu entry with sub-items</td></tr>
+      <tr><td>(zr-sub title items)</td><td>Submenu inside a menu</td></tr>
+      <tr><td>(zr-sep)</td><td>Separator</td></tr>
+    </table>
+    <p>Every container takes a <em>list</em> of children (this AutoLISP enforces exact arity and has no rest
+    arguments), and <code>cmd</code> is any command name &mdash; including your own <code>c:</code> routines. Pass
+    <code>nil</code> for <code>icon</code> to derive it from the command name; an unknown name draws a letter
+    placeholder rather than an empty button.</p>
+    <table class="cmds forms">
+      <tr><th>OPTION / PREDICATE</th><th>EFFECT</th></tr>
+      <tr><td>(zr-enable pred)</td><td>Grey the entry out unless every predicate holds</td></tr>
+      <tr><td>(zr-check pred)</td><td>Draw the entry pressed while the predicates hold (toggles)</td></tr>
+      <tr><td>(zr-tip text)</td><td>Tooltip</td></tr>
+      <tr><td>(zr-sel n) &middot; (zr-nocmd) &middot; (zr-cmd name)</td><td>Selection count, no command running, a specific command running</td></tr>
+      <tr><td>(zr-undoable) &middot; (zr-redoable) &middot; (zr-dirty)</td><td>Undo/redo available, drawing has unsaved changes</td></tr>
+      <tr><td>(zr-var name value)</td><td>System variable equals a value &mdash; <code>(zr-var "GRIDMODE" 1)</code></td></tr>
+      <tr><td>(zr-tabcount n)</td><td>At least <code>n</code> drawings open</td></tr>
+    </table>
+    <p>State is evaluated live every frame, but never by calling LISP: predicates read the drawing, the selection and
+    the same system-variable store <code>getvar</code> uses, so a routine that changes <code>GRIDMODE</code> updates
+    the ribbon immediately. Labels interpolate system variables too &mdash; <code>"Layer: %CLAYER%"</code> follows
+    the active layer.</p>
+    <pre class="example">;; ribbon.lsp - excerpt
+(defun zephyr-ribbon ()
+  (zr-ribbon
+    (zr-menubar
+      (list (zr-menu "File"
+              (list (zr-item "NEW"  "New"  nil)
+                    (zr-item "OPEN" "Open..." nil)
+                    (zr-sep)
+                    (zr-item "SAVE" "Save" nil)))))
+    (zr-tabs
+      (list (zr-tab "Home"
+              (list (zr-panel "Draw"
+                      (list (zr-big   "LINE"   "Line"   "line" nil)
+                            (zr-small "CIRCLE" "Circle" "circle" nil)))
+                    (zr-panel "Modify"
+                      (list (zr-big "ERASE" "Erase" "erase"
+                              (list (zr-enable (zr-sel 1))))
+                            (zr-small "GRID" "Grid: %GRIDMODE%" "grid"
+                              (list (zr-check (zr-var "GRIDMODE" 1))))))))))))</pre>
+    <table class="cmds">
+      <tr><th>COMMAND</th><th>DESCRIPTION</th></tr>
+      <tr><td>RIBBON</td><td>Show or hide the ribbon (a dockable window; its position persists)</td></tr>
+      <tr><td>RIBBONMODE</td><td>Menu bar, labels, or icons + labels. Bare Enter reports the current presentation</td></tr>
+      <tr><td>RIBBONRELOAD</td><td>Re-read the definition file and rebuild the layout</td></tr>
+    </table>
+    <p class="note">The definition is a layout document, not a dialog toolkit: it cannot create arbitrary windows
+    or ask for input while loading. For that, <code>DCL</code> dialogs are the Tier&nbsp;2 item on the roadmap.</p>
     <h2>Function reference</h2>
     <div class="filters">
       <button data-filter="all" aria-pressed="true">All 305</button>

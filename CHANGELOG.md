@@ -2,11 +2,11 @@
 
 Monthly digest condensed from the git history. Instead of per-release notes, all changes are grouped by calendar month and summarized by topic under **Features**, **Bug Fixes**, and **Performance**.
 
-> Generated from 301 commits (2026-06-23 → 2026-10-22).
+> Generated from 304 commits (2026-06-23 → 2026-10-23).
 
 ## October 2026
 
-113 commits · 2026-10-08 – 2026-10-22
+116 commits · 2026-10-08 – 2026-10-23
 
 ### Features
 - AutoLISP support: native engine (FDScript merge), full dispatch, file picker, persistent session, `c:` command dispatch, and examples
@@ -24,6 +24,8 @@ Monthly digest condensed from the git history. Instead of per-release notes, all
 - Catppuccin themes and dropdown/slider contrast; Hatch and PenStroke UI theming
 - Improved TRIM command
 - Ribbon: AutoLISP-defined command chrome in a dockable window — tabs/panels/items, procedural icons, flyouts, live enable/check state from system variables, classic `File/Edit/View` menu bar, labels-only and icons+labels presentations, and hot reload of `lisp/ribbon.lsp` (`RIBBON`, `RIBBONMODE`, `RIBBONRELOAD`)
+- Ribbon definition ships as an editable file: `lisp/ribbon.lsp` is copied into the per-user app-data directory on first run, reloads itself after a save, and leaves the previous layout live if an edit fails to parse
+- Ribbon presentation control: one button cycles menu bar → labels only → icons + labels, and a docked ribbon resizes to whichever presentation is active so the canvas reclaims the space
 - Unified Escape/Enter/Space keyboard workflow: single Escape cascade that cancels editors, gestures, commands, snaps and selection one layer at a time, with grip and drag cancelled back to their pre-drag snapshot; Space now commits like Enter while preserving custom Space handling in TRIM and EXPLODE; idle Enter repeats the last command
 - Swift 6.4 migration; SDL3 3.4.18 and SDL3_image 3.4.8
 - macOS Universal binary and bundled Swift runtime
@@ -43,6 +45,10 @@ Monthly digest condensed from the git history. Instead of per-release notes, all
 - Swift 6.4/macOS build fixes (reverted APIs requiring macOS 26/27, header-only shim targets, zlib-ng)
 - CI fixes across Windows, macOS, and Linux; DXC pinned for glibc 2.35 compatibility; REFPATHTYPE 0/2 mapping
 - `test.ps1` test-runner wrapper: sets the SDL3/zlib-ng build environment, detects host arch and Visual Studio, pre-builds the test bundle, and propagates exit codes
+- Ribbon flyouts ("More" dropdowns) opened without drawing anything: a popup is only rendered in frames where `BeginPopup` is submitted, and the flyout code skipped it unless the button had just been clicked
+- Docked ribbon kept the taller dock-node height after the presentation changed; the node is now resized with the active mode
+- AutoLISP system variables are app-wide instead of per-run, so `(setvar …)` survives across LOAD/EVAL and is readable by UI chrome; `GRID`, `ORTHO` and `POLAR` now keep `GRIDMODE`, `ORTHOMODE` and `POLARMODE` in step with the viewport
+- Feature commands registered without a descriptor (`PENSTROKE`, `REVCLOUD`, `TABLE`, `IMAGE`, `CLIP`) were missing from the command catalog and any menu built from it
 
 ### Performance
 - DXF import: 1.99 s → 0.91 s (per-entity string format hoisting, byte-scanning of group pairs, skipping code-page conversion)

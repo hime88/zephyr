@@ -197,6 +197,7 @@
     <div style="display:flex; gap:28px; font-size:14px; color:var(--text-2);">
       <a href="#features" style-hover="color:var(--text);">Features</a>
       <a href="#multi-window" style-hover="color:var(--text);">Windows</a>
+      <a href="#ribbon" style-hover="color:var(--text);">Ribbon</a>
       <a href="#compatibility" style-hover="color:var(--text);">Compatibility</a>
       <a href="#references" style-hover="color:var(--text);">References</a>
       <a href="#proof" style-hover="color:var(--text);">Proof</a>
@@ -821,6 +822,72 @@
           Split layouts belong to the main window. Floated drawings are not split further, and split/float arrangements are session state rather than named configurations.
         </p>
       </div>
+
+      <div id="ribbon" style="margin-top:80px; scroll-margin-top:96px;">
+        <div style="max-width:780px; margin-bottom:44px;">
+          <div style="font-family:'Geist Mono'; font-size:11px; color:var(--accent); letter-spacing:0.16em; margin-bottom:14px;">RIBBON &middot; MENU BAR &middot; LABELS</div>
+          <h3 style="font-size:40px; line-height:1.05; letter-spacing:-0.03em; margin:0 0 18px; font-weight:600;">The ribbon is a LISP file, not a compiled layout.</h3>
+          <p style="font-size:16px; line-height:1.6; color:var(--text-2); margin:0;">
+            Tabs, panels, buttons, flyouts, their order and their labels live in <span style="font-family:'Geist Mono';">lisp/ribbon.lsp</span>. Edit it, save, and the ribbon rebuilds in place &mdash; no build, no restart, and a definition that fails to parse leaves the previous one working. Every entry names a command, so your own <span style="font-family:'Geist Mono';">c:</span> routines go onto a button in one line.
+          </p>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 0.92fr 1.08fr; gap:56px; align-items:start;">
+          <div>
+            <div style="display:flex; flex-direction:column; gap:22px; font-size:14px; line-height:1.6; color:var(--text-2);">
+              <div>
+                <div style="font-family:'Geist Mono'; font-size:11px; color:var(--accent); margin-bottom:5px;">THREE PRESENTATIONS</div>
+                <strong style="color:var(--text); font-weight:600;">One control cycles them; the choice persists.</strong>
+                Classic <span style="font-family:'Geist Mono';">File / Edit / View</span> menu bar, a labels&#8209;only ribbon, or icons plus labels. Same definition, compressed to fit the screen you have.
+              </div>
+              <div>
+                <div style="font-family:'Geist Mono'; font-size:11px; color:var(--accent); margin-bottom:5px;">LIVE STATE</div>
+                <strong style="color:var(--text); font-weight:600;">Buttons know when they cannot run.</strong>
+                <span style="font-family:'Geist Mono';">(zr-enable (zr-sel 1))</span> greys Erase until something is selected, <span style="font-family:'Geist Mono';">(zr-check (zr-var &quot;GRIDMODE&quot; 1))</span> latches Grid to the real toggle, and <span style="font-family:'Geist Mono';">&quot;Layer: %CLAYER%&quot;</span> follows the active layer.
+              </div>
+              <div>
+                <div style="font-family:'Geist Mono'; font-size:11px; color:var(--accent); margin-bottom:5px;">DOCKED OR FLOATING</div>
+                <strong style="color:var(--text); font-weight:600;">Drag it anywhere, like the panels.</strong>
+                A docked ribbon resizes itself to the active presentation, so the canvas takes the space back the moment you collapse it. Position survives restarts.
+              </div>
+              <div>
+                <div style="font-family:'Geist Mono'; font-size:11px; color:var(--accent); margin-bottom:5px;">DRAWN, NOT SHIPPED</div>
+                <strong style="color:var(--text); font-weight:600;">No icon font, no bitmaps.</strong>
+                58 named icons are drawn as line art, so they stay crisp at any DPI and follow the theme &mdash; and an unknown icon name still renders a letter placeholder instead of an empty button.
+              </div>
+            </div>
+
+            <div style="margin-top:32px; padding:20px 22px; background:var(--bg); border:1px solid var(--border-soft); border-radius:10px; font-size:14px; line-height:1.6; color:var(--text-2);">
+              <span style="color:var(--text); font-weight:600;">Commands:</span>
+              <span style="font-family:'Geist Mono'; color:var(--accent);">RIBBON</span> toggles it,
+              <span style="font-family:'Geist Mono'; color:var(--accent);">RIBBONMODE</span> switches presentation, and
+              <span style="font-family:'Geist Mono'; color:var(--accent);">RIBBONRELOAD</span> re-reads the file &mdash; though saving it is usually enough.
+            </div>
+          </div>
+
+          <div style="background:var(--canvas); border:1px solid var(--border); border-radius:14px; overflow:hidden; box-shadow: var(--shadow-lg);">
+            <div style="height:34px; background:var(--bg-panel); border-bottom:1px solid var(--border-soft); display:flex; align-items:center; gap:8px; padding:0 12px;">
+              <span style="width:10px; height:10px; border-radius:50%; background:#ff5f57;"></span>
+              <span style="width:10px; height:10px; border-radius:50%; background:#febc2e;"></span>
+              <span style="width:10px; height:10px; border-radius:50%; background:#28c840;"></span>
+              <div style="flex:1; text-align:center; font-family:'Geist Mono'; font-size:11px; color:var(--text-3);">ribbon.lsp &middot; reloads when you save</div>
+            </div>
+            <pre style="margin:0; padding:24px 28px; font-family:'Geist Mono'; font-size:13px; line-height:1.7; color:var(--text); overflow-x:auto;"><code>(defun zephyr-ribbon ()
+  (zr-ribbon
+    (zr-menubar
+      (list (zr-menu &quot;File&quot;
+              (list (zr-item &quot;NEW&quot;  &quot;New&quot;   nil)
+                    (zr-item &quot;OPEN&quot; &quot;Open...&quot; nil)))))
+    (zr-tabs
+      (list (zr-tab &quot;Home&quot;
+              (list (zr-panel &quot;Modify&quot;
+                      (list (zr-big &quot;ERASE&quot; &quot;Erase&quot; &quot;erase&quot;
+                              (list (zr-enable (zr-sel 1))))
+                            (zr-small &quot;GRID&quot; &quot;Grid: %GRIDMODE%&quot; &quot;grid&quot;
+                              (list (zr-check (zr-var &quot;GRIDMODE&quot; 1))))))))))))</code></pre>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </section>
@@ -839,6 +906,10 @@
         </p>
         <p style="font-size:17px; line-height:1.55; color:var(--text-2); margin:0 0 32px;">
           Identical behavior on <span style="color:var(--text); font-weight:500;">macOS, Windows, and Linux</span> — the platform AutoCAD LT blocks LISP on is a first-class citizen here. Unsupported Tier‑2 calls report clean errors instead of failing silently.
+        </p>
+        <p style="font-size:17px; line-height:1.55; color:var(--text-2); margin:0 0 32px;">
+          It is not only drawing automation: the ribbon and its <span style="font-family:'Geist Mono'; font-size:15px; color:var(--text);">File / Edit / View</span> menu bar are an AutoLISP file too.
+          <a href="#ribbon" style="color:var(--accent); text-decoration:underline;">See how the ribbon is defined →</a>
         </p>
         <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
           <a href="./autolisp.html" style="padding:10px 18px; background:var(--accent); color:var(--navy); border-radius:8px; font-size:14px; font-weight:500;" style-hover="background:var(--accent-2);">
@@ -1372,6 +1443,7 @@ class Component extends DCLogic {
         { label: 'External references (XREF)',     zephyr: '✓',            autocad: '✓',            qcad: 'Varies' },
         { label: 'Referenced image/PDF underlays', zephyr: '✓',            autocad: '✓',            qcad: 'Varies' },
         { label: 'AutoLISP automation',             zephyr: '✓ 305 builtins', autocad: 'Win only (LT)', qcad: '—' },
+        { label: 'Ribbon + menu bar in AutoLISP', zephyr: '✓ .lsp file',  autocad: 'CUIx (XML)',   qcad: '—' },
         { label: 'Quick Measure (hover)',          zephyr: '✓',            autocad: '—',            qcad: '—' },
         { label: 'Clean Speckles (by example)',    zephyr: '✓',            autocad: '—',            qcad: '—' },
         { label: 'Split panes, different drawings', zephyr: '✓',           autocad: 'VPORTS: one drawing', qcad: 'Varies' },
