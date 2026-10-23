@@ -2,11 +2,11 @@
 
 Monthly digest condensed from the git history. Instead of per-release notes, all changes are grouped by calendar month and summarized by topic under **Features**, **Bug Fixes**, and **Performance**.
 
-> Generated from 297 commits (2026-06-23 → 2026-10-22).
+> Generated from 301 commits (2026-06-23 → 2026-10-22).
 
 ## October 2026
 
-109 commits · 2026-10-08 – 2026-10-22
+113 commits · 2026-10-08 – 2026-10-22
 
 ### Features
 - AutoLISP support: native engine (FDScript merge), full dispatch, file picker, persistent session, `c:` command dispatch, and examples
@@ -23,6 +23,7 @@ Monthly digest condensed from the git history. Instead of per-release notes, all
 - Linux support with Snap, AppImage, and Flatpak packaging (x64 and ARM64)
 - Catppuccin themes and dropdown/slider contrast; Hatch and PenStroke UI theming
 - Improved TRIM command
+- Unified Escape/Enter/Space keyboard workflow: single Escape cascade that cancels editors, gestures, commands, snaps and selection one layer at a time, with grip and drag cancelled back to their pre-drag snapshot; Space now commits like Enter while preserving custom Space handling in TRIM and EXPLODE; idle Enter repeats the last command
 - Swift 6.4 migration; SDL3 3.4.18 and SDL3_image 3.4.8
 - macOS Universal binary and bundled Swift runtime
 - Website and docs: Linux support, AutoLISP, OFFSET, corrected downloads, roadmap
@@ -40,6 +41,7 @@ Monthly digest condensed from the git history. Instead of per-release notes, all
 - Windows builds missing DLLs; engine init crash; `igInputText` warnings
 - Swift 6.4/macOS build fixes (reverted APIs requiring macOS 26/27, header-only shim targets, zlib-ng)
 - CI fixes across Windows, macOS, and Linux; DXC pinned for glibc 2.35 compatibility; REFPATHTYPE 0/2 mapping
+- `test.ps1` test-runner wrapper: sets the SDL3/zlib-ng build environment, detects host arch and Visual Studio, pre-builds the test bundle, and propagates exit codes
 
 ### Performance
 - DXF import: 1.99 s → 0.91 s (per-entity string format hoisting, byte-scanning of group pairs, skipping code-page conversion)
