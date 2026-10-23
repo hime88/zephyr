@@ -162,8 +162,12 @@ public struct DynamicNumericInput {
             return .consumed
         }
 
-        // --- Return / Enter ---
-        if scancode == SDL_SCANCODE_RETURN || scancode == SDL_SCANCODE_KP_ENTER {
+        // --- Return / Enter / Space (all three commit the active field) ---
+        // Space is AutoCAD's other "accept" key. `handleEnter()` returns
+        // `.ignored` when no field has input, so an idle Space still falls
+        // through to the caller's own Space handling.
+        if scancode == SDL_SCANCODE_RETURN || scancode == SDL_SCANCODE_KP_ENTER
+            || scancode == SDL_SCANCODE_SPACE {
             return handleEnter()
         }
 

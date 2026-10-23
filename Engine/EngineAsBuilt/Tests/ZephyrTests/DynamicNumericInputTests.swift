@@ -68,4 +68,55 @@ final class DynamicNumericInputTests: XCTestCase {
         }
         XCTAssertFalse(input.hasInput)
     }
+
+    // MARK: - Space as a commit key
+
+    func testEmptySpaceIsIgnored() {
+        var input = DynamicNumericInput()
+        guard case .ignored = input.handleKey(SDL_SCANCODE_SPACE) else {
+            XCTFail("empty Space must be .ignored so the command keeps its own Space handling")
+            return
+        }
+        _ = input.handleKey(SDL_SCANCODE_TAB)
+        XCTAssertEqual(input.activeField, .angle)
+        guard case .ignored = input.handleKey(SDL_SCANCODE_SPACE) else {
+            XCTFail("empty Space in angle field must be .ignored")
+            return
+        }
+    }
+
+    func testSpaceWithValueCommits() {
+        var input = DynamicNumericInput()
+        _ = input.handleKey(SDL_SCANCODE_1)
+        _ = input.handleKey(SDL_SCANCODE_2)
+        guard case .commitValue(let dist) = input.handleKey(SDL_SCANCODE_SPACE) else {
+            XCTFail("Space with 12 typed must commit")
+            return
+        }
+        XCTAssertEqual(dist, 12)
+    }
+
+    func testSpaceWithPartialInputPreservesIt() {
+        var input = DynamicNumericInput()
+        _ = input.handleKey(SDL_SCANCODE_MINUS)
+        guard case .consumed = input.handleKey(SDL_SCANCODE_SPACE) else {
+            XCTFail("Space on invalid partial input must be .consumed")
+            return
+        }
+        XCTAssertEqual(input.distanceBuffer, "-")
+    }
+
+    func testSpaceInAngleFieldCommitsAngle() {
+        var input = DynamicNumericInput()
+        _ = input.handleKey(SDL_SCANCODE_TAB)
+        XCTAssertEqual(input.activeField, .angle)
+        _ = input.handleKey(SDL_SCANCODE_4)
+        _ = input.handleKey(SDL_SCANCODE_5)
+        guard case .commitAngle(let deg) = input.handleKey(SDL_SCANCODE_SPACE) else {
+            XCTFail("Space with 45 in the angle field must commit the angle")
+            return
+        }
+        XCTAssertEqual(deg, 45)
+        XCTAssertEqual(input.activeField, .distance)
+    }
 }

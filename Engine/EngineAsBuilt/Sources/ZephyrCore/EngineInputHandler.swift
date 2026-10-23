@@ -562,28 +562,22 @@ internal final class EngineInputHandler {
         let scancode = e.key.scancode
         var routedEnterToFeatureCommand = false
 
+        // ── Unified Escape cascade ──
+        // Escape always means "give me a clean state". The cascade walks the
+        // interaction stack from the innermost transient thing outward, so a
+        // single Escape only ever undoes ONE layer (users press Escape
+        // repeatedly to wind the state back down). When every layer is idle
+        // it clears the remaining transient state (snaps, buffers, previews)
+        // and finally the selection.
         if scancode == SDL_SCANCODE_ESCAPE {
-            if engine.ui.layerMoveActive {
-                engine.ui.layerMoveActive = false
-                engine.ui.layerMoveBuffer = ""
-                engine.ui.layerMoveMatches = []
-                return
-            }
-            if engine.commandProcessor.activeFeatureCommand != nil {
-                engine.commandProcessor.commandLineActive = false
-                engine.commandProcessor.commandBuffer = ""
-                engine.commandProcessor.finishFeatureCommand(engine: engine)
-                return
-            }
-            if engine.commandProcessor.commandLineActive {
-                engine.commandProcessor.commandLineActive = false
-                engine.commandProcessor.commandBuffer = ""
-                return
-            }
+            handleEscapeCascade()
+            return
         }
 
         if (scancode == SDL_SCANCODE_RETURN || scancode == SDL_SCANCODE_KP_ENTER),
            !engine.commandProcessor.commandLineActive,
+           !engine.textManager.isEditorActive,
+           !engine.interaction.tableCellEditorActive,
            let featureCmd = engine.commandProcessor.activeFeatureCommand {
             routedEnterToFeatureCommand = true
             let result = featureCmd.handleKeyDown(
@@ -598,6 +592,54 @@ internal final class EngineInputHandler {
                 return
             case .continue:
                 break
+            }
+        }
+
+        // ── Space as a commit key ──
+        // AutoCAD treats Space exactly like Enter for "finish this step".
+        // Space is also a literal text character, so this is deliberately
+        // gated much more tightly than the Enter hoist above: it must not
+        // fire while ImGui owns the keyboard, nor while the user is typing
+        // in the command line, a text editor, or a table cell.
+        //
+        // Commands that define their OWN Space behaviour (Trim, Explode, …)
+        // get first refusal: we dispatch the real Space scancode, and only
+        // when the command declines (.continue) do we re-dispatch it as
+        // Return so Enter-only commands behave identically under Space.
+        if scancode == SDL_SCANCODE_SPACE,
+           !handledByImGui,
+           !engine.commandProcessor.commandLineActive,
+           !engine.textManager.isEditorActive,
+           !engine.interaction.tableCellEditorActive,
+           !engine.ui.layerMoveActive,
+           !engine.interaction.gripActive,
+           !engine.interaction.dragActive,
+           !engine.interaction.rectSelectActive,
+           let featureCmd = engine.commandProcessor.activeFeatureCommand {
+            let spaceResult = featureCmd.handleKeyDown(
+                scancode: scancode,
+                engine: engine,
+                processor: engine.commandProcessor)
+            switch spaceResult {
+            case .finished:
+                engine.commandProcessor.finishFeatureCommand(engine: engine)
+                return
+            case .handled:
+                return
+            case .continue:
+                let enterResult = featureCmd.handleKeyDown(
+                    scancode: SDL_SCANCODE_RETURN,
+                    engine: engine,
+                    processor: engine.commandProcessor)
+                switch enterResult {
+                case .finished:
+                    engine.commandProcessor.finishFeatureCommand(engine: engine)
+                    return
+                case .handled:
+                    return
+                case .continue:
+                    break  // fall through to global Space behaviour below
+                }
             }
         }
 
@@ -717,26 +759,6 @@ internal final class EngineInputHandler {
                 }
 
                 switch e.key.scancode {
-                case SDL_SCANCODE_ESCAPE:
-                    engine.snap.lockedSnap = nil
-                    engine.snap.snapTrackingEngine.clear()
-                    engine.snap.lastPolarResult = nil
-                    engine.commandProcessor.pendingDistanceBuffer = ""
-                    // Feature command already got Esc above; only reach here if
-                    // it returned .continue (didn't handle it) or no command active.
-                    if engine.commandProcessor.activeCommand != nil {
-                        engine.commandProcessor.clearCommand()
-                    } else if engine.interaction.rectSelectActive {
-                        engine.interaction.cancelRectSelect()
-                    } else if engine.interaction.tableCellEditorActive {
-                        DataTableEditor.cancelCellEditing(engine: engine)
-                    } else if let handle = engine.interaction.selectedTableHandle,
-                              engine.interaction.tableSelectionRange != nil {
-                        engine.interaction.selectTable(handle: handle)
-                    } else if engine.cadSelection.hasSelection {
-                        engine.cadSelection.clearSelection()
-                        engine.interaction.clearDataTableEditingState()
-                    }
                 case SDL_SCANCODE_DELETE, SDL_SCANCODE_BACKSPACE:
                     if !engine.commandProcessor.pendingDistanceBuffer.isEmpty {
                         _ = engine.commandProcessor.pendingDistanceBuffer.removeLast()
@@ -757,12 +779,10 @@ internal final class EngineInputHandler {
                     handleArrowDown()
 
                 case SDL_SCANCODE_SPACE:
-                    // Space repeats last command (AutoCAD style).
-                    // Only fires when no command / command-line / layer-move is active.
-                    if !engine.commandProcessor.commandLineActive
-                        && engine.commandProcessor.activeCommand == nil
-                        && engine.commandProcessor.activeFeatureCommand == nil
-                        && !engine.ui.layerMoveActive {
+                    // Space repeats the last command (AutoCAD style).
+                    // Any custom Space handling lived in the feature command
+                    // and already ran in the Space hoist above.
+                    if shouldRepeatLastCommandOnKey {
                         engine.commandProcessor.repeatLastCommand(engine: engine)
                     }
                 case SDL_SCANCODE_LEFTBRACKET:
@@ -823,7 +843,8 @@ internal final class EngineInputHandler {
             }
         }
 
-        // Enter key: confirm layer-move popup OR apply direct distance entry.
+        // Enter key: confirm layer-move popup, apply direct distance entry,
+        // or repeat the last command (AutoCAD-style).
         // (Feature command already received Enter via the hoisted routing above.)
         if e.key.scancode == SDL_SCANCODE_RETURN || e.key.scancode == SDL_SCANCODE_KP_ENTER {
             if engine.ui.layerMoveActive {
@@ -840,14 +861,166 @@ internal final class EngineInputHandler {
                 // Apply the accumulated distance.
                 engine.commandProcessor.executeCommand(engine.commandProcessor.pendingDistanceBuffer)
                 engine.commandProcessor.pendingDistanceBuffer = ""
+            } else if shouldRepeatLastCommandOnKey {
+                // Idle Enter repeats the last command, matching Space.
+                engine.commandProcessor.repeatLastCommand(engine: engine)
             }
         }
+    }
+
+    /// Whether Enter/Space should act as "repeat the last command".
+    /// Only true when nothing would be lost by doing so: no command line
+    /// input, no running command, no picker/editor capturing keystrokes,
+    /// and no partially typed numeric input.
+    private var shouldRepeatLastCommandOnKey: Bool {
+        !engine.commandProcessor.commandLineActive
+            && engine.commandProcessor.activeCommand == nil
+            && engine.commandProcessor.activeFeatureCommand == nil
+            && engine.commandProcessor.pendingDistanceBuffer.isEmpty
+            && !engine.ui.layerMoveActive
+            && !engine.textManager.isEditorActive
+            && !engine.interaction.tableCellEditorActive
+            && !engine.interaction.gripActive
+            && !engine.interaction.dragActive
+            && !engine.interaction.rectSelectActive
     }
 
     private func handleKeyUp(event e: SDL_Event) {
         // No-op: space-held pan and space-to-open-command-line are removed.
         // Pan is now exclusively via middle-mouse drag or two-finger trackpad.
         // Command line opens by typing any letter key.
+    }
+
+    // MARK: - Escape Cascade
+
+    /// Cancel exactly one layer of interaction state, innermost first.
+    ///
+    /// Escape is the universal "get me out of this" key. Every press peels
+    /// off the most transient thing that is currently in progress:
+    ///
+    ///  1. layer-move picker (a transient combobox over the viewport)
+    ///  2. text editor dialog (DDEDIT / MTEXT)
+    ///  3. data-table cell editor
+    ///  4. grip drag (restores the pre-drag snapshot — the drag mutated
+    ///     the document live, so cancelling must roll it back)
+    ///  5. selection drag (same — restores the pre-drag snapshot)
+    ///  6. rectangle select (in-flight first click of a two-click selection)
+    ///  7. active feature command / command line / active command
+    ///  8. otherwise: clear snaps, numeric buffers, preview handles, selection
+    ///
+    /// Steps 1–7 each return immediately so one Escape only changes one
+    /// layer. Step 8 is the "nothing is active" fallback and performs the
+    /// full clean-up sweep.
+    private func handleEscapeCascade() {
+        let interaction = engine.interaction
+        let processor = engine.commandProcessor
+
+        // 1. Layer-move picker.
+        if engine.ui.layerMoveActive {
+            engine.ui.layerMoveActive = false
+            engine.ui.layerMoveBuffer = ""
+            engine.ui.layerMoveMatches = []
+            return
+        }
+
+        // 2. Text editor dialog (DDEDIT / MTEXT).
+        if engine.textManager.isEditorActive {
+            engine.textManager.isEditorActive = false
+            engine.textManager.editorResult = .cancelled
+            return
+        }
+
+        // 3. Data-table cell editor.
+        if interaction.tableCellEditorActive {
+            DataTableEditor.cancelCellEditing(engine: engine)
+            return
+        }
+
+        // 4. Grip drag — the grip may have already mutated the document in
+        //    real time, so roll it back to the pre-drag snapshot.
+        if interaction.gripActive {
+            if let snapshot = interaction.gripUndoSnapshot {
+                engine.document.restore(from: snapshot)
+            }
+            if let handle = interaction.gripHandle {
+                interaction.pendingPreviewHandles = [handle]
+                interaction.pendingPreviewIsBulkDrag = false
+            }
+            interaction.cachedGripGeneration = -1
+            interaction.gripActive = false
+            interaction.gripHandle = nil
+            interaction.gripUndoSnapshot = nil
+            interaction.resetGripVertexEditMode()
+            clearTransientSnapState()
+            interaction.clearWindowGestureIfIdle()
+            return
+        }
+
+        // 5. Selection drag — same rollback rule as the grip drag.
+        if interaction.dragActive {
+            if let snapshot = interaction.dragUndoSnapshot {
+                engine.document.restore(from: snapshot)
+                interaction.pendingPreviewHandles = engine.cadSelection.selectedHandles
+                interaction.pendingPreviewIsBulkDrag = true
+            }
+            interaction.dragActive = false
+            interaction.dragUndoSnapshot = nil
+            interaction.dragTotalWorldX = 0
+            interaction.dragTotalWorldY = 0
+            clearTransientSnapState()
+            interaction.clearWindowGestureIfIdle()
+            return
+        }
+
+        // 6. In-flight two-click rectangle selection.
+        if interaction.rectSelectActive {
+            interaction.cancelRectSelect()
+            return
+        }
+
+        // 7. Active feature command, command line, then legacy active command.
+        if processor.activeFeatureCommand != nil {
+            processor.commandLineActive = false
+            processor.commandBuffer = ""
+            processor.finishFeatureCommand(engine: engine)
+            return
+        }
+        if processor.commandLineActive {
+            processor.commandLineActive = false
+            processor.commandBuffer = ""
+            processor.commandSelectionIndex = 0
+            processor._lastMatchInput = ""
+            processor._cachedMatches = []
+            return
+        }
+        if processor.activeCommand != nil {
+            processor.clearCommand()
+            return
+        }
+
+        // 8. Nothing active — drop every remaining transient bit of state so
+        //    the next click starts from a genuinely clean slate. Live preview
+        //    handles are refreshed from the document on the next frame.
+        clearTransientSnapState()
+        processor.pendingDistanceBuffer = ""
+        interaction.pendingPreviewHandles.removeAll()
+        interaction.pendingPreviewIsBulkDrag = false
+
+        if let handle = interaction.selectedTableHandle,
+           interaction.tableSelectionRange != nil {
+            interaction.selectTable(handle: handle)
+        } else if engine.cadSelection.hasSelection {
+            engine.cadSelection.clearSelection()
+            interaction.clearDataTableEditingState()
+        }
+    }
+
+    /// Clear the ephemeral snap/tracking state shared by the Escape cascade.
+    private func clearTransientSnapState() {
+        engine.snap.lockedSnap = nil
+        engine.snap.snapTrackingEngine.clear()
+        engine.snap.currentSnapResult = nil
+        engine.snap.lastPolarResult = nil
     }
 
     // MARK: - Hotkey Helpers
