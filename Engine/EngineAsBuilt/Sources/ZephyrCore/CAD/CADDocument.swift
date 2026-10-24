@@ -1449,6 +1449,8 @@ public final class CADDocument {
         documentLock.withLock {
             var bounds = CADRenderBoundsAccumulator()
         let layersByName = visibleLayersOnly ? layersByUppercasedName() : [:]
+        // Rasters that never loaded render nothing; keep them out of extents.
+        let drawableImageNames = Set(effectiveImageStore.keys)
 
         for entity in entityRegistry.values {
             guard let layer = layerTable[entity.layerID] else { continue }
@@ -1619,6 +1621,7 @@ public final class CADDocument {
                             : (primitiveXData[index] ?? [:]),
                         backgroundScale: backgroundScale,
                         hasVisibleBackground: hasVisibleBackground,
+                        drawableImageNames: drawableImageNames,
                         into: &bounds)
                 }
             }
@@ -1634,6 +1637,7 @@ public final class CADDocument {
         textXData: [String: XDataValue],
         backgroundScale: Double?,
         hasVisibleBackground: Bool,
+        drawableImageNames: Set<String> = [],
         into bounds: inout CADRenderBoundsAccumulator
     ) {
         func includeTransformed(_ points: [Vector3]) {
@@ -1780,7 +1784,10 @@ public final class CADDocument {
         case .ray(let start, _, _):
             bounds.include(transform.transformPoint(start))
 
-        case .image(let insertion, let uAxis, let vAxis, _, let clipBoundary, _):
+        case .image(let insertion, let uAxis, let vAxis, let imageName, let clipBoundary, _):
+            // Unresolved raster (missing file) renders nothing, so it must
+            // not stretch zoom extents either. Repair via the xref palette.
+            guard drawableImageNames.contains(imageName) else { break }
             if let clipBoundary, clipBoundary.count >= 2 {
                 includeTransformed(clipBoundary)
             } else {

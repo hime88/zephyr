@@ -1569,10 +1569,12 @@ public enum DXFImporter {
                 let usableViewports = paperSource.compactMap { $0 as? DXFViewportEntity }
                     .map(SheetViewport.init)
                     .filter(\.isUsable)
-                let hasUserViewport = usableViewports.contains { !$0.isSystemViewport }
-                let viewports = hasUserViewport
-                    ? usableViewports.filter { !$0.isSystemViewport }
-                    : usableViewports
+                // The overall paper-space viewport (ID 1) describes the
+                // sheet itself, not a floating model view. Projecting model
+                // space through it overlays a duplicate copy of any sheet
+                // geometry that also exists in model space, so it must never
+                // drive projection, even when it is the only viewport present.
+                let viewports = usableViewports.filter { !$0.isSystemViewport }
 
                 for viewport in viewports {
                     let projection = viewport.modelToPaperTransform
@@ -1601,7 +1603,25 @@ public enum DXFImporter {
                     }
                 }
 
+                // Synthetic fit projection is only a fallback for effectively
+                // empty sheets (e.g. Model-only drawings whose layouts carry no
+                // paper geometry). When the sheet already has its own title
+                // block/geometry, projecting all of model space on top doubles
+                // the sheet. Only real, visible vector content counts: VIEWPORT
+                // entities convert to zero primitives, invisible (60=1) entities
+                // never draw, and a lone raster image (e.g. a signature scan
+                // whose file is long gone) is not drafted sheet geometry.
+                // A sheet holding just those still gets the model fit, matching
+                // what the Autodesk viewer shows for such legacy layouts.
+                let paperHasDraftedContent = paperSource.contains { entity in
+                    guard entity.visible else { return false }
+                    if entity is DXFViewportEntity { return false }
+                    if entity is DXFImageEntity { return false }
+                    if entity is DXFUnderlayEntity { return false }
+                    return true
+                }
                 if viewports.isEmpty,
+                   !paperHasDraftedContent,
                    let projection = Self.defaultLayoutProjection(
                     layout: layout,
                     modelEntities: modelEntities,

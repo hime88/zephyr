@@ -3,7 +3,7 @@ import XCTest
 
 /// ATTACH Unit 0: media definition spine — IMAGEDEF/PDFDEFINITION
 /// import into document definitions, instance retargeting, EAB
-/// round trip, and placeholder frames for unresolved references.
+/// round trip, and silent (geometry-free) output for unresolved references.
 @MainActor
 final class DXFMediaRefRoundtripTests: XCTestCase {
 
@@ -177,7 +177,7 @@ final class DXFMediaRefRoundtripTests: XCTestCase {
         XCTAssertEqual(params?.contrast, 90)
     }
 
-    func testUnresolvedMediaRendersPlaceholderFrame() async throws {
+    func testUnresolvedMediaRendersNothing() async throws {
         let result = try importFixture()
         let doc = CADDocument()
         doc.importLayersBlocksEntities(
@@ -190,8 +190,8 @@ final class DXFMediaRefRoundtripTests: XCTestCase {
         let withImage = results.filter { !$0.imageSpecs.isEmpty }
         XCTAssertEqual(withImage.count, 2)
         for entry in withImage {
-            XCTAssertFalse(entry.specs.isEmpty,
-                           "unresolved media must draw a placeholder frame")
+            XCTAssertTrue(entry.specs.isEmpty,
+                          "unresolved media must render nothing; the reference stays listed in the xref palette")
         }
     }
 }

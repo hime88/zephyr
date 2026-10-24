@@ -31,6 +31,7 @@ Monthly digest condensed from the git history. Instead of per-release notes, all
 - **Properties panel** — multi-select entity picker, copy support, and an empty state
 - **Layer property sorting**
 - **Themes** — Catppuccin palettes, dropdown/slider contrast, and full theming for the Hatch and PenStroke UI
+- **PDF export** — DXF paper space layouts (paper size, units, and rotation from `AcDbPlotSettings`), export of the active drawing view, point sizing scaled inversely to prevent giant blocks, contrast adjustment for white strokes on light backgrounds, and `PDFEXPORT` filename normalization
 
 ### DXF & File Formats
 - **MLINE support** — plus DXF entity handles preserved in xdata
@@ -38,6 +39,8 @@ Monthly digest condensed from the git history. Instead of per-release notes, all
 - **Gradient hatch write-back** — `GF*` system variables and `entmake` support
 
 ### Bug Fixes
+- **Sheet ghost-double** — a layout whose only viewport is the overall paper-space viewport (ID 1) no longer projects model space on top of its paper geometry; the synthetic model-fit fallback now applies only to effectively-empty sheets (no visible vector paper content), so legacy layouts with just an invisible insert or missing raster still show the drawing instead of rendering blank
+- **Missing rasters** — unresolved IMAGE/UNDERLAY references render nothing (no more X placeholder frame) and are excluded from zoom extents; repair the path via the External References palette
 - **`HSPLIT` / `VPORTS 2H`** — after `VSPLIT`, fixed variable shadowing in `PaneLayout.split` recursion where child splits inherited their parent's axis instead of the requested one
 - **Snapping in modify commands** — base point selection during `MOVE` and friends now honors active entity snap targets (circle quadrants/center, line endpoints, midpoints) instead of falling back to raw mouse coordinates
 - **SHX shape fonts** — fractional arcs, clockwise octant arcs, multi-stroke outline behavior, and hole nudging

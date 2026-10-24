@@ -1086,40 +1086,9 @@ public final class CADRendererBridge {
                                         renderOrigin: renderOrigin
                                     ) {
                                         imageSpecs.append(imgSpec)
-                                        // No pixels available (unresolved
-                                        // media reference): framed
-                                        // placeholder so the reference
-                                        // stays visible/selectable.
-                                        if !snapshot.availableImageAssetNames.contains(imgSpec.imageName),
-                                           case .image(let ins, let uAx, let vAx, _, _, _) = primitive {
-                                            let c0 = ins
-                                            let c1 = Vector3(x: ins.x + uAx.x, y: ins.y + uAx.y, z: ins.z + uAx.z)
-                                            let c2 = Vector3(x: ins.x + uAx.x + vAx.x, y: ins.y + uAx.y + vAx.y, z: ins.z + uAx.z + vAx.z)
-                                            let c3 = Vector3(x: ins.x + vAx.x, y: ins.y + vAx.y, z: ins.z + vAx.z)
-                                            for (a, b) in [(c0, c1), (c1, c2), (c2, c3), (c3, c0), (c0, c2), (c1, c3)] {
-                                                specs.append(contentsOf: CADPrimitiveGenerator.computePrimitiveSpecs(
-                                                    from: .line(start: a, end: b, color: nil),
-                                                    transform: v.transform,
-                                                    color: (drawStyle.color.r, drawStyle.color.g,
-                                                            drawStyle.color.b, drawStyle.color.a),
-                                                    z: currentZ,
-                                                    lineType: drawStyle.lineType,
-                                                    lineWeight: drawStyle.lineWeight,
-                                                    lineTypeScale: drawStyle.lineTypeScale,
-                                                    geomWidth: drawStyle.geomWidth,
-                                                    textWidthFactor: 1,
-                                                    textObliqueAngle: 0,
-                                                    textStyleFonts: snapshot.textStyleFonts,
-                                                    linetypePatterns: snapshot.linetypePatterns,
-                                                    opacityMultiplier: drawStyle.opacityMultiplier,
-                                                    penStrokeBrushSettings: v.penStrokeBrushSettings,
-                                                    penStrokeStabilizationSettings: v.penStrokeStabilizationSettings,
-                                                    penStrokeUnitScaleFromMM: snapshot.unit.scaleFromMM,
-                                                    renderOrigin: renderOrigin,
-                                                    splineTessellationDivisor: splineTessellationDivisor,
-                                                    isTrueColor: drawStyle.isTrueColor))
-                                            }
-                                        }
+                                        // Missing file (unresolved media reference): render
+                                        // nothing. The reference stays listed in the xref
+                                        // palette, where its path can be repaired.
                                     }
                                 }
                             }
