@@ -52,6 +52,7 @@ public struct CADDocumentSnapshot: Sendable {
     /// time (embedded store ∪ loaded media references). Names not in
     /// this set render as placeholder frames.
     public let availableImageAssetNames: Set<String>
+    public let layoutSettings: CADLayoutSettings?
 
     public init(
         layers: [UUID: Layer],
@@ -73,8 +74,10 @@ public struct CADDocumentSnapshot: Sendable {
         xrefFadePercent: Int = 50,
         imageDefinitions: [String: CADImageDefinition] = [:],
         pdfDefinitions: [String: CADPdfDefinition] = [:],
-        availableImageAssetNames: Set<String> = []
+        availableImageAssetNames: Set<String> = [],
+        layoutSettings: CADLayoutSettings? = nil
     ) {
+        self.layoutSettings = layoutSettings
         self.xrefFadePercent = xrefFadePercent
         self.imageDefinitions = imageDefinitions
         self.pdfDefinitions = pdfDefinitions
@@ -113,7 +116,8 @@ public struct CADDocumentSnapshot: Sendable {
         globalLineTypeScale: Double = 1.0,
         autoContrastTrueColor: Bool = true,
         dxfRoundTripPayload: DXFRoundTripPayload? = nil,
-        imageAssetNames: Set<String> = []
+        imageAssetNames: Set<String> = [],
+        layoutSettings: CADLayoutSettings? = nil
     ) {
         let styles = Dictionary(uniqueKeysWithValues: textStyleFonts.map { name, font in
             (name, CADTextStyle(name: name, fontFile: font).normalized)
@@ -134,7 +138,46 @@ public struct CADDocumentSnapshot: Sendable {
             globalLineTypeScale: globalLineTypeScale,
             autoContrastTrueColor: autoContrastTrueColor,
             dxfRoundTripPayload: dxfRoundTripPayload,
-            imageAssetNames: imageAssetNames)
+            imageAssetNames: imageAssetNames,
+            layoutSettings: layoutSettings)
+    }
+}
+
+// =========================================================================
+// MARK: - CADLayoutSettings
+// =========================================================================
+
+public struct CADLayoutSettings: Sendable, Equatable {
+    public var paperName: String?
+    public var paperWidthMM: Double
+    public var paperHeightMM: Double
+    public var marginLM: Double
+    public var marginBM: Double
+    public var marginRM: Double
+    public var marginTM: Double
+    public var plotPaperUnits: Int // 0 = inches, 1 = mm, 2 = pixels
+    public var plotRotation: Int
+
+    public init(
+        paperName: String? = nil,
+        paperWidthMM: Double,
+        paperHeightMM: Double,
+        marginLM: Double = 0,
+        marginBM: Double = 0,
+        marginRM: Double = 0,
+        marginTM: Double = 0,
+        plotPaperUnits: Int = 0,
+        plotRotation: Int = 0
+    ) {
+        self.paperName = paperName
+        self.paperWidthMM = paperWidthMM
+        self.paperHeightMM = paperHeightMM
+        self.marginLM = marginLM
+        self.marginBM = marginBM
+        self.marginRM = marginRM
+        self.marginTM = marginTM
+        self.plotPaperUnits = plotPaperUnits
+        self.plotRotation = plotRotation
     }
 }
 
@@ -188,11 +231,13 @@ public struct SaveTabSnapshot: Sendable {
     public let formatVersion: UInt32
     /// Application version string.
     public let appVersion: String
+    public let activeViewIndex: Int
 
     public init(tabID: UUID, drawingViews: [SaveDocumentSnapshot], fileURL: URL?,
                 displayName: String, editRevision: UInt64,
                 viewEditRevisions: [UInt64] = [],
-                formatVersion: UInt32, appVersion: String) {
+                formatVersion: UInt32, appVersion: String,
+                activeViewIndex: Int = 0) {
         self.tabID = tabID
         self.drawingViews = drawingViews
         self.fileURL = fileURL
@@ -201,6 +246,7 @@ public struct SaveTabSnapshot: Sendable {
         self.viewEditRevisions = viewEditRevisions
         self.formatVersion = formatVersion
         self.appVersion = appVersion
+        self.activeViewIndex = activeViewIndex
     }
 }
 
@@ -376,6 +422,7 @@ public final class CADDocument {
 
     /// Raw DXF classes/objects retained for lossless round-trip of native entities.
     public var dxfRoundTripPayload: DXFRoundTripPayload?
+    public var layoutSettings: CADLayoutSettings? = nil
 
     /// Folder of the file this document was loaded from, as recorded in
     /// the EAB xrefs section — a resolution fallback for relative xref
@@ -3436,7 +3483,8 @@ public final class CADDocument {
             xrefFadePercent: xrefFadePercent,
             imageDefinitions: imageDefinitions,
             pdfDefinitions: pdfDefinitions,
-            availableImageAssetNames: Set(imageStore.keys)
+            availableImageAssetNames: Set(imageStore.keys),
+            layoutSettings: layoutSettings
         )
     }
 
@@ -3483,7 +3531,8 @@ public final class CADDocument {
             xrefFadePercent: base.xrefFadePercent,
             imageDefinitions: base.imageDefinitions,
             pdfDefinitions: base.pdfDefinitions,
-            availableImageAssetNames: available)
+            availableImageAssetNames: available,
+            layoutSettings: base.layoutSettings)
         }
     }
 
@@ -3535,6 +3584,7 @@ public final class CADDocument {
         dxfRoundTripPayload = snapshot.dxfRoundTripPayload
         imageDefinitions = snapshot.imageDefinitions
         pdfDefinitions = snapshot.pdfDefinitions
+        layoutSettings = snapshot.layoutSettings
         // Prune image assets no longer referenced by any entity after restore
         pruneUnreferencedImageAssets()
         resyncXrefInstanceBounds()

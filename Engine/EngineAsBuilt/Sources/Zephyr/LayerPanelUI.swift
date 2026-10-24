@@ -275,7 +275,7 @@ struct LayerPanelUI {
         ImGuiSetNextItemWidth(max(60, ImGuiGetContentRegionAvail().x - 12))
         if igInputTextWithHint("##LayerSearch", "Filter layers…",
                                &_searchBuf, bufSize, 0, nil, nil) {
-            _searchText = String(cString: _searchBuf)
+            _searchText = _searchBuf.withUnsafeBufferPointer { pointer in String(cString: pointer.baseAddress!) }
         }
     }
 

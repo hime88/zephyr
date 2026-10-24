@@ -3097,12 +3097,46 @@ extension DXFReader {
             }
         }
 
+        var paperName: String? = nil
+        var paperWidthMM: Double? = nil
+        var paperHeightMM: Double? = nil
+        var marginLM: Double? = nil
+        var marginBM: Double? = nil
+        var marginRM: Double? = nil
+        var marginTM: Double? = nil
+        var plotPaperUnits: Int = 0
+        var plotRotation: Int = 0
+
+        for (code, value) in properties {
+            switch code {
+            case 4: if !value.isEmpty { paperName = value }
+            case 40: marginLM = d(value)
+            case 41: marginBM = d(value)
+            case 42: marginRM = d(value)
+            case 43: marginTM = d(value)
+            case 44: paperWidthMM = d(value)
+            case 45: paperHeightMM = d(value)
+            case 72: plotPaperUnits = i(value)
+            case 73: plotRotation = i(value)
+            default: break
+            }
+        }
+
         layouts.append(DXFLayoutEntry(
             name: name,
             tabOrder: tabOrder,
             blockRecordHandle: blockRecordHandle,
             minimumLimits: minimumLimits,
-            maximumLimits: maximumLimits))
+            maximumLimits: maximumLimits,
+            paperName: paperName,
+            paperWidthMM: paperWidthMM,
+            paperHeightMM: paperHeightMM,
+            marginLM: marginLM,
+            marginBM: marginBM,
+            marginRM: marginRM,
+            marginTM: marginTM,
+            plotPaperUnits: plotPaperUnits,
+            plotRotation: plotRotation))
     }
 
     private func resolveImageReferences() {

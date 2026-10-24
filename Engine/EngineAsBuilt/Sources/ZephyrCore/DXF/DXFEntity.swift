@@ -236,19 +236,46 @@ public struct DXFLayoutEntry: Sendable {
     public var blockRecordHandle: UInt32
     public var minimumLimits: Vector3
     public var maximumLimits: Vector3
+    public var paperName: String?
+    public var paperWidthMM: Double?
+    public var paperHeightMM: Double?
+    public var marginLM: Double?
+    public var marginBM: Double?
+    public var marginRM: Double?
+    public var marginTM: Double?
+    public var plotPaperUnits: Int
+    public var plotRotation: Int
 
     public init(
         name: String = "",
         tabOrder: Int = Int.max,
         blockRecordHandle: UInt32 = 0,
         minimumLimits: Vector3 = .zero,
-        maximumLimits: Vector3 = Vector3(x: 12, y: 9, z: 0)
+        maximumLimits: Vector3 = Vector3(x: 12, y: 9, z: 0),
+        paperName: String? = nil,
+        paperWidthMM: Double? = nil,
+        paperHeightMM: Double? = nil,
+        marginLM: Double? = nil,
+        marginBM: Double? = nil,
+        marginRM: Double? = nil,
+        marginTM: Double? = nil,
+        plotPaperUnits: Int = 0,
+        plotRotation: Int = 0
     ) {
         self.name = name
         self.tabOrder = tabOrder
         self.blockRecordHandle = blockRecordHandle
         self.minimumLimits = minimumLimits
         self.maximumLimits = maximumLimits
+        self.paperName = paperName
+        self.paperWidthMM = paperWidthMM
+        self.paperHeightMM = paperHeightMM
+        self.marginLM = marginLM
+        self.marginBM = marginBM
+        self.marginRM = marginRM
+        self.marginTM = marginTM
+        self.plotPaperUnits = plotPaperUnits
+        self.plotRotation = plotRotation
     }
 }
 

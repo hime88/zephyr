@@ -41,3 +41,4 @@ swift-6.3-cpp-interop.md
 *.dwl
 *.dwl2
 *.dwt
+trajectory*.json

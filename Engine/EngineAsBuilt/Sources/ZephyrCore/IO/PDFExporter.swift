@@ -117,11 +117,18 @@ public enum PDFExporter {
     }
 
     /// Generate PDF data from a document (extracted for reuse by both sync and async paths).
-    private static func generatePDF(document: CADDocument, backgroundColor: ColorRGBA?) throws -> Data {
-        let margin: Double = 36
+    static func generatePDF(document: CADDocument, backgroundColor: ColorRGBA?) throws -> Data {
+        // Background and contrast adjustment:
+        // Default PDF page background in viewers is white.
+        let pageBg = backgroundColor ?? ColorRGBA.white
+        let bgRf = Double(pageBg.r) / 255.0
+        let bgGf = Double(pageBg.g) / 255.0
+        let bgBf = Double(pageBg.b) / 255.0
+        let bgLuminance = 0.2126 * bgRf + 0.7152 * bgGf + 0.0722 * bgBf
+        let isLightBackground = bgLuminance >= 0.5
 
         // ---- Pre-pass: collect drawables in screen-parity order ----------
-        let items = collectItems(document: document)
+        let items = collectItems(document: document, isLightBackground: isLightBackground)
 
         // ---- World bounding box (engine Y-down space) ---------------------
         // Text-entity bounds come from the exploded glyph strokes; the cached
@@ -156,20 +163,30 @@ public enum PDFExporter {
         }
         if !hasGeom { minX = 0; minY = 0; maxX = 100; maxY = 100 }
 
-        // ---- Scale: unit points-per-unit, capped to the page limit --------
-        var scale = document.unit.pointsPerUnit
         let worldW = max(maxX - minX, 1e-9)
         let worldH = max(maxY - minY, 1e-9)
-        if worldW * scale + margin * 2 > maxPagePoints ||
-           worldH * scale + margin * 2 > maxPagePoints {
-            let fit = min((maxPagePoints - margin * 2) / (worldW * scale),
-                          (maxPagePoints - margin * 2) / (worldH * scale))
-            scale *= fit
-        }
+        let scale: Double
+        let pageW: Double
+        let pageH: Double
+        let margin: Double
 
-        let pageW = max(612.0, worldW * scale + margin * 2)
-        let pageH = max(792.0, worldH * scale + margin * 2)
-        let pw = Int(pageW); let ph = Int(pageH)
+        if let layout = document.layoutSettings, layout.paperWidthMM > 0, layout.paperHeightMM > 0 {
+            var pw = layout.paperWidthMM * 72.0 / 25.4
+            var ph = layout.paperHeightMM * 72.0 / 25.4
+            if layout.plotRotation == 1 || layout.plotRotation == 3 {
+                swap(&pw, &ph)
+            }
+            pageW = max(pw, 10.0)
+            pageH = max(ph, 10.0)
+            margin = 0.0
+            scale = min(pageW / worldW, pageH / worldH)
+        } else {
+            margin = 36.0
+            (scale, pageW, pageH) = Self.pageScaleAndSize(
+                worldW: worldW, worldH: worldH,
+                pointsPerUnit: document.unit.pointsPerUnit, margin: margin)
+        }
+        let pw = Int(round(pageW)); let ph = Int(round(pageH))
 
         // /Measure conversion: world units per point at the *effective* scale.
         let measC = String(format: "%.6f", 1.0 / scale)
@@ -217,7 +234,8 @@ public enum PDFExporter {
             content.raw("Q\n")
         }
         writeContent(items: items, document: document, scale: scale, margin: margin,
-                     minX: minX, maxY: maxY, to: content)
+                     minX: minX, maxX: maxX, minY: minY, maxY: maxY,
+                     pageW: pageW, pageH: pageH, isLightBackground: isLightBackground, to: content)
         w.beginObject(4)
         w.writeCompressedStream(content.build())
         w.endObject()
@@ -230,13 +248,45 @@ public enum PDFExporter {
     }
 
     // ---------------------------------------------------------------------
+    // MARK: Page scale and size
+    // ---------------------------------------------------------------------
+
+    /// Page scale (points per world unit) and page size for a drawing extent.
+    ///
+    /// Starts at true unit scale (`pointsPerUnit`), scales DOWN so oversized
+    /// drawings fit the viewer page limit, and scales UP so sub-letter
+    /// drawings fill the minimum page instead of landing as a speck in the
+    /// corner of a 612x792 sheet (paper-space layouts already at sheet size
+    /// are unaffected — they already fill the page). Aspect ratio is always
+    /// preserved; the `/Measure` dictionary is computed from the returned
+    /// scale, so measurement calibration stays exact.
+    static func pageScaleAndSize(worldW: Double, worldH: Double, pointsPerUnit: Double,
+                                 margin: Double = 36)
+        -> (scale: Double, pageW: Double, pageH: Double) {
+        let minPageW = 612.0, minPageH = 792.0
+        let w = max(worldW, 1e-9), h = max(worldH, 1e-9)
+        var scale = pointsPerUnit
+        if w * scale + margin * 2 > maxPagePoints || h * scale + margin * 2 > maxPagePoints {
+            scale *= min((maxPagePoints - margin * 2) / (w * scale),
+                         (maxPagePoints - margin * 2) / (h * scale))
+        }
+        if w * scale + margin * 2 < minPageW || h * scale + margin * 2 < minPageH {
+            scale *= min((minPageW - margin * 2) / (w * scale),
+                         (minPageH - margin * 2) / (h * scale))
+        }
+        return (scale,
+                max(minPageW, w * scale + margin * 2),
+                max(minPageH, h * scale + margin * 2))
+    }
+
+    // ---------------------------------------------------------------------
     // MARK: Pre-pass — entity collection (renderer parity)
     // ---------------------------------------------------------------------
 
     /// Sort entities exactly like `CADRendererBridge.computeSpecs`, resolve the
     /// per-entity color the same way (`dxf.color` xdata → layer color), and
     /// pre-explode text entities through the SHX path.
-    static func collectItems(document: CADDocument) -> [RenderItem] {
+    static func collectItems(document: CADDocument, isLightBackground: Bool = false) -> [RenderItem] {
         let sortedEntities = document.entitiesView.sorted { e1, e2 in
             let o1 = e1.drawOrder
             let o2 = e2.drawOrder
@@ -254,13 +304,14 @@ public enum PDFExporter {
             // Entity color: explicit dxf.color override, else layer color.
             // (The old exporter scanned the first colored primitive — wrong
             // precedence, and wrong for multi-color blocks.)
-            let entityColor: ColorRGBA
+            let rawColor: ColorRGBA
             if let cv = entity.xdata["dxf.color"], case .string(let hex) = cv,
                let c = ColorRGBA(hex: hex) {
-                entityColor = c
+                rawColor = c
             } else {
-                entityColor = layer.color
+                rawColor = layer.color
             }
+            let entityColor = rawColor.displayAdjusted(forLightBackground: isLightBackground)
 
             // Explicit entity lineweight (mm), else layer lineweight.
             let lineWeightMM: Double
@@ -400,27 +451,35 @@ public enum PDFExporter {
 
     static func writeContent(
         items: [RenderItem], document: CADDocument, scale: Double, margin: Double,
-        minX: Double, maxY: Double, to cb: PDFContentBuilder
+        minX: Double, maxX: Double = 0, minY: Double = 0, maxY: Double,
+        pageW: Double = 0, pageH: Double = 0, isLightBackground: Bool = false,
+        to cb: PDFContentBuilder
     ) {
         // Y-FLIPPING page CTM: engine Y-down → PDF Y-up.
         //   device.x =  scale * world.x + tx
         //   device.y = -scale * world.y + ty
         // World maxY (engine "bottom" of bbox) maps to the page bottom margin.
-        let tx = margin - minX * scale
-        let ty = margin + maxY * scale
+        let contentW = (maxX - minX) * scale
+        let contentH = (maxY - minY) * scale
+        let offsetX = margin > 0 ? margin : max(0.0, (pageW - contentW) * 0.5)
+        let offsetY = margin > 0 ? margin : max(0.0, (pageH - contentH) * 0.5)
+        let tx = offsetX - minX * scale
+        let ty = offsetY + maxY * scale
         cb.num(scale); cb.num(0); cb.num(0); cb.num(-scale); cb.num(tx); cb.num(ty); cb.raw("cm\n")
 
         for item in items {
             switch item {
             case .geometry(let entity, let color, let lineWeightMM):
                 PDFPrimitives.writeEntity(entity, in: document, entityColor: color,
-                                          lineWeightMM: lineWeightMM, pageScale: scale, to: cb)
+                                          lineWeightMM: lineWeightMM, pageScale: scale,
+                                          isLightBackground: isLightBackground, to: cb)
             case .textStrokes(let prims, let color):
                 PDFPrimitives.writeWorldPrimitives(prims, defaultColor: color,
-                                                   lineWeightMM: 0.25, pageScale: scale, to: cb)
+                                                   lineWeightMM: 0.25, pageScale: scale,
+                                                   isLightBackground: isLightBackground, to: cb)
             case .textFallback(let text, let position, let rotation, let height, let color):
                 cb.raw("q\n")
-                PDFPrimitives.setColor(color, to: cb)
+                PDFPrimitives.setColor(color.displayAdjusted(forLightBackground: isLightBackground), to: cb)
                 PDFPrimitives.writeFallbackText(text, position: position, rotation: rotation,
                                                 height: height, to: cb)
                 cb.raw("Q\n")

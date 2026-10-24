@@ -959,10 +959,8 @@ public final class CADCommandProcessor {
         case "PDFEXPORT", "EXPORTPDF":
             guard let eng = engine else { clearCommand(); return }
             clearCommand()
-            let pdfName = (eng.tabManager.activeTab?.displayName ?? "untitled")
-                .replacingOccurrences(of: ".dxf", with: "")
-                .replacingOccurrences(of: ".dwg", with: "")
-                .replacingOccurrences(of: ".eab", with: "")
+            let pdfName = Self.pdfExportDefaultName(
+                for: eng.tabManager.activeTab?.displayName)
             NativeFileDialog.showSaveDialog(
                 window: eng.dialogParentWindow,
                 filters: [
@@ -972,7 +970,7 @@ public final class CADCommandProcessor {
             ) { [weak eng] url in
                 guard let eng, let url else { return }
                 eng.tabManager.startSaveActiveTabAs(
-                    url: url,
+                    url: Self.pdfExportTargetURL(from: url),
                     dxfVersion: eng.tabManager.activeTab?.dxfVersion ?? .r2018
                 )
             }
@@ -1971,6 +1969,34 @@ public final class CADCommandProcessor {
         for _ in 0..<count { engine.document.redo() }
         print("[CAD] Redo \(count == 1 ? "1 step" : "\(count) steps")"
             + (available > count ? " (\(available - count) more available)" : ""))
+    }
+
+    // MARK: - PDF export file names
+
+    /// Default file name offered by the PDFEXPORT save dialog.
+    ///
+    /// SDL's save dialog does not append the selected filter's extension, so
+    /// the name must already carry `.pdf`: an extensionless URL falls through
+    /// to the DXF branch in `TabManager` and writes DXF bytes to what the
+    /// user believes is a PDF. Matching is case-insensitive and already-suffixed
+    /// names are not doubled.
+    static func pdfExportDefaultName(for displayName: String?) -> String {
+        var base = (displayName ?? "untitled").trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.isEmpty { base = "untitled" }
+        for ext in [".dxf", ".dwg", ".eab", ".pdf"] {
+            if base.lowercased().hasSuffix(ext) {
+                base = String(base.dropLast(ext.count))
+                break
+            }
+        }
+        return base + ".pdf"
+    }
+
+    /// Normalize a raw save-dialog URL from the PDFEXPORT flow. If SDL returned
+    /// the name without an extension (or with a non-PDF one), append `.pdf` so
+    /// the save pipeline routes to `PDFExporter` instead of `DXFExporter`.
+    static func pdfExportTargetURL(from url: URL) -> URL {
+        url.pathExtension.lowercased() == "pdf" ? url : url.appendingPathExtension("pdf")
     }
 
     /// Show the native file-save dialog and, on confirmation, save the active tab.

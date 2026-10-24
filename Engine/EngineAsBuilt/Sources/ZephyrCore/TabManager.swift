@@ -77,6 +77,10 @@ public struct DrawingView {
     public var cameraState: CameraState
     public var selectionState: SelectionState = .empty
     public var backgroundColor: ColorRGBA?
+    public var layoutSettings: CADLayoutSettings? {
+        get { document.layoutSettings }
+        set { document.layoutSettings = newValue }
+    }
     public var autoContrastTrueColor: Bool {
         get { document.autoContrastTrueColor }
         set { document.autoContrastTrueColor = newValue }
@@ -212,7 +216,8 @@ public struct DocumentTab {
             editRevision: viewEditRevisions[activeViewIndex],
             viewEditRevisions: viewEditRevisions,
             formatVersion: formatVersion,
-            appVersion: appVersion
+            appVersion: appVersion,
+            activeViewIndex: activeViewIndex
         )
     }
 }
@@ -380,6 +385,13 @@ public final class TabManager {
     /// Create a new blank (untitled) tab and switch to it.
     /// - Returns: The index of the newly created tab.
     @discardableResult
+    public func addTab(_ tab: DocumentTab) -> Int {
+        tabs.append(tab)
+        let idx = tabs.count - 1
+        switchToTab(at: idx)
+        return idx
+    }
+
     public func newTab() -> Int {
         let doc = CADDocument()
         // Bulk-import a single "0" layer (single undo snapshot, not per-layer)
@@ -444,6 +456,12 @@ public final class TabManager {
                 doc.currentLeaderStyleName = imported.leaderStyles["Standard"] == nil
                     ? (imported.leaderStyles.keys.sorted().first ?? "Standard")
                     : "Standard"
+                if let ls = view.layoutSettings {
+                    doc.layoutSettings = ls
+                    doc.unit = (ls.plotPaperUnits == 0) ? .inch : .millimeter
+                } else if let su = imported.sourceUnit {
+                    doc.unit = su
+                }
                 doc.savedRevision = doc.editRevision
                 return DrawingView(
                     name: view.name,
@@ -490,6 +508,12 @@ public final class TabManager {
             doc.currentLeaderStyleName = imported.leaderStyles["Standard"] == nil
                 ? (imported.leaderStyles.keys.sorted().first ?? "Standard")
                 : "Standard"
+            if let ls = view.layoutSettings {
+                doc.layoutSettings = ls
+                doc.unit = (ls.plotPaperUnits == 0) ? .inch : .millimeter
+            } else if let su = imported.sourceUnit {
+                doc.unit = su
+            }
             doc.savedRevision = doc.editRevision  // freshly imported
             return DrawingView(
                 name: view.name,
@@ -1255,7 +1279,8 @@ public final class TabManager {
         if ext == "eab" {
             try EABWriter.write(views: tab.drawingViews, to: url)
         } else if ext == "pdf" {
-            let bg = getBackgroundColor?()
+            let activeView = tab.drawingViews[tab.activeViewIndex]
+            let bg = activeView.backgroundColor ?? getBackgroundColor?()
             try PDFExporter.export(document: tab.document, to: url, backgroundColor: bg)
         } else if ext == "dwg" {
             warnAboutDXFXrefTargets(tab: tab, url: url)
@@ -1381,7 +1406,8 @@ public final class TabManager {
         let saveID = UUID()
         cancelSave(for: tab.id, reason: .restart)
         let snapshot = tab.buildSaveSnapshot()
-        let backgroundColor = getBackgroundColor?()
+        let activeView = tab.drawingViews[tab.activeViewIndex]
+        let backgroundColor = activeView.backgroundColor ?? getBackgroundColor?()
         let status: SaveStatus = isAutosave ? .autosaving : .saving
         let statusText = isAutosave ? "Autosaving..." : "Saving..."
         saveStateByTabID[tab.id] = SaveProgressState(
@@ -1488,10 +1514,12 @@ public final class TabManager {
                     progress: progressHandler
                 )
             } else if ext == "pdf" {
-                let docSnap = snapshot.drawingViews.first?.docSnapshot
-                    ?? snapshot.drawingViews[0].docSnapshot
+                let viewIndex = (snapshot.activeViewIndex >= 0 && snapshot.activeViewIndex < snapshot.drawingViews.count)
+                    ? snapshot.activeViewIndex
+                    : 0
+                let viewSnap = snapshot.drawingViews[viewIndex]
                 try PDFExporter.export(
-                    snapshot: docSnap,
+                    snapshot: viewSnap.docSnapshot,
                     to: targetURL,
                     backgroundColor: backgroundColor,
                     progress: progressHandler

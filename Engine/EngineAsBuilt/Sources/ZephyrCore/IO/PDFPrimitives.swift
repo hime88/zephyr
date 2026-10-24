@@ -44,7 +44,8 @@ enum PDFPrimitives {
     /// renderer's z-ordering (`CADRendererBridge` draws fills below strokes).
     static func writeEntity(_ entity: CADEntity, in document: CADDocument,
                             entityColor: ColorRGBA, lineWeightMM: Double,
-                            pageScale: Double, to cb: PDFContentBuilder) {
+                            pageScale: Double, isLightBackground: Bool = false,
+                            to cb: PDFContentBuilder) {
         guard let geometry = entity.resolvedGeometry(in: document), !geometry.isEmpty
         else { return }
 
@@ -57,11 +58,12 @@ enum PDFPrimitives {
             return layersByName[name.uppercased()]
         }
         func resolvedColor(_ index: Int, _ prim: CADPrimitive) -> ColorRGBA {
-            if let c = primColor(prim) { return c }
-            let style = primStyles[index]
-            if let c = style?.color { return c }
-            if style?.isColorByBlock == true { return entityColor }
-            return styleLayer(index)?.color ?? entityColor
+            let base: ColorRGBA
+            if let c = primColor(prim) { base = c }
+            else if let style = primStyles[index], let c = style.color { base = c }
+            else if primStyles[index]?.isColorByBlock == true { base = entityColor }
+            else { base = styleLayer(index)?.color ?? entityColor }
+            return base.displayAdjusted(forLightBackground: isLightBackground)
         }
         func resolvedLineWeightMM(_ index: Int) -> Double {
             let style = primStyles[index]
@@ -125,7 +127,7 @@ enum PDFPrimitives {
             for (index, prim) in fills + strokes {
                 setColorIfNeeded(resolvedColor(index, prim), current: &currentColor, to: cb)
                 setWeightIfNeeded(resolvedLineWeightMM(index))
-                writePrimitive(prim, to: cb)
+                writePrimitive(prim, effectiveScale: pageScale * entScale, to: cb)
             }
             cb.raw("Q\n")
         }
@@ -143,7 +145,7 @@ enum PDFPrimitives {
             writeTextPrimitive(prim, transform: t, document: document,
                                entityColor: resolvedColor(index, prim),
                                lineWeightMM: resolvedLineWeightMM(index),
-                               pageScale: pageScale, to: cb)
+                               pageScale: pageScale, isLightBackground: isLightBackground, to: cb)
         }
     }
 
@@ -151,16 +153,19 @@ enum PDFPrimitives {
     /// entity transform.
     static func writeWorldPrimitives(_ prims: [CADPrimitive], defaultColor: ColorRGBA,
                                      lineWeightMM: Double, pageScale: Double,
+                                     isLightBackground: Bool = false,
                                      to cb: PDFContentBuilder) {
         guard !prims.isEmpty else { return }
         cb.raw("q\n")
         let weightPt = max(lineWeightMM, 0.05) * 72.0 / 25.4
         cb.num(weightPt / pageScale); cb.raw("w\n")
         var currentColor: ColorRGBA? = nil
+        let adjustedColor = defaultColor.displayAdjusted(forLightBackground: isLightBackground)
         for prim in prims {
             if case .text = prim { continue }   // SHX explosion never yields nested text
-            setColorIfNeeded(primColor(prim) ?? defaultColor, current: &currentColor, to: cb)
-            writePrimitive(prim, to: cb)
+            let c = (primColor(prim) ?? adjustedColor).displayAdjusted(forLightBackground: isLightBackground)
+            setColorIfNeeded(c, current: &currentColor, to: cb)
+            writePrimitive(prim, effectiveScale: pageScale, to: cb)
         }
         cb.raw("Q\n")
     }
@@ -177,6 +182,7 @@ enum PDFPrimitives {
     private static func writeTextPrimitive(_ prim: CADPrimitive, transform: Transform3D,
                                            document: CADDocument, entityColor: ColorRGBA,
                                            lineWeightMM: Double, pageScale: Double,
+                                           isLightBackground: Bool = false,
                                            to cb: PDFContentBuilder) {
         guard case .text(let pos, let text, let height, let rotation, let style,
                          let alignH, let alignV, let mtextWidth, let color) = prim
@@ -210,10 +216,11 @@ enum PDFPrimitives {
                 alignV: alignV,
                 maxWidth: finalMaxWidth)
             writeWorldPrimitives(glyphPrims, defaultColor: resolvedColor,
-                                 lineWeightMM: lineWeightMM, pageScale: pageScale, to: cb)
+                                 lineWeightMM: lineWeightMM, pageScale: pageScale,
+                                 isLightBackground: isLightBackground, to: cb)
         } else {
             cb.raw("q\n")
-            setColor(resolvedColor, to: cb)
+            setColor(resolvedColor.displayAdjusted(forLightBackground: isLightBackground), to: cb)
             writeFallbackText(text, position: origin, rotation: finalRotation,
                               height: finalHeight, to: cb)
             cb.raw("Q\n")
@@ -241,11 +248,12 @@ enum PDFPrimitives {
     // MARK: Per-primitive writers
     // ---------------------------------------------------------------------
 
-    static func writePrimitive(_ p: CADPrimitive, to cb: PDFContentBuilder) {
+    static func writePrimitive(_ p: CADPrimitive, effectiveScale: Double = 1.0, to cb: PDFContentBuilder) {
         switch p {
         case .point(let pos, _):
-            let r: Double = 2
-            cb.num(pos.x - r); cb.num(pos.y - r); cb.num(r*2); cb.num(r*2); cb.raw("re B\n")
+            let rPt: Double = 1.5
+            let r = rPt / max(effectiveScale, 1e-9)
+            cb.num(pos.x - r); cb.num(pos.y - r); cb.num(r * 2); cb.num(r * 2); cb.raw("re f\n")
 
         case .line(let start, let end, _):
             cb.num(start.x); cb.num(start.y); cb.raw("m ")

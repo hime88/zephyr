@@ -132,7 +132,7 @@ struct TabBarUI {
                     if ImGuiBeginDragDropSource(0) {
                         _dragTabID = tab.id
                         var sourceIndex = Int32(i)
-                        withUnsafePointer(to: &sourceIndex) { ptr in
+                        _ = withUnsafePointer(to: &sourceIndex) { ptr in
                             ImGuiSetDragDropPayload(
                                 "ZEPHYR_TAB", ptr,
                                 MemoryLayout<Int32>.size,

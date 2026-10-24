@@ -12,17 +12,20 @@ public struct DXFDrawingView: Sendable {
     public let kind: DXFDrawingViewKind
     public let entities: [CADEntity]
     public let backgroundColor: ColorRGBA?
+    public let layoutSettings: CADLayoutSettings?
 
     public init(
         name: String,
         kind: DXFDrawingViewKind,
         entities: [CADEntity],
-        backgroundColor: ColorRGBA? = nil
+        backgroundColor: ColorRGBA? = nil,
+        layoutSettings: CADLayoutSettings? = nil
     ) {
         self.name = name
         self.kind = kind
         self.entities = entities
         self.backgroundColor = backgroundColor
+        self.layoutSettings = layoutSettings
     }
 }
 
@@ -1623,11 +1626,27 @@ public enum DXFImporter {
                     }
                 }
 
+                var layoutSettings: CADLayoutSettings? = nil
+                if let pw = layout.paperWidthMM, let ph = layout.paperHeightMM, pw > 0, ph > 0 {
+                    layoutSettings = CADLayoutSettings(
+                        paperName: layout.paperName,
+                        paperWidthMM: pw,
+                        paperHeightMM: ph,
+                        marginLM: layout.marginLM ?? 0,
+                        marginBM: layout.marginBM ?? 0,
+                        marginRM: layout.marginRM ?? 0,
+                        marginTM: layout.marginTM ?? 0,
+                        plotPaperUnits: layout.plotPaperUnits,
+                        plotRotation: layout.plotRotation
+                    )
+                }
+
                 importedViews.append(DXFDrawingView(
                     name: layout.name,
                     kind: .sheet,
                     entities: projectedEntities + paperEntities,
-                    backgroundColor: .white))
+                    backgroundColor: .white,
+                    layoutSettings: layoutSettings))
             }
             views = importedViews
         }
