@@ -187,6 +187,31 @@ public enum CurveEval: Sendable {
                 if !improved { step *= 0.5 }
                 if step < 1e-12 * (u1 - u0) { break }
             }
+            // Newton polish on f(u) = (P(u) - Q) . P'(u) = 0 (closest-point
+            // stationarity). The hill-climb above can stall ~1e-4 away on
+            // long splines; Newton converges it to 1e-12.
+            let hN = max(1e-9, 1e-6 * (u1 - u0))
+            for _ in 0..<20 {
+                guard let p = SplineEval.evaluate(spline, at: bestU) else { break }
+                let t = CurveEval.tangentAt(.spline(spline), t: (bestU - u0) / (u1 - u0))
+                let f = (p - point).dot(t)
+                if abs(f) < 1e-13 { break }
+                let up = min(u1, bestU + hN), um = max(u0, bestU - hN)
+                guard up > um else { break }
+                guard let pp = SplineEval.evaluate(spline, at: up),
+                      let pm = SplineEval.evaluate(spline, at: um) else { break }
+                let tp = CurveEval.tangentAt(.spline(spline), t: (up - u0) / (u1 - u0))
+                let tm = CurveEval.tangentAt(.spline(spline), t: (um - u0) / (u1 - u0))
+                let df = ((pp - point).dot(tp) - (pm - point).dot(tm)) / (up - um)
+                guard abs(df) > 1e-300 else { break }
+                var stepN = -f / df
+                stepN = min(0.1 * (u1 - u0), max(-0.1 * (u1 - u0), stepN))
+                let nu = min(u1, max(u0, bestU + stepN))
+                guard let np = SplineEval.evaluate(spline, at: nu) else { break }
+                if np.distanceSquared(to: point) >= bestD + 1e-24 { break }
+                bestD = np.distanceSquared(to: point)
+                bestU = nu
+            }
             return (bestU - u0) / (u1 - u0)
 
         case .polySegment(let seg):

@@ -372,11 +372,27 @@ extension Cases {
                             criterion: .click(point: mid),
                             cuttingSegments: [], exactLines: [], zoom: 1.0,
                             exactCurves: [exactCutter])
+                        // Direct fidelity check: re-intersect and compare the
+                        // trim output endpoint params against the kernel's own
+                        // parameters (separates trim error from measurement).
+                        let wline = LineSeg2d(
+                            start: le.transform.transformPoint(ls).point2d,
+                            end: le.transform.transformPoint(lend).point2d)
+                        let kh = Intersector2D.intersect(.line(wline), exactCutter)
                         var sig = "unmodified"
                         if res.modified, let prims = res.result {
                             sig = prims.map { p -> String in
                                 if case let .line(a, b, _) = p {
-                                    return String(format: "[(%.2f,%.2f)-(%.2f,%.2f)]", a.x, a.y, b.x, b.y)
+                                    var extra = ""
+                                    for e in [a.point2d, b.point2d] {
+                                        let tl = CurveEval.paramAtPoint(.line(wline), point: e)
+                                        if let near = kh.min(by: {
+                                            abs($0.paramA - tl) < abs($1.paramA - tl) }) {
+                                            let du = abs(near.paramA - tl)
+                                            extra += String(format: " dparam=%.2e", du)
+                                        }
+                                    }
+                                    return String(format: "[(%.2f,%.2f)-(%.2f,%.2f)]%@", a.x, a.y, b.x, b.y, extra)
                                 }
                                 return "\(p)"
                             }.joined(separator: " ")

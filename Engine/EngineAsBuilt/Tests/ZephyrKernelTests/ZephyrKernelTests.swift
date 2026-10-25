@@ -198,6 +198,21 @@ final class ZephyrKernelTests: XCTestCase {
         XCTAssertEqual(proj.point.y, 0, accuracy: 1e-9)
     }
 
+    func testClosestPointSplineConverges() {
+        // Query near a known on-curve point: projection must recover it to
+        // 1e-9 (hill-climb alone stalled ~1e-4 on long splines).
+        let s = Spline2d(controlPoints: [.zero, Point2d(x: 5, y: 10), Point2d(x: 10, y: 0)],
+                         knots: [0, 0, 0, 1, 1, 1], degree: 2)
+        let onCurve = CurveEval.pointAt(.spline(s), t: 0.37)
+        let tan = CurveEval.tangentAt(.spline(s), t: 0.37)
+        let n = tan.perpCCW.normalized
+        let query = onCurve + (n * 0.5)
+        let proj = Projector2D.closestPointOnCurve(.spline(s), to: query)
+        XCTAssertEqual(proj.point.x, onCurve.x, accuracy: 1e-9)
+        XCTAssertEqual(proj.point.y, onCurve.y, accuracy: 1e-9)
+        XCTAssertEqual(proj.param, 0.37, accuracy: 1e-9)
+    }
+
     func testFilletLineLine() {
         let a = Curve2d.line(LineSeg2d(start: .zero, end: Point2d(x: 10, y: 0)))
         let b = Curve2d.line(LineSeg2d(start: Point2d(x: 10, y: 0), end: Point2d(x: 10, y: 10)))
