@@ -283,7 +283,7 @@ public struct Transform3D: Hashable, Sendable {
     // (`transformPoint`, bounding-box transform) use constant indices directly.
 
     @inline(__always)
-    private func at(_ row: Int, _ col: Int) -> Double {
+    func at(_ row: Int, _ col: Int) -> Double {
         switch row * 4 + col {
         case 0:  return m.0;  case 1:  return m.1;  case 2:  return m.2;  case 3:  return m.3
         case 4:  return m.4;  case 5:  return m.5;  case 6:  return m.6;  case 7:  return m.7

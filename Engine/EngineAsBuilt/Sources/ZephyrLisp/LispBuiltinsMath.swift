@@ -3,6 +3,7 @@
 // Integer domain is 32-bit wrapped (AutoLISP). All-int arithmetic stays int
 // (including truncating integer division); any real promotes to real.
 import Foundation
+import ZephyrKernel
 
 enum MathBuiltins {
     static let table: [String: LispBuiltin] = [
@@ -480,15 +481,33 @@ enum MathBuiltins {
         let p3 = try BuiltinArgs.point("inters", args[2])
         let p4 = try BuiltinArgs.point("inters", args[3])
         let onSeg = args.count == 5 ? args[4].isTrue : false
-        let d = (p2[0] - p1[0]) * (p4[1] - p3[1]) - (p2[1] - p1[1]) * (p4[0] - p3[0])
-        guard d != 0 else { return .nilValue } // Parallel.
-        let t = ((p3[0] - p1[0]) * (p4[1] - p3[1]) - (p3[1] - p1[1]) * (p4[0] - p3[0])) / d
-        let u = ((p3[0] - p1[0]) * (p2[1] - p1[1]) - (p3[1] - p1[1]) * (p2[0] - p1[0])) / d
-        if onSeg, t < 0 || t > 1 || u < 0 || u > 1 { return .nilValue }
         // AutoCAD inters always returns a 3D point: Z interpolates when
         // the inputs carry elevation, else 0.
         let z1 = p1.count > 2 ? p1[2] : 0
         let z2 = p2.count > 2 ? p2[2] : 0
+        if onSeg {
+            // Segment-restricted case: canonical kernel solver (local-frame
+            // shifted, absolute 1e-9 tolerance).
+            let a = LineSeg2d(start: Point2d(x: p1[0], y: p1[1]),
+                              end: Point2d(x: p2[0], y: p2[1]))
+            let b = LineSeg2d(start: Point2d(x: p3[0], y: p3[1]),
+                              end: Point2d(x: p4[0], y: p4[1]))
+            guard let hit = Intersector2D.intersectLineLine(
+                a, b, extendA: false, extendB: false).first else {
+                return .nilValue
+            }
+            return LispValue(list: [
+                .real(hit.point.x),
+                .real(hit.point.y),
+                .real(z1 + hit.paramA * (z2 - z1)),
+            ])
+        }
+        // Infinite-line case: legacy closed form, bit-for-bit (AutoCAD
+        // returns far-away points for near-parallel lines; the kernel
+        // correctly refuses those, which would change script behavior).
+        let d = (p2[0] - p1[0]) * (p4[1] - p3[1]) - (p2[1] - p1[1]) * (p4[0] - p3[0])
+        guard d != 0 else { return .nilValue } // Parallel.
+        let t = ((p3[0] - p1[0]) * (p4[1] - p3[1]) - (p3[1] - p1[1]) * (p4[0] - p3[0])) / d
         return LispValue(list: [
             .real(p1[0] + t * (p2[0] - p1[0])),
             .real(p1[1] + t * (p2[1] - p1[1])),

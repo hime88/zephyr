@@ -2,6 +2,7 @@ import Foundation
 import CSDL3
 import ImGui
 import SwiftSDL
+import ZephyrKernel
 
 private let cornerTolerance = 1e-8
 private let cornerTwoPi = 2.0 * Double.pi
@@ -69,11 +70,14 @@ private func cornerLineIntersection(
     _ origin2: Vector3,
     _ direction2: Vector3
 ) -> Vector3? {
-    let denominator = cornerCross(direction1, direction2)
-    guard abs(denominator) > cornerTolerance else { return nil }
-    let delta = cornerVector(origin1, origin2)
-    let t = cornerCross(delta, direction2) / denominator
-    return cornerPoint(origin1, direction1, t)
+    // Canonical kernel solver: infinite lines in a locally shifted frame.
+    // Directions are unit, so the kernel param equals the legacy t exactly.
+    let a = LineSeg2d(start: origin1.point2d, end: (origin1 + direction1).point2d)
+    let b = LineSeg2d(start: origin2.point2d, end: (origin2 + direction2).point2d)
+    guard let hit = Intersector2D.intersectLineLine(a, b, extendA: true, extendB: true).first else {
+        return nil
+    }
+    return cornerPoint(origin1, direction1, hit.paramA)
 }
 
 private func cornerLineCircleIntersections(
@@ -82,20 +86,13 @@ private func cornerLineCircleIntersections(
     circleCenter: Vector3,
     circleRadius: Double
 ) -> [Vector3] {
-    let delta = cornerVector(circleCenter, lineOrigin)
-    let b = 2.0 * cornerDot(delta, lineDirection)
-    let c = cornerDot(delta, delta) - circleRadius * circleRadius
-    let discriminant = b * b - 4.0 * c
-    if discriminant < -cornerTolerance { return [] }
-    if abs(discriminant) <= cornerTolerance {
-        let t = -b * 0.5
-        return [cornerPoint(lineOrigin, lineDirection, t)]
-    }
-    let root = sqrt(max(0, discriminant))
-    return [
-        cornerPoint(lineOrigin, lineDirection, (-b - root) * 0.5),
-        cornerPoint(lineOrigin, lineDirection, (-b + root) * 0.5),
-    ]
+    // Canonical kernel solver (local-frame shifted line-arc).
+    let line = LineSeg2d(start: lineOrigin.point2d,
+                          end: (lineOrigin + lineDirection).point2d)
+    let arc = Arc2d(center: circleCenter.point2d, radius: circleRadius,
+                     startAngle: 0, sweep: 2.0 * .pi)
+    return Intersector2D.intersectLineArc(line, arc, extendLine: true, extendArc: false)
+        .map { cornerPoint(lineOrigin, lineDirection, $0.paramA) }
 }
 
 private func cornerCircleCircleIntersections(
@@ -104,20 +101,11 @@ private func cornerCircleCircleIntersections(
     center2: Vector3,
     radius2: Double
 ) -> [Vector3] {
-    let delta = cornerVector(center1, center2)
-    let distance = cornerLength(delta)
-    guard distance > cornerTolerance else { return [] }
-    guard distance <= radius1 + radius2 + cornerTolerance else { return [] }
-    guard distance + min(radius1, radius2) + cornerTolerance >= max(radius1, radius2) else { return [] }
-    let a = (radius1 * radius1 - radius2 * radius2 + distance * distance) / (2.0 * distance)
-    let hSquared = radius1 * radius1 - a * a
-    if hSquared < -cornerTolerance { return [] }
-    let unit = Vector3(x: delta.x / distance, y: delta.y / distance, z: 0)
-    let base = cornerPoint(center1, unit, a)
-    if abs(hSquared) <= cornerTolerance { return [base] }
-    let h = sqrt(max(0, hSquared))
-    let normal = Vector3(x: -unit.y, y: unit.x, z: 0)
-    return [cornerPoint(base, normal, h), cornerPoint(base, normal, -h)]
+    // Canonical kernel solver (arc-center local frame). z = center1.z, as before.
+    let a = Arc2d(center: center1.point2d, radius: radius1, startAngle: 0, sweep: 2.0 * .pi)
+    let b = Arc2d(center: center2.point2d, radius: radius2, startAngle: 0, sweep: 2.0 * .pi)
+    return Intersector2D.intersectArcArc(a, b, extendA: false, extendB: false)
+        .map { Vector3(x: $0.point.x, y: $0.point.y, z: center1.z) }
 }
 
 private enum CornerSupport {

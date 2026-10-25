@@ -1,0 +1,12 @@
+# Baseline — feature/zephyr-kernel-single-shot (pre-kernel-callers)
+# Host: Windows 11 build 26200, ARM64, optimized (-c release)
+# Date: 2026-10-25. Binary: .build/out/Products/Release-windows-aarch64/ZephyrBench.exe
+
+NURBS evaluate 64 segments x2000: 7.1 ms, peak RSS 18.2 MB
+NURBS evaluateAt 10k samples: 0.5 ms, peak RSS 18.6 MB
+dxf-goldens Tools/bench/golden: all 12 matched (PASS eab-scalars, eab-roundtrip,
+  shx-render, vertex-build, nurbs, dxf-roundtrip + 6 dxf fixtures)
+
+# Gate for branch merge: goldens must remain 12/12; kernel bench cases
+# (Step 3) must report ms + peak RSS with no growth vs. equivalent
+# current-engine paths (explode-based trim, tessellation-based snap).

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSDL
+import ZephyrKernel
 
 // =========================================================================
 // MARK: - TrimCriterion
@@ -124,27 +125,27 @@ public enum TrimGeometryEngine {
         segmentA: Vector3, segmentB: Vector3,
         circleCenter: Vector3, radius: Double
     ) -> [Vector3] {
-        let dir = Vector3(x: segmentB.x - segmentA.x, y: segmentB.y - segmentA.y, z: segmentB.z - segmentA.z)
-        let dx = dir.x; let dy = dir.y
-        let fx = segmentA.x - circleCenter.x; let fy = segmentA.y - circleCenter.y
-
-        let a = dx * dx + dy * dy
-        let b = 2.0 * (fx * dx + fy * dy)
-        let c = fx * fx + fy * fy - radius * radius
-
-        let discriminant = b * b - 4.0 * a * c
-        if discriminant < 0 { return [] }
-
-        let sqrtD = sqrt(discriminant)
-        let t1 = (-b - sqrtD) / (2.0 * a)
-        let t2 = (-b + sqrtD) / (2.0 * a)
-
+        // Canonical solver: ZephyrKernel line-arc intersection in a
+        // locally shifted frame (robust at state-plane magnitudes).
+        // Semantics preserved: t filtered to [-1e-9, 1+1e-9], z carried.
+        let line = LineSeg2d(start: segmentA.point2d, end: segmentB.point2d)
+        let arc = Arc2d(center: circleCenter.point2d, radius: radius,
+                         startAngle: 0, sweep: 2.0 * .pi)
+        let hits = Intersector2D.intersectLineArc(
+            line, arc, extendLine: true, extendArc: false)
+        let dx = segmentB.x - segmentA.x
+        let dy = segmentB.y - segmentA.y
         var result: [Vector3] = []
-        if t1 >= -1e-9 && t1 <= 1.0 + 1e-9 {
-            result.append(Vector3(x: segmentA.x + t1 * dx, y: segmentA.y + t1 * dy, z: segmentA.z))
-        }
-        if t2 >= -1e-9 && t2 <= 1.0 + 1e-9 && abs(t2 - t1) > 1e-12 {
-            result.append(Vector3(x: segmentA.x + t2 * dx, y: segmentA.y + t2 * dy, z: segmentA.z))
+        result.reserveCapacity(hits.count)
+        for h in hits {
+            let t = h.paramA
+            guard t >= -1e-9 && t <= 1.0 + 1e-9 else { continue }
+            if let last = result.last {
+                let px = segmentA.x + t * dx, py = segmentA.y + t * dy
+                let ddx = px - last.x, ddy = py - last.y
+                if ddx * ddx + ddy * ddy <= 1e-24 { continue }
+            }
+            result.append(Vector3(x: segmentA.x + t * dx, y: segmentA.y + t * dy, z: segmentA.z))
         }
         return result
     }
@@ -343,6 +344,12 @@ public enum TrimGeometryEngine {
                 exactLines: exactLines, zoom: zoom
             )
 
+        case .polyline(let path, let color):
+            return trimPolylineExact(
+                path: path, color: color,
+                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments
+            )
+
         default:
             return trimExploded(
                 primitive: primitive,
@@ -367,13 +374,20 @@ public enum TrimGeometryEngine {
             return ([], true, nil)
         }
 
-        // Find intersections with cutting segments in world space
+        // Find intersections with cutting segments in world space.
+        // Canonical kernel solver (local-frame shifted line-line).
         var hitsT: [Double] = []
+        let targetLine = LineSeg2d(start: ws.point2d, end: we.point2d)
         for edge in cuttingSegments {
-            guard let res = CADGeometryMath.segmentSegmentIntersection(a: ws, b: we, c: edge.0, d: edge.1) else { continue }
-            if res.t > 1e-9 && res.t < 1.0 - 1e-9 {
-                if !hitsT.contains(where: { abs($0 - res.t) < 1e-6 }) {
-                    hitsT.append(res.t)
+            let cutter = LineSeg2d(start: edge.0.point2d, end: edge.1.point2d)
+            let res = Intersector2D.intersectLineLine(
+                targetLine, cutter, extendA: false, extendB: false)
+            for hit in res {
+                let t = hit.paramA
+                if t > 1e-9 && t < 1.0 - 1e-9 {
+                    if !hitsT.contains(where: { abs($0 - t) < 1e-6 }) {
+                        hitsT.append(t)
+                    }
                 }
             }
         }
@@ -731,7 +745,33 @@ public enum TrimGeometryEngine {
             for res in results { appendHit(t: res.t, point: res.point) }
         }
 
-        for edge in localEdges { findHits(on: edge, searchSegments: 96) }
+        // Kernel hit-finding for plain cutter edges (planar case): exact
+        // subdivision solver in the locally shifted frame. Non-planar
+        // splines keep the legacy sampler.
+        let splineZs = controlPoints.map(\.z)
+        let splinePlanar = (splineZs.max() ?? 0) - (splineZs.min() ?? 0) <= max(localTolerance, 1e-9)
+        func findHitsKernel(on edge: (Vector3, Vector3)) {
+            guard splinePlanar,
+                  abs(edge.0.z - (splineZs.first ?? 0)) <= max(localTolerance, 1e-9),
+                  abs(edge.1.z - (splineZs.first ?? 0)) <= max(localTolerance, 1e-9) else {
+                findHits(on: edge, searchSegments: 96)
+                return
+            }
+            let spline2d = Spline2d(
+                controlPoints: controlPoints.map { $0.point2d },
+                knots: knots, degree: p, weights: w)
+            let line = LineSeg2d(start: edge.0.point2d, end: edge.1.point2d)
+            let results = Intersector2D.intersect(.line(line), .spline(spline2d))
+            for res in results {
+                let u = minT + res.paramB * (maxT - minT)
+                if let pt = NURBSEvaluator.evaluateAt(
+                    degree: p, knots: knots, controlPoints: controlPoints, weights: w, at: u) {
+                    appendHit(t: u, point: pt)
+                }
+            }
+        }
+
+        for edge in localEdges { findHitsKernel(on: edge) }
         for edge in localExactLineEdges {
             findHits(on: extendedEdge(edge, by: localTolerance), searchSegments: 256)
             addEndpointTouchHit(edge.0)
@@ -817,6 +857,197 @@ public enum TrimGeometryEngine {
         return (newPrims, true, nil)
     }
 
+    // MARK: - Exact Polyline Solver (bulge-preserving)
+
+    /// Trims a polyline without tessellating bulged edges: hit-finding
+    /// runs on exact world-space kernel segments, and kept spans rebuild
+    /// via CurveEval.splitAt (bulge + width interpolation preserved).
+    /// Non-similarity transforms fall back to trimExploded (bulges do not
+    /// survive non-uniform scale as arcs).
+    private static func trimPolylineExact(
+        path: CADPolyline,
+        color: ColorRGBA?,
+        transform: Transform3D,
+        criterion: TrimCriterion,
+        cuttingSegments: [(Vector3, Vector3)]
+    ) -> (result: [CADPrimitive]?, modified: Bool, errorMsg: String?) {
+        guard transform.isSimilarity2D else {
+            return trimExploded(
+                primitive: .polyline(path: path, color: color),
+                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments)
+        }
+        let mirror = transform.reversesOrientation2D
+        let s = transform.scale
+        let widthScale = max(0.5 * (abs(s.x) + abs(s.y)), 1e-12)
+
+        // World-space kernel segments (positions transformed, bulge handedness
+        // flipped under mirror, widths scaled).
+        let localVerts = path.vertices
+        guard localVerts.count >= 2 else { return ([], true, nil) }
+        let edgeCount = path.isClosed ? localVerts.count : (localVerts.count - 1)
+        var worldSegs: [PolySegment2d] = []
+        worldSegs.reserveCapacity(edgeCount)
+        for i in 0..<edgeCount {
+            let v0 = localVerts[i]
+            let v1 = localVerts[(i + 1) % localVerts.count]
+            let w0 = transform.transformPoint(v0.position)
+            let w1 = transform.transformPoint(v1.position)
+            worldSegs.append(PolySegment2d(
+                index: i,
+                start: w0.point2d, end: w1.point2d,
+                bulge: mirror ? -v0.bulge : v0.bulge,
+                startWidth: v0.startWidth * widthScale,
+                endWidth: v0.endWidth * widthScale))
+        }
+        func segLen(_ seg: PolySegment2d) -> Double {
+            switch seg.geometry {
+            case .line(let l): return l.length
+            case .arc(let a): return a.radius * abs(a.sweep)
+            }
+        }
+        var cumLen: [Double] = [0]
+        for seg in worldSegs { cumLen.append(cumLen.last! + segLen(seg)) }
+        let totalLen = cumLen.last!
+        guard totalLen > 1e-9 else { return ([], true, nil) }
+
+        // Hits in world space against cutter edges.
+        struct PlineHit { let t: Double }
+        var hits: [PlineHit] = []
+        for edge in cuttingSegments {
+            let cutter = Curve2d.line(LineSeg2d(start: edge.0.point2d, end: edge.1.point2d))
+            for (i, seg) in worldSegs.enumerated() {
+                let results = Intersector2D.intersect(.polySegment(seg), cutter)
+                for h in results {
+                    let segL = segLen(seg)
+                    guard segL > 1e-12 else { continue }
+                    let globalT = (cumLen[i] + h.paramA * segL) / totalLen
+                    if globalT > 1e-9 && globalT < 1.0 - 1e-9 {
+                        if !hits.contains(where: { abs($0.t - globalT) < 1e-6 }) {
+                            hits.append(PlineHit(t: globalT))
+                        }
+                    }
+                }
+            }
+        }
+        guard !hits.isEmpty else { return (nil, false, nil) }
+
+        // Click parameter: nearest world point on the exact segments.
+        func nearestGlobalT(to query: Vector3) -> Double {
+            var bestD = Double.infinity
+            var bestT = 0.0
+            for (i, seg) in worldSegs.enumerated() {
+                let proj = Projector2D.closestPointOnCurve(.polySegment(seg), to: query.point2d)
+                if proj.distance < bestD {
+                    bestD = proj.distance
+                    let segL = segLen(seg)
+                    bestT = segL > 1e-12 ? (cumLen[i] + proj.param * segL) / totalLen : cumLen[i] / totalLen
+                }
+            }
+            return bestT
+        }
+        let tClick: Double
+        switch criterion {
+        case .click(let rawClick):
+            tClick = nearestGlobalT(to: rawClick)
+        case .fence(let fp1, let fp2):
+            let fence = Curve2d.line(LineSeg2d(start: fp1.point2d, end: fp2.point2d))
+            var foundT: Double? = nil
+            for (i, seg) in worldSegs.enumerated() {
+                if let h = Intersector2D.intersect(.polySegment(seg), fence).first {
+                    let segL = segLen(seg)
+                    foundT = (cumLen[i] + h.paramA * segL) / totalLen
+                    break
+                }
+            }
+            guard let fT = foundT else { return (nil, false, nil) }
+            tClick = fT
+        case .rect(let bMin, let bMax, _):
+            let center = Vector3(x: (bMin.x + bMax.x) * 0.5, y: (bMin.y + bMax.y) * 0.5, z: 0)
+            tClick = nearestGlobalT(to: center)
+        }
+
+        var tBefore = 0.0
+        var tAfter = 1.0
+        for h in hits {
+            if h.t < tClick && h.t > tBefore { tBefore = h.t }
+            if h.t > tClick && h.t < tAfter { tAfter = h.t }
+        }
+        // Kept global intervals.
+        var kept: [(Double, Double)] = []
+        if tBefore > 1e-9 { kept.append((0.0, tBefore)) }
+        if tAfter < 1.0 - 1e-9 { kept.append((tAfter, 1.0)) }
+        guard !kept.isEmpty else { return ([], true, nil) }
+
+        // Rebuild kept spans exactly, mapping world sub-segments back to local.
+        // Fractions lt0/lt1 locate each piece on its parent edge, so z and
+        // widths interpolate exactly; bulge flips back under mirror.
+        let inv = transform.inverse()
+        var worldZ: [(Double, Double)] = []
+        worldZ.reserveCapacity(worldSegs.count)
+        for i in 0..<edgeCount {
+            let v0 = localVerts[i]
+            let v1 = localVerts[(i + 1) % localVerts.count]
+            let w0 = transform.transformPoint(v0.position)
+            let w1 = transform.transformPoint(v1.position)
+            worldZ.append((w0.z, w1.z))
+        }
+        var verts: [CADPolylineVertex] = []
+        var droppedEdge = false
+        for (i, seg) in worldSegs.enumerated() {
+            let e0 = cumLen[i] / totalLen
+            let e1 = cumLen[i + 1] / totalLen
+            var keptAny = false
+            for (k0, k1) in kept {
+                if k1 <= e0 + 1e-12 || k0 >= e1 - 1e-12 { continue }
+                let lt0 = min(max((k0 - e0) / max(e1 - e0, 1e-15), 0.0), 1.0)
+                let lt1 = min(max((k1 - e0) / max(e1 - e0, 1e-15), 0.0), 1.0)
+                if lt1 - lt0 <= 1e-9 { continue }
+                if case .polySegment(let sub)? = CurveEval.splitAt(.polySegment(seg), t1: lt0, t2: lt1) {
+                    let (wz0, wz1) = worldZ[i]
+                    let zA = wz0 + (wz1 - wz0) * lt0
+                    let zB = wz0 + (wz1 - wz0) * lt1
+                    let lA = inv.transformPoint(Vector3(x: sub.startPoint.x, y: sub.startPoint.y, z: zA))
+                    let lB = inv.transformPoint(Vector3(x: sub.endPoint.x, y: sub.endPoint.y, z: zB))
+                    let bA = mirror ? -sub.bulge : sub.bulge
+                    let wA = sub.startWidth / widthScale
+                    let wB = sub.endWidth / widthScale
+                    verts.append(CADPolylineVertex(position: lA, bulge: bA, startWidth: wA, endWidth: wA))
+                    // Stash the piece end; the loop appends each piece start,
+                    // and the final end is appended after the loop. Consecutive
+                    // pieces share endpoints exactly (same split fractions).
+                    verts.append(CADPolylineVertex(position: lB, bulge: 0, startWidth: wB, endWidth: wB))
+                    keptAny = true
+                }
+            }
+            if !keptAny { droppedEdge = true }
+        }
+        guard !verts.isEmpty else { return ([], true, nil) }
+        // Collapse consecutive duplicates (piece joints), keeping the later
+        // vertex: it carries the outgoing edge's bulge.
+        var clean: [CADPolylineVertex] = []
+        clean.reserveCapacity(verts.count)
+        for v in verts {
+            if let last = clean.last,
+               (last.position - v.position).magnitudeSquared < 1e-18 {
+                clean[clean.count - 1] = v
+                continue
+            }
+            clean.append(v)
+        }
+        var rebuilt = path
+        rebuilt.vertices = clean
+        rebuilt.isClosed = path.isClosed && !droppedEdge
+        if rebuilt.isClosed, clean.count > 1,
+           (clean.first!.position - clean.last!.position).magnitudeSquared < 1e-18 {
+            // Closed loop: drop the duplicated seam vertex.
+            rebuilt.vertices = Array(clean.dropLast())
+        } else if !rebuilt.isClosed {
+            // Open chain: the last vertex must not carry a bulge.
+            rebuilt.vertices[rebuilt.vertices.count - 1].bulge = 0
+        }
+        return ([.polyline(path: rebuilt, color: color)], true, nil)
+    }
+
     // MARK: - Exploded Polyline Fallback
 
     private static func trimExploded(
@@ -847,12 +1078,19 @@ public enum TrimGeometryEngine {
             let localEdge1 = invTransform.transformPoint(edge.1)
 
             for (i, s) in targetSegs.enumerated() {
-                guard let res = CADGeometryMath.segmentSegmentIntersection(a: s.0, b: s.1, c: localEdge0, d: localEdge1) else { continue }
-                if res.t >= -1e-9 && res.t <= 1.0 + 1e-9 {
-                    let segLen = cumLen[i+1] - cumLen[i]
-                    let globalT = (cumLen[i] + res.t * segLen) / totalLen
-                    if globalT > 1e-9 && globalT < 1.0 - 1e-9 {
-                        hits.append(Hit(localPoint: res.point, t: globalT))
+                // Canonical kernel solver (local-frame shifted).
+                let target = LineSeg2d(start: s.0.point2d, end: s.1.point2d)
+                let cutter = LineSeg2d(start: localEdge0.point2d, end: localEdge1.point2d)
+                let results = Intersector2D.intersectLineLine(
+                    target, cutter, extendA: false, extendB: false)
+                for res in results {
+                    let t = res.paramA
+                    if t >= -1e-9 && t <= 1.0 + 1e-9 {
+                        let segLen = cumLen[i+1] - cumLen[i]
+                        let globalT = (cumLen[i] + t * segLen) / totalLen
+                        if globalT > 1e-9 && globalT < 1.0 - 1e-9 {
+                            hits.append(Hit(localPoint: Vector3(res.point), t: globalT))
+                        }
                     }
                 }
             }
@@ -890,10 +1128,13 @@ public enum TrimGeometryEngine {
             let lfp0 = invTransform.transformPoint(fp1)
             let lfp1 = invTransform.transformPoint(fp2)
             var foundT: Double? = nil
+            let fenceLine = LineSeg2d(start: lfp0.point2d, end: lfp1.point2d)
             for (i, s) in targetSegs.enumerated() {
-                if let res = CADGeometryMath.segmentSegmentIntersection(a: s.0, b: s.1, c: lfp0, d: lfp1) {
+                let target = LineSeg2d(start: s.0.point2d, end: s.1.point2d)
+                if let res = Intersector2D.intersectLineLine(
+                    target, fenceLine, extendA: false, extendB: false).first {
                     let segLen = cumLen[i+1] - cumLen[i]
-                    foundT = (cumLen[i] + res.t * segLen) / totalLen
+                    foundT = (cumLen[i] + res.paramA * segLen) / totalLen
                     break
                 }
             }

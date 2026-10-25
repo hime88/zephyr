@@ -113,6 +113,13 @@ final class LispBuiltinMathTests: XCTestCase {
             "(inters '(0 0) '(2 2) '(0 2) '(2 0))",
             LispValue(list: [.real(1), .real(1), .real(0)]))
         try await assertEval("(inters '(0 0) '(1 0) '(0 1) '(1 1))", .nilValue)
+        // Segment-restricted case routes through the kernel solver.
+        try await assertEval(
+            "(inters '(0 0) '(2 2) '(0 2) '(2 0) T)",
+            LispValue(list: [.real(1), .real(1), .real(0)]))
+        try await assertEval("(inters '(0 0) '(1 0) '(0 1) '(1 1) T)", .nilValue)
+        // Segments that miss within span but cross when extended.
+        try await assertEval("(inters '(0 0) '(1 0) '(2 -1) '(2 1) T)", .nilValue)
     }
 
     func testCvunit() async throws {

@@ -395,7 +395,7 @@ struct ZephyrBench {
         print("")
 
         guard !arguments.isEmpty else {
-            print("usage: ZephyrBench [canary] [dxf <file>] [shx <file>] [nurbs] [dxf-digest <file>] [dxf-compare <file>] [dxf-goldens <dir>] [dxf-goldens-write <dir>] [eab-scalars] [eab-roundtrip] [lisp [--eval EXPR]... [file.lsp]...] [all <dxf> <shx>]")
+            print("usage: ZephyrBench [canary] [kernel] [dxf <file>] [shx <file>] [nurbs] [dxf-digest <file>] [dxf-compare <file>] [dxf-goldens <dir>] [dxf-goldens-write <dir>] [eab-scalars] [eab-roundtrip] [lisp [--eval EXPR]... [file.lsp]...] [all <dxf> <shx>]")
             return
         }
 
@@ -421,6 +421,8 @@ struct ZephyrBench {
                 run("shx") { try Cases.shx(path: path) }
             case "nurbs":
                 run("nurbs") { Cases.nurbs() }
+            case "kernel":
+                run("kernel") { Cases.kernel() }
             case "dxf-digest":
                 index += 1
                 let path = index < arguments.count ? arguments[index] : ""

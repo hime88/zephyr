@@ -1,4 +1,4 @@
-// swift-tools-version: 6.2
+// swift-tools-version: 6.4
 import PackageDescription
 
 // Swift 6.4 feature flags used by this branch.
@@ -17,6 +17,7 @@ let package = Package(
     name: "Zephyr",
     platforms: [.macOS(.v12), .iOS(.v13)],
     products: [
+        .library(name: "ZephyrKernel", targets: ["ZephyrKernel"]),
         .library(name: "ZephyrCore", targets: ["ZephyrCore"]),
         .executable(name: "Zephyr", targets: ["Zephyr"]),
     ],
@@ -28,9 +29,17 @@ let package = Package(
         .package(name: "SwiftZLibNG", path: "../SwiftZLibNG"),
     ],
     targets: [
+        // Pure-math 2D CAD geometry kernel — zero UI, SDL, or ImGui dependencies.
+        // Foundation only. See PLAN-kernel-perf.md.
+        .target(
+            name: "ZephyrKernel",
+            path: "Sources/ZephyrKernel",
+            swiftSettings: zephyrSwiftSettings
+        ),
         .target(
             name: "ZephyrCore",
             dependencies: [
+                "ZephyrKernel",
                 "ZephyrLisp",
                 .product(name: "CZLibNG", package: "SwiftZLibNG"),
                 .product(name: "CSDL3", package: "SwiftSDL"),
@@ -99,7 +108,14 @@ let package = Package(
         // no Regex, Clock/Duration, Span, or other post-12 APIs.
         .target(
             name: "ZephyrLisp",
+            dependencies: ["ZephyrKernel"],
             path: "Sources/ZephyrLisp",
+            swiftSettings: zephyrSwiftSettings
+        ),
+        .testTarget(
+            name: "ZephyrKernelTests",
+            dependencies: ["ZephyrKernel"],
+            path: "Tests/ZephyrKernelTests",
             swiftSettings: zephyrSwiftSettings
         ),
         .testTarget(
@@ -122,7 +138,7 @@ let package = Package(
         // Kept out of the test target because that one needs the libdxfrw C module.
         .executableTarget(
             name: "ZephyrBench",
-            dependencies: ["ZephyrCore", "ZephyrLisp"],
+            dependencies: ["ZephyrCore", "ZephyrLisp", "ZephyrKernel"],
             path: "Sources/ZephyrBench",
             swiftSettings: zephyrSwiftSettings
         ),

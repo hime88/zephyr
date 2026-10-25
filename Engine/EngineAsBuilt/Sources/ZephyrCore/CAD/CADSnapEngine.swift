@@ -1,4 +1,5 @@
 import Foundation
+import ZephyrKernel
 
 // =========================================================================
 // MARK: - CADSnapEngine
@@ -450,8 +451,12 @@ public final class SnapEngine {
                     localNearest = position
 
                 case .line(let start, let end, _):
-                    localNearest = CADGeometryMath.nearestPointOnPolyline(
-                        to: localCursor, points: [start, end])
+                    // Kernel projection (identical XY math to
+                    // nearestPointOnPolyline; z = segment start, as before).
+                    let lineProj = Projector2D.closestPointOnCurve(
+                        .line(LineSeg2d(start: start.point2d, end: end.point2d)),
+                        to: localCursor.point2d)
+                    localNearest = Vector3(x: lineProj.point.x, y: lineProj.point.y, z: start.z)
 
                 case .rect(let origin, let size, _), .fillRect(let origin, let size, _):
                     let corners = [
@@ -468,8 +473,20 @@ public final class SnapEngine {
                         to: localCursor, points: points, closed: true)
 
                 case .polyline(let path, _):
-                    localNearest = CADGeometryMath.nearestPointOnPolyline(
-                        to: localCursor, points: path.tessellatedPoints(), closed: false)
+                    // Exact per-edge kernel projection: no tessellation,
+                    // bulged edges solve analytically. z = edge start, as before.
+                    var bestD = Double.greatestFiniteMagnitude
+                    var bestP: Vector3? = nil
+                    for seg in path.toKernelSegments() {
+                        let proj = Projector2D.closestPointOnCurve(
+                            .polySegment(seg), to: localCursor.point2d)
+                        if proj.distance < bestD {
+                            bestD = proj.distance
+                            let z = path.vertices[seg.index].position.z
+                            bestP = Vector3(x: proj.point.x, y: proj.point.y, z: z)
+                        }
+                    }
+                    localNearest = bestP
 
                 case .fillComplexPolygon(let outer, let holes, _):
                     var bestNP: Vector3? = nil
@@ -508,18 +525,54 @@ public final class SnapEngine {
                     localNearest = bestNP
 
                 case .arc(let center, let radius, let startAngle, let endAngle, _):
-                    localNearest = CADGeometryMath.nearestPointOnArc(
-                        to: localCursor, center: center, radius: radius,
-                        startAngle: startAngle, endAngle: endAngle)
+                    // Kernel radial projection, preserving the legacy guards:
+                    // nil at center, nil when the polar angle is off-sweep.
+                    let rdx = localCursor.x - center.x
+                    let rdy = localCursor.y - center.y
+                    if rdx * rdx + rdy * rdy > 1e-18 {
+                        var span = endAngle - startAngle
+                        if span < 0 { span += 2.0 * .pi }
+                        let angle = atan2(rdy, rdx)
+                        if CADGeometryMath.angleIsOnCCWSweep(
+                            angle: angle, start: startAngle, end: startAngle + span) {
+                            let arcProj = Projector2D.closestPointOnCurve(
+                                .arc(Arc2d.fromDXFAngles(center: center.point2d, radius: radius,
+                                                       startAngle: startAngle, endAngle: endAngle)),
+                                to: localCursor.point2d)
+                            localNearest = Vector3(x: arcProj.point.x, y: arcProj.point.y, z: center.z)
+                        } else {
+                            localNearest = nil
+                        }
+                    } else {
+                        localNearest = nil
+                    }
 
                 case .circle(let center, let radius, _):
-                    localNearest = CADGeometryMath.nearestPointOnCircle(
-                        to: localCursor, center: center, radius: radius)
+                    // Kernel radial projection; nil at center, as before.
+                    let cdx = localCursor.x - center.x
+                    let cdy = localCursor.y - center.y
+                    if cdx * cdx + cdy * cdy > 1e-18 {
+                        let circProj = Projector2D.closestPointOnCurve(
+                            .circle(Circle2d(center: center.point2d, radius: radius)),
+                            to: localCursor.point2d)
+                        localNearest = Vector3(x: circProj.point.x, y: circProj.point.y, z: center.z)
+                    } else {
+                        localNearest = nil
+                    }
 
                 case .ellipse(let center, let majorAxis, let minorRatio, _):
-                    localNearest = CADGeometryMath.nearestPointOnEllipse(
-                        to: localCursor, center: center,
-                        majorAxis: majorAxis, minorRatio: minorRatio)
+                    // Kernel Newton-refined projection (replaces 64-sample +
+                    // golden-section search; z = center.z, as before).
+                    guard majorAxis.magnitude > 1e-12 else {
+                        localNearest = nil
+                        break
+                    }
+                    let ellProj = Projector2D.closestPointOnCurve(
+                        .ellipse(Ellipse2d(center: center.point2d,
+                                         majorAxis: Vec2d(x: majorAxis.x, y: majorAxis.y),
+                                         minorRatio: minorRatio)),
+                        to: localCursor.point2d)
+                    localNearest = Vector3(x: ellProj.point.x, y: ellProj.point.y, z: center.z)
 
                 case .spline(let controlPoints, let knots, let degree, let weights, _):
                     guard controlPoints.count >= 2 else {

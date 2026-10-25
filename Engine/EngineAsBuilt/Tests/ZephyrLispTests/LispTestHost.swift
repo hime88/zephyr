@@ -87,6 +87,16 @@ final class ScriptedLispHost: LispHost, @unchecked Sendable {
         return box
     }
 
+    /// Canned entget assoc lists, keyed by entity handle.
+    var entLists: [String: LispValue] = [:]
+
+    func entGet(_ handle: String) async throws -> LispValue {
+        guard let list = entLists[handle] else {
+            throw LispError.noActiveDrawing("entget \(handle)")
+        }
+        return list
+    }
+
     // MARK: - Step 4d recording surface
 
     struct GrVector: Equatable {

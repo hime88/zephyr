@@ -1,4 +1,5 @@
 import Foundation
+import ZephyrKernel
 
 // =========================================================================
 // MARK: - OffsetGeometryEngine
@@ -732,73 +733,35 @@ public enum OffsetGeometryEngine {
     private static func supportIntersections(
         _ a: OffsetSeg, _ b: OffsetSeg
     ) -> [Vector3] {
+        // Canonical kernel solver (local-frame shifted line/arc mixes).
+        // Infinite-curve semantics preserved (extend both); z rebuilt per
+        // the legacy rules: line interpolation when a line participates,
+        // else a.end.z.
         let mid = (a.end + b.start) * 0.5
-        func sorted(_ points: [Vector3]) -> [Vector3] {
-            points.sorted { $0.distance(to: mid) < $1.distance(to: mid) }
+        func curve(of seg: OffsetSeg) -> Curve2d {
+            if let arc = seg.arc {
+                let startAngle = atan2(seg.start.y - arc.center.y, seg.start.x - arc.center.x)
+                return .arc(Arc2d(center: arc.center.point2d, radius: arc.radius,
+                                  startAngle: startAngle, sweep: arc.sweep))
+            }
+            return .line(LineSeg2d(start: seg.start.point2d, end: seg.end.point2d))
         }
-
-        switch (a.arc, b.arc) {
-        case (nil, nil):
-            guard let ua = a.tangent(atStart: true),
-                  let ub = b.tangent(atStart: true)
-            else { return [] }
-            let denom = cross2(ua, ub)
-            guard abs(denom) > 1e-12 else { return [] }
-            let delta = b.start - a.start
-            let t = cross2(delta, ub) / denom
-            let lengthA = hypot(a.end.x - a.start.x, a.end.y - a.start.y)
-            let zFrac = lengthA > eps ? t / lengthA : 0
-            return [Vector3(
-                x: a.start.x + ua.x * t, y: a.start.y + ua.y * t,
-                z: a.start.z + (a.end.z - a.start.z) * zFrac)]
-
-        case (let arcA?, nil):
-            return sorted(lineCircleIntersections(
-                line: b, center: arcA.center, radius: arcA.radius))
-        case (nil, let arcB?):
-            return sorted(lineCircleIntersections(
-                line: a, center: arcB.center, radius: arcB.radius))
-
-        case (let arcA?, let arcB?):
-            let delta = arcB.center - arcA.center
-            let d = hypot(delta.x, delta.y)
-            guard d > eps,
-                  d <= arcA.radius + arcB.radius + eps,
-                  d + min(arcA.radius, arcB.radius) + eps >= max(arcA.radius, arcB.radius)
-            else { return [] }
-            let along = (arcA.radius * arcA.radius - arcB.radius * arcB.radius + d * d) / (2 * d)
-            let hSq = arcA.radius * arcA.radius - along * along
-            guard hSq >= -eps else { return [] }
-            let unit = Vector3(x: delta.x / d, y: delta.y / d, z: 0)
-            let base = Vector3(
-                x: arcA.center.x + unit.x * along,
-                y: arcA.center.y + unit.y * along, z: a.end.z)
-            if hSq <= eps { return [base] }
-            let h = sqrt(hSq)
-            let normal = Vector3(x: -unit.y, y: unit.x, z: 0)
-            return sorted([base + normal * h, base - normal * h])
+        let ka = curve(of: a)
+        let kb = curve(of: b)
+        let hits = Intersector2D.intersect(ka, kb, extendA: true, extendB: true)
+        let points: [Vector3] = hits.map { h in
+            let z: Double
+            switch (ka, kb) {
+            case (.line, _):
+                z = a.start.z + (a.end.z - a.start.z) * h.paramA
+            case (_, .line):
+                z = b.start.z + (b.end.z - b.start.z) * h.paramB
+            default:
+                z = a.end.z
+            }
+            return Vector3(x: h.point.x, y: h.point.y, z: z)
         }
-    }
-
-    private static func lineCircleIntersections(
-        line: OffsetSeg, center: Vector3, radius: Double
-    ) -> [Vector3] {
-        guard let dir = line.tangent(atStart: true) else { return [] }
-        let delta = line.start - center
-        let b = 2.0 * (delta.x * dir.x + delta.y * dir.y)
-        let c = delta.x * delta.x + delta.y * delta.y - radius * radius
-        let discriminant = b * b - 4.0 * c
-        guard discriminant >= -eps else { return [] }
-        func point(at t: Double) -> Vector3 {
-            let length = hypot(line.end.x - line.start.x, line.end.y - line.start.y)
-            let frac = length > eps ? t / length : 0
-            return Vector3(
-                x: line.start.x + dir.x * t, y: line.start.y + dir.y * t,
-                z: line.start.z + (line.end.z - line.start.z) * frac)
-        }
-        if discriminant <= eps { return [point(at: -b * 0.5)] }
-        let root = sqrt(discriminant)
-        return [point(at: (-b - root) * 0.5), point(at: (-b + root) * 0.5)]
+        return points.sorted { $0.distance(to: mid) < $1.distance(to: mid) }
     }
 
     /// Move a segment endpoint to `point` (on its supporting curve).
