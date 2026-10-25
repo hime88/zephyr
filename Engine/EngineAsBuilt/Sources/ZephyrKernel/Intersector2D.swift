@@ -103,7 +103,7 @@ public enum Intersector2D: Sendable {
                                          r.origin, r.origin + (r.direction * 1.0), lineDomain: .ray(extend: extendB),
                                          tolerance: tolerance, refOrigin: referenceOrigin(curveA, curveB))
                 .map { CurveIntersection2d(point: $0.point, paramA: $0.paramA, paramB: $0.paramB) }
-        case (.ray(let r), .line(let l)):
+        case (.ray, .line):
             return intersect(curveB, curveA, extendA: extendB, extendB: extendA, tolerance: tolerance)
                 .map { CurveIntersection2d(point: $0.point, paramA: $0.paramB, paramB: $0.paramA) }
         case (.line(let l), .xline(let x)):
@@ -129,7 +129,7 @@ public enum Intersector2D: Sendable {
                                          x.origin, x.origin + (x.direction * 1.0), lineDomain: .infinite,
                                          tolerance: tolerance, refOrigin: referenceOrigin(curveA, curveB))
                 .map { CurveIntersection2d(point: $0.point, paramA: $0.paramA, paramB: $0.paramB) }
-        case (.xline(let x), .ray(let r)):
+        case (.xline, .ray):
             return intersect(curveB, curveA, extendA: extendB, extendB: extendA, tolerance: tolerance)
                 .map { CurveIntersection2d(point: $0.point, paramA: $0.paramB, paramB: $0.paramA) }
 
@@ -147,7 +147,7 @@ public enum Intersector2D: Sendable {
             return intersectRayArc(ray: Ray2d(origin: x.origin, direction: x.direction), arc: arc,
                                    extendRay: true, extendArc: extendB, tolerance: tolerance)
                 .map { CurveIntersection2d(point: $0.point, paramA: $0.paramB, paramB: $0.paramA) }
-        case (.arc(let arc), .xline(let x)):
+        case (.arc, .xline):
             return intersect(curveB, curveA, extendA: extendB, extendB: extendA, tolerance: tolerance)
                 .map { CurveIntersection2d(point: $0.point, paramA: $0.paramB, paramB: $0.paramA) }
 
@@ -174,7 +174,7 @@ public enum Intersector2D: Sendable {
         case (.xline(let x), .ellipse(let e)):
             return intersectRayEllipse(ray: Ray2d(origin: x.origin, direction: x.direction), extendRay: true, ellipse: e, extendEllipse: extendB, tolerance: tolerance)
                 .map { CurveIntersection2d(point: $0.point, paramA: $0.paramB, paramB: $0.paramA) }
-        case (.ellipse(let e), .xline(let x)):
+        case (.ellipse, .xline):
             return intersect(curveB, curveA, extendA: extendB, extendB: extendA, tolerance: tolerance)
                 .map { CurveIntersection2d(point: $0.point, paramA: $0.paramB, paramB: $0.paramA) }
 
@@ -191,7 +191,7 @@ public enum Intersector2D: Sendable {
         case (.xline(let x), .spline(let s)):
             return intersectRaySpline(ray: Ray2d(origin: x.origin, direction: x.direction), extendRay: true, spline: s, refOrigin: referenceOrigin(curveA, curveB), tolerance: tolerance)
                 .map { CurveIntersection2d(point: $0.point, paramA: $0.paramB, paramB: $0.paramA) }
-        case (.spline(let s), .xline(let x)):
+        case (.spline, .xline):
             return intersect(curveB, curveA, extendA: extendB, extendB: extendA, tolerance: tolerance)
                 .map { CurveIntersection2d(point: $0.point, paramA: $0.paramB, paramB: $0.paramA) }
         case (.arc(let arc), .spline(let s)):
@@ -605,26 +605,42 @@ public enum Intersector2D: Sendable {
             if !BoundingBox2d(min: chord.start, max: chord.end).expanded(by: tolerance).intersects(lineBox) {
                 continue
             }
-            let hits = intersectLineLine(line, chord, extendA: extendLine, extendB: true, tolerance: tolerance)
+            // Solve against the infinite line here (endpoint effects are
+            // decided by the refined true point below, not the chord).
+            let hits = intersectLineLine(line, chord, extendA: true, extendB: true, tolerance: tolerance)
             for h in hits {
                 let tSpline = (Double(i) + h.paramB) / Double(segs.count)
-                // Refine: re-project onto the true spline near the chord hit.
+                // Newton refinement of signed distance to the infinite line,
+                // seeded at the chord hit (same root-finding as the legacy
+                // sampler, converging to 1e-12 instead of sample resolution).
                 let uGuess = u0 + (u1 - u0) * tSpline
-                let uLo = max(u0, uGuess - (u1 - u0) / Double(segs.count))
-                let uHi = min(u1, uGuess + (u1 - u0) / Double(segs.count))
-                var bestU = uGuess
-                var bestD = Double.greatestFiniteMagnitude
-                for k in 0...8 {
-                    let uu = uLo + (uHi - uLo) * Double(k) / 8.0
-                    if let p = SplineEval.evaluate(s, at: uu) {
-                        let tL = CurveEval.paramAtPoint(.line(line), point: p)
-                        let q = CurveEval.pointAt(.line(line), t: extendLine ? tL : min(max(tL, 0.0), 1.0))
-                        let d = p.distanceSquared(to: q)
-                        if d < bestD { bestD = d; bestU = uu }
-                    }
+                let span = (u1 - u0) / Double(segs.count)
+                let dir = line.end - line.start
+                let nLen = dir.length
+                guard nLen > tolerance else { continue }
+                let normal = dir.perpCCW * (1.0 / nLen)
+                func signedDist(_ uu: Double) -> Double? {
+                    guard let p = SplineEval.evaluate(s, at: uu) else { return nil }
+                    return (p - line.start).dot(normal)
                 }
-                let tBest = (bestU - u0) / (u1 - u0)
-                let pBest = SplineEval.evaluate(s, at: bestU) ?? h.point
+                var u = uGuess
+                let hStep = max(1e-10, 1e-6 * (u1 - u0))
+                let uLo = max(u0, uGuess - span), uHi = min(u1, uGuess + span)
+                for _ in 0..<20 {
+                    guard let dist = signedDist(u) else { break }
+                    if abs(dist) < 1e-12 { break }
+                    let up = min(uHi, u + hStep), um = max(uLo, u - hStep)
+                    guard up > um else { break }
+                    guard let dp = signedDist(up), let dm = signedDist(um) else { break }
+                    let deriv = (dp - dm) / (up - um)
+                    guard abs(deriv) > 1e-12 else { break }
+                    var step = -dist / deriv
+                    step = min(0.5 * (u1 - u0), max(-0.5 * (u1 - u0), step))
+                    u = min(uHi, max(uLo, u + step))
+                }
+                guard let pBest = SplineEval.evaluate(s, at: u),
+                      let dist = signedDist(u), abs(dist) <= 1e-9 else { continue }
+                let tBest = (u - u0) / (u1 - u0)
                 let tL = CurveEval.paramAtPoint(.line(line), point: pBest)
                 if !extendLine {
                     let len = max(line.length, tolerance)
@@ -659,7 +675,7 @@ public enum Intersector2D: Sendable {
     static func intersectAnalyticSpline(
         analytic: Curve2d, extendAnalytic: Bool, spline s: Spline2d, refOrigin: Point2d, tolerance: Double
     ) -> [CurveIntersection2d] {
-        guard s.isValid, let (u0, u1) = SplineEval.domain(of: s) else { return [] }
+        guard s.isValid, SplineEval.domain(of: s) != nil else { return [] }
         if let cb = SplineEval.controlBounds(s),
            let ab = CurveEval.boundingBox(analytic)?.expanded(by: tolerance),
            !cb.intersects(ab) { return [] }

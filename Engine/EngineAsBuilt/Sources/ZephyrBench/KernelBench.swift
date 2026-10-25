@@ -99,7 +99,67 @@ extension Cases {
                 fatalError("kernel agreement FAILED: spline eval nil mismatch")
             }
         }
+        // Line-spline: kernel vs legacy NURBSEvaluator sampler. Crossings
+        // are interior to the cutter (away from ends) so both solvers must
+        // agree on count and position; positions within chord tolerance.
+        // Divergences print (not fatal) for diagnosis; the gate fails after.
+        var splineMismatches = 0
+        let splineBattery: [Spline2d] = [
+            Spline2d(controlPoints: [.zero, Point2d(x: 5, y: 10), Point2d(x: 10, y: 0)],
+                     knots: [0, 0, 0, 1, 1, 1], degree: 2),
+            Spline2d(controlPoints: [Point2d(x: 0, y: 0), Point2d(x: 3, y: 8),
+                                      Point2d(x: 7, y: -8), Point2d(x: 10, y: 0)],
+                     knots: [0, 0, 0, 0, 1, 1, 1, 1], degree: 3),
+            Spline2d(controlPoints: [Point2d(x: 0, y: 0), Point2d(x: 4, y: 6),
+                                      Point2d(x: 8, y: 6), Point2d(x: 12, y: 0)],
+                     knots: [0, 0, 0, 0, 1, 1, 1, 1], degree: 3),
+        ]
+        for (si, ks) in splineBattery.enumerated() {
+            guard let (ku0, ku1) = SplineEval.domain(of: ks) else { continue }
+            let kcps = ks.controlPoints.map { Vector3(x: $0.x, y: $0.y, z: 0) }
+            for i in 0..<200 {
+                let y = -4.0 + Double(i) * 0.09
+                let x0 = -3.0 + Double((i * 7) % 13), x1 = x0 + 16.0
+                let a = Vector3(x: x0, y: y, z: 0), b = Vector3(x: x1, y: y, z: 0)
+                let legacy = NURBSEvaluator.findIntersectionParameters(
+                    degree: ks.degree, knots: ks.knots, controlPoints: kcps,
+                    weights: ks.weights, segmentA: a, segmentB: b, searchSegments: 96)
+                let kern = Intersector2D.intersect(
+                    .line(LineSeg2d(start: a.point2d, end: b.point2d)), .spline(ks))
+                // Keep only interior crossings for the comparison (legacy
+                // accepts 1e-4 past cutter ends; kernel is strict).
+                let legIn = legacy.filter { p in
+                    let t = ((p.point.x - x0) / max(x1 - x0, 1e-12))
+                    return t > 1e-3 && t < 1 - 1e-3
+                }
+                guard legIn.count == kern.count else {
+                    if splineMismatches < 10 {
+                        print("DIVERGE count spline\(si) i\(i) legacy \(legIn.count) vs kernel \(kern.count)")
+                        print("  line (\(x0),\(y))-(\(x1),\(y))")
+                    }
+                    splineMismatches += 1
+                    continue
+                }
+                for l in legIn {
+                    guard let k = kern.min(by: {
+                        $0.point.distanceSquared(to: l.point.point2d) < $1.point.distanceSquared(to: l.point.point2d)
+                    }) else { continue }
+                    let dx = abs(k.point.x - l.point.x), dy = abs(k.point.y - l.point.y)
+                    if dx > 1e-6 || dy > 1e-6 {
+                        if splineMismatches < 10 {
+                            print("DIVERGE pos spline\(si) i\(i) dx=\(dx) dy=\(dy)")
+                        }
+                        splineMismatches += 1
+                    }
+                    checked += 2
+                }
+                _ = (ku0, ku1)
+            }
+        }
         // Arc bulge: kernel fromBulge vs CADPolyline.arcParameters.
+        if splineMismatches > 0 {
+            fatalError("kernel agreement FAILED: \(splineMismatches) line-spline divergences")
+        }
         for i in 0..<200 {
             let b = 0.02 + Double(i) * 0.01
             let p0 = Vector3(x: Double(i), y: 0, z: 0)
@@ -120,9 +180,107 @@ extension Cases {
         _ = checked
     }
 
+    /// Screenshot-repro probe (Oct 2025): sweep click positions along a
+    /// screenshot-like spline through the REAL TrimGeometryEngine.
+    /// trimPrimitive and print kept-span signatures; hit positions show
+    /// as discontinuities. Cutters derive from the curve itself so
+    /// crossings are guaranteed; variants cover end-touch and extension.
+    @MainActor
+    static func kernelTrimDebugCheck() {
+        print("--- trim click-sweep probe (real trimPrimitive) ---")
+        let cps = [Vector3(x: 0, y: 0, z: 0), Vector3(x: 30, y: 70, z: 0),
+                   Vector3(x: 90, y: 70, z: 0), Vector3(x: 115, y: 5, z: 0)]
+        let knots = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
+        func sPoint(_ t: Double) -> Vector3 {
+            NURBSEvaluator.evaluateAt(degree: 3, knots: knots, controlPoints: cps,
+                                      weights: nil, at: t) ?? .zero
+        }
+        let splinePrim = CADPrimitive.spline(controlPoints: cps, knots: knots,
+                                             degree: 3, weights: nil, color: nil)
+        // Cutter A: chord S(0.30)->S(0.85), extended 8 units past the S(0.85)
+        // end so it truly crosses the tail; end lands near the tail.
+        let a0 = sPoint(0.30), a1 = sPoint(0.85)
+        var d = Vector3(x: a1.x - a0.x, y: a1.y - a0.y, z: 0)
+        let dl = hypot(d.x, d.y); d = Vector3(x: d.x / dl, y: d.y / dl, z: 0)
+        let cutA: (Vector3, Vector3) = (
+            Vector3(x: a0.x - d.x * 5, y: a0.y - d.y * 5, z: 0),
+            Vector3(x: a1.x + d.x * 8, y: a1.y + d.y * 8, z: 0))
+        // Cutter B: same chord but ENDING 6 units short of the tail
+        // crossing (line end near tail, no touch).
+        let cutB: (Vector3, Vector3) = (
+            Vector3(x: a0.x - d.x * 5, y: a0.y - d.y * 5, z: 0),
+            Vector3(x: a1.x - d.x * 6, y: a1.y - d.y * 6, z: 0))
+        for (name, cutters) in [("A-extended", [cutA]), ("B-short", [cutB])] {
+            print("cutter \(name): (\(cutters[0].0.x),\(cutters[0].0.y))-(\(cutters[0].1.x),\(cutters[0].1.y))")
+            // Attribute hits: kernel path vs legacy sampler on the cutter.
+            let ks = Spline2d(controlPoints: cps.map { $0.point2d },
+                              knots: knots, degree: 3, weights: nil)
+            let kHits = Intersector2D.intersect(
+                .line(LineSeg2d(start: cutters[0].0.point2d, end: cutters[0].1.point2d)),
+                .spline(ks))
+            let lHits = NURBSEvaluator.findIntersectionParameters(
+                degree: 3, knots: knots, controlPoints: cps, weights: nil,
+                segmentA: cutters[0].0, segmentB: cutters[0].1, searchSegments: 96)
+            print("  kernel hits: \(kHits.map { String(format: "u=%.4f", $0.paramB) })")
+            print("  legacy hits: \(lHits.map { String(format: "t=%.4f", $0.t) })")
+            var prevSig = ""
+            for i in 1..<20 {
+                let t = Double(i) / 20.0
+                let click = sPoint(t)
+                let res = TrimGeometryEngine.trimPrimitive(
+                    primitive: splinePrim, transform: .identity,
+                    criterion: .click(point: click),
+                    cuttingSegments: cutters, exactLines: cutters, zoom: 1.0)
+                var sig = "unmodified"
+                if res.modified, let prims = res.result {
+                    var total = 0.0
+                    for p in prims {
+                        if case let .spline(cp, kn, deg, w, _) = p {
+                            total += knotLength(controlPoints: cp, knots: kn, degree: deg, weights: w)
+                        } else { total += -1 }
+                    }
+                    sig = "prims=\(prims.count) keptLen=\(String(format: "%.1f", total))"
+                } else if res.modified {
+                    sig = "deleted"
+                }
+                let mark = sig == prevSig ? "" : "  <-- change"
+                print(String(format: "  click t=%.2f %@%@", t, sig, mark))
+                prevSig = sig
+            }
+            if prevSig.isEmpty { fatalError("trim probe produced no output") }
+        }
+        // Gate: mid-span click on the double-crossed spline must split it.
+        let midClick = sPoint(0.5)
+        let midRes = TrimGeometryEngine.trimPrimitive(
+            primitive: splinePrim, transform: .identity,
+            criterion: .click(point: midClick),
+            cuttingSegments: [cutA], exactLines: [cutA], zoom: 1.0)
+        guard midRes.modified, let mp = midRes.result, mp.count == 2 else {
+            fatalError("trim probe FAILED: mid click should split spline in two")
+        }
+    }
+
+    /// Approximate knot-domain length of a spline (chord sum, 64 samples).
+    static func knotLength(controlPoints: [Vector3], knots: [Double], degree: Int, weights: [Double]?) -> Double {
+        var total = 0.0
+        var prev: Vector3? = nil
+        for i in 0...64 {
+            let t = Double(i) / 64.0
+            let u = knots[degree] + t * (knots[controlPoints.count] - knots[degree])
+            if let p = NURBSEvaluator.evaluateAt(
+                degree: degree, knots: knots, controlPoints: controlPoints, weights: weights, at: u) {
+                if let q = prev { total += hypot(p.x - q.x, p.y - q.y) }
+                prev = p
+            }
+        }
+        return total
+    }
+
+    @MainActor
     static func kernel() {
         print("Kernel: Double-precision 2D solvers (ZephyrKernel)")
         kernelAgreementGate()
+        kernelTrimDebugCheck()
 
         // 1. Bulge round-trip, 100k segments.
         measure("kernel bulge round-trip 100k") {

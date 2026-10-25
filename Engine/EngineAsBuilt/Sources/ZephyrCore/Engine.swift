@@ -636,7 +636,7 @@ public final class PhrostEngine {
             factory: { LispCommand(mode: .script) })
 
         // Initialize tab manager and wire callbacks (after ctx/io are initialized)
-        tabManager.newTab()  // Start with one blank tab
+        _ = tabManager.newTab()  // Start with one blank tab
         mainShownTabID = tabManager.activeTab?.id
         tabManager.getBackgroundColor = { [weak self] in
             guard let self = self else { return ColorRGBA.white }

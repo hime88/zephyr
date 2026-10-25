@@ -707,7 +707,7 @@ internal final class EngineInputHandler {
                         }
                     }
                 case SDL_SCANCODE_N:
-                    engine.tabManager.newTab()
+                    _ = engine.tabManager.newTab()
                     engine.zoomExtents()
                 case SDL_SCANCODE_W:
                     if engine.io.pointee.KeyShift {

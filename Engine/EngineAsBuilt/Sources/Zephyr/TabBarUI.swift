@@ -199,7 +199,7 @@ struct TabBarUI {
                 // Add the '+' button at the trailing end
                 let addTabFlags = Int32(ImGuiTabItemFlags_Trailing.rawValue | ImGuiTabItemFlags_NoTooltip.rawValue)
                 if ImGuiTabItemButton("+", addTabFlags) {
-                    engine.tabManager.newTab()
+                    _ = engine.tabManager.newTab()
                     engine.zoomExtents()
                 }
                 if ImGuiIsItemHovered(0) {

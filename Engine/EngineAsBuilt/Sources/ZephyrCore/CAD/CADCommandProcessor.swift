@@ -735,7 +735,7 @@ public final class CADCommandProcessor {
             clearCommand()
         // --- File Commands ---
         case "N", "NEW":
-            engine?.tabManager.newTab()
+            _ = engine?.tabManager.newTab()
             engine?.zoomExtents()
             clearCommand()
         case "OPEN":
@@ -898,7 +898,7 @@ public final class CADCommandProcessor {
             guard let engine = engine else { clearCommand(); return }
             // Create a fresh blank tab first, then close all others.
             // This avoids the "can't close last tab" restriction.
-            engine.tabManager.newTab()
+            _ = engine.tabManager.newTab()
             engine.zoomExtents()
             let keepIndex = engine.tabManager.activeIndex
             var idx = engine.tabManager.tabs.count - 1
