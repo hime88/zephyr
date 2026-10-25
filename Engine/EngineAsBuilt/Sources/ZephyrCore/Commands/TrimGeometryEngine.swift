@@ -185,9 +185,10 @@ public enum TrimGeometryEngine {
         document: CADDocument,
         cuttingHandles: Set<UUID>?,
         excludedHandle: UUID? = nil
-    ) -> (cuttingSegments: [(Vector3, Vector3)], exactLineCuttingSegments: [(Vector3, Vector3)]) {
+    ) -> (cuttingSegments: [(Vector3, Vector3)], exactLineCuttingSegments: [(Vector3, Vector3)], exactCurves: [Curve2d]) {
         var cuttingSegments: [(Vector3, Vector3)] = []
         var exactLineCuttingSegments: [(Vector3, Vector3)] = []
+        var exactCurves: [Curve2d] = []
 
         let entities: [CADEntity]
         if let handles = cuttingHandles, !handles.isEmpty {
@@ -209,11 +210,73 @@ public enum TrimGeometryEngine {
                     exactLineCuttingSegments.append(segment)
                 } else {
                     cuttingSegments.append(contentsOf: explode(primitive: prim, t: otherEntity.transform))
+                    // Exact world-space cutter curves (no chord error) for the
+                    // analytical solvers. Lines are covered by the segment
+                    // path, so only non-line curves are added here.
+                    exactCurves.append(contentsOf: exactWorldCurves(for: prim, transform: otherEntity.transform))
                 }
             }
         }
 
-        return (cuttingSegments, exactLineCuttingSegments)
+        return (cuttingSegments, exactLineCuttingSegments, exactCurves)
+    }
+
+    /// World-space analytical curves for a cutter primitive. Arcs, circles,
+    /// ellipses, and bulged polylines require a similarity transform to
+    /// survive as their own kind; splines are affine-invariant and always
+    /// exact. Anything else returns [] (exploded chords cover it).
+    static func exactWorldCurves(for prim: CADPrimitive, transform: Transform3D) -> [Curve2d] {
+        switch prim {
+        case .arc(let center, let radius, let startAngle, let endAngle, _):
+            guard transform.isSimilarity2D else { return [] }
+            let wc = transform.transformPoint(center)
+            let s = transform.scale
+            let wr = radius * 0.5 * (abs(s.x) + abs(s.y))
+            let mirror = transform.reversesOrientation2D
+            let rot = transform.rotation
+            // Image of the local start point fixes the world start angle;
+            // mirror flips the sweep handedness.
+            let wsPt = transform.transformPoint(Vector3(
+                x: center.x + radius * cos(startAngle),
+                y: center.y + radius * sin(startAngle), z: center.z))
+            let wStart = atan2(wsPt.y - wc.y, wsPt.x - wc.x)
+            let rawSweep = endAngle - startAngle
+            let sweep = mirror ? -rawSweep : rawSweep
+            _ = rot
+            return [.arc(Arc2d(center: wc.point2d, radius: wr, startAngle: wStart, sweep: sweep))]
+        case .circle(let center, let radius, _):
+            guard transform.isSimilarity2D else { return [] }
+            let s = transform.scale
+            let wr = radius * 0.5 * (abs(s.x) + abs(s.y))
+            return [.circle(Circle2d(center: transform.transformPoint(center).point2d, radius: wr))]
+        case .ellipse(let center, let majorAxis, let minorRatio, _):
+            guard transform.isSimilarity2D else { return [] }
+            let wc = transform.transformPoint(center)
+            let wTip = transform.transformPoint(center + majorAxis)
+            let wMajor = Vec2d(x: wTip.x - wc.x, y: wTip.y - wc.y)
+            guard wMajor.length > KernelTolerance.linear else { return [] }
+            return [.ellipse(Ellipse2d(center: wc.point2d, majorAxis: wMajor, minorRatio: minorRatio))]
+        case .spline(let controlPoints, let knots, let degree, let weights, _):
+            let wps = controlPoints.map { transform.transformPoint($0).point2d }
+            let s = Spline2d(controlPoints: wps, knots: knots, degree: degree, weights: weights)
+            guard s.isValid else { return [] }
+            return [.spline(s)]
+        case .polyline(let path, _):
+            guard transform.isSimilarity2D else { return [] }
+            // transformed(by:) flips bulge handedness under mirror and
+            // scales widths, so world segments are authoritative.
+            let world = path.transformed(by: transform)
+            return world.toKernelSegments().map { .polySegment($0) }
+        case .rect(let origin, let size, _), .fillRect(let origin, let size, _):
+            let p0 = transform.transformPoint(origin).point2d
+            let p1 = transform.transformPoint(Vector3(x: origin.x + size.x, y: origin.y, z: origin.z)).point2d
+            let p2 = transform.transformPoint(Vector3(x: origin.x + size.x, y: origin.y + size.y, z: origin.z)).point2d
+            let p3 = transform.transformPoint(Vector3(x: origin.x, y: origin.y + size.y, z: origin.z)).point2d
+            return [.line(LineSeg2d(start: p0, end: p1)), .line(LineSeg2d(start: p1, end: p2)),
+                    .line(LineSeg2d(start: p2, end: p3)), .line(LineSeg2d(start: p3, end: p0))]
+        default:
+            return []
+        }
     }
 
     // MARK: - Primitive Trimming Solvers
@@ -225,7 +288,8 @@ public enum TrimGeometryEngine {
         criterion: TrimCriterion,
         cuttingSegments: [(Vector3, Vector3)],
         exactLines: [(Vector3, Vector3)],
-        zoom: Double
+        zoom: Double,
+        exactCurves: [Curve2d] = []
     ) -> (newGeometry: [CADPrimitive]?, modified: Bool, errorMsg: String?) {
         guard let localGeom = entity.localGeometry, !localGeom.isEmpty else {
             return (nil, false, "Entity has no local geometry.")
@@ -259,7 +323,8 @@ public enum TrimGeometryEngine {
                 criterion: criterion,
                 cuttingSegments: cuttingSegments,
                 exactLines: exactLines,
-                zoom: zoom
+                zoom: zoom,
+                exactCurves: exactCurves
             )
 
             if let errorMsg {
@@ -288,7 +353,8 @@ public enum TrimGeometryEngine {
                     criterion: criterion,
                     cuttingSegments: cuttingSegments,
                     exactLines: exactLines,
-                    zoom: zoom
+                    zoom: zoom,
+                    exactCurves: exactCurves
                 )
 
                 if modified {
@@ -316,38 +382,43 @@ public enum TrimGeometryEngine {
         criterion: TrimCriterion,
         cuttingSegments: [(Vector3, Vector3)],
         exactLines: [(Vector3, Vector3)],
-        zoom: Double
+        zoom: Double,
+        exactCurves: [Curve2d] = []
     ) -> (result: [CADPrimitive]?, modified: Bool, errorMsg: String?) {
         switch primitive {
         case .line(let ls, let le, let color):
             return trimLine(
                 ls: ls, le: le, color: color,
-                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments
+                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments,
+                exactCurves: exactCurves
             )
 
         case .arc(let center, let radius, let startAngle, let endAngle, let color):
             return trimArc(
                 center: center, radius: radius, startAngle: startAngle, endAngle: endAngle, color: color,
-                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments
+                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments,
+                exactCurves: exactCurves
             )
 
         case .circle(let center, let radius, let color):
             return trimCircle(
                 center: center, radius: radius, color: color,
-                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments
+                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments,
+                exactCurves: exactCurves
             )
 
         case .spline(let controlPoints, let knots, let degree, let weights, let color):
             return trimSpline(
                 controlPoints: controlPoints, knots: knots, degree: degree, weights: weights, color: color,
                 transform: transform, criterion: criterion, cuttingSegments: cuttingSegments,
-                exactLines: exactLines, zoom: zoom
+                exactLines: exactLines, zoom: zoom, exactCurves: exactCurves
             )
 
         case .polyline(let path, let color):
             return trimPolylineExact(
                 path: path, color: color,
-                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments
+                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments,
+                exactCurves: exactCurves
             )
 
         default:
@@ -364,7 +435,8 @@ public enum TrimGeometryEngine {
         ls: Vector3, le: Vector3, color: ColorRGBA?,
         transform: Transform3D,
         criterion: TrimCriterion,
-        cuttingSegments: [(Vector3, Vector3)]
+        cuttingSegments: [(Vector3, Vector3)],
+        exactCurves: [Curve2d] = []
     ) -> (result: [CADPrimitive]?, modified: Bool, errorMsg: String?) {
         let ws = transform.transformPoint(ls)
         let we = transform.transformPoint(le)
@@ -377,18 +449,27 @@ public enum TrimGeometryEngine {
         // Find intersections with cutting segments in world space.
         // Canonical kernel solver (local-frame shifted line-line).
         var hitsT: [Double] = []
+        func collect(_ t: Double) {
+            if t > 1e-9 && t < 1.0 - 1e-9 {
+                if !hitsT.contains(where: { abs($0 - t) < 1e-6 }) {
+                    hitsT.append(t)
+                }
+            }
+        }
         let targetLine = LineSeg2d(start: ws.point2d, end: we.point2d)
         for edge in cuttingSegments {
             let cutter = LineSeg2d(start: edge.0.point2d, end: edge.1.point2d)
             let res = Intersector2D.intersectLineLine(
                 targetLine, cutter, extendA: false, extendB: false)
-            for hit in res {
-                let t = hit.paramA
-                if t > 1e-9 && t < 1.0 - 1e-9 {
-                    if !hitsT.contains(where: { abs($0 - t) < 1e-6 }) {
-                        hitsT.append(t)
-                    }
-                }
+            for hit in res { collect(hit.paramA) }
+        }
+        // Exact cutter curves (arcs/splines/ellipses/bulges): line cutters
+        // are already covered by the segment path, so skip those.
+        let targetCurve = Curve2d.line(targetLine)
+        for exact in exactCurves {
+            if case .line(_) = exact { continue }
+            for hit in Intersector2D.intersect(targetCurve, exact, extendA: false, extendB: false) {
+                collect(hit.paramA)
             }
         }
 
@@ -471,7 +552,8 @@ public enum TrimGeometryEngine {
         center: Vector3, radius: Double, startAngle: Double, endAngle: Double, color: ColorRGBA?,
         transform: Transform3D,
         criterion: TrimCriterion,
-        cuttingSegments: [(Vector3, Vector3)]
+        cuttingSegments: [(Vector3, Vector3)],
+        exactCurves: [Curve2d] = []
     ) -> (result: [CADPrimitive]?, modified: Bool, errorMsg: String?) {
         let wc = transform.transformPoint(center)
         let s = transform.scale
@@ -482,18 +564,28 @@ public enum TrimGeometryEngine {
         if span < 0 { span += 2.0 * .pi }
 
         var hitOffsets: [Double] = []
+        func collectArc(_ off: Double) {
+            if off > 1e-5 && off < span - 1e-5 {
+                if !hitOffsets.contains(where: { abs($0 - off) < 1e-5 }) {
+                    hitOffsets.append(off)
+                }
+            }
+        }
         for edge in cuttingSegments {
             let pts = intersectSegmentCircle(segmentA: edge.0, segmentB: edge.1, circleCenter: wc, radius: wr)
             for pt in pts {
                 let a = atan2(pt.y - wc.y, pt.x - wc.x)
                 if CADGeometryMath.angleIsOnCCWSweep(angle: a, start: wsa, end: wsa + span) {
-                    let off = normAngle(a - wsa)
-                    if off > 1e-5 && off < span - 1e-5 {
-                        if !hitOffsets.contains(where: { abs($0 - off) < 1e-5 }) {
-                            hitOffsets.append(off)
-                        }
-                    }
+                    collectArc(normAngle(a - wsa))
                 }
+            }
+        }
+        // Exact cutter curves: world arc vs analytical cutter.
+        let worldArc = Arc2d(center: wc.point2d, radius: wr, startAngle: wsa, sweep: span)
+        for exact in exactCurves {
+            if case .line(_) = exact { continue }
+            for hit in Intersector2D.intersect(.arc(worldArc), exact, extendA: false, extendB: false) {
+                collectArc(hit.paramA * span)
             }
         }
 
@@ -581,20 +673,30 @@ public enum TrimGeometryEngine {
         center: Vector3, radius: Double, color: ColorRGBA?,
         transform: Transform3D,
         criterion: TrimCriterion,
-        cuttingSegments: [(Vector3, Vector3)]
+        cuttingSegments: [(Vector3, Vector3)],
+        exactCurves: [Curve2d] = []
     ) -> (result: [CADPrimitive]?, modified: Bool, errorMsg: String?) {
         let wc = transform.transformPoint(center)
         let s = transform.scale
         let wr = radius * max(abs(s.x), abs(s.y))
 
         var hitsAngle: [Double] = []
+        func collectCircle(_ a: Double) {
+            if !hitsAngle.contains(where: { abs($0 - a) < 1e-5 || abs($0 - a) > (2.0 * .pi - 1e-5) }) {
+                hitsAngle.append(a)
+            }
+        }
         for edge in cuttingSegments {
             let pts = intersectSegmentCircle(segmentA: edge.0, segmentB: edge.1, circleCenter: wc, radius: wr)
             for pt in pts {
-                let a = normAngle(atan2(pt.y - wc.y, pt.x - wc.x))
-                if !hitsAngle.contains(where: { abs($0 - a) < 1e-5 || abs($0 - a) > (2.0 * .pi - 1e-5) }) {
-                    hitsAngle.append(a)
-                }
+                collectCircle(normAngle(atan2(pt.y - wc.y, pt.x - wc.x)))
+            }
+        }
+        let worldCircle = Circle2d(center: wc.point2d, radius: wr)
+        for exact in exactCurves {
+            if case .line(_) = exact { continue }
+            for hit in Intersector2D.intersect(.circle(worldCircle), exact, extendA: false, extendB: false) {
+                collectCircle(normAngle(hit.paramA * 2.0 * .pi))
             }
         }
 
@@ -682,7 +784,8 @@ public enum TrimGeometryEngine {
         criterion: TrimCriterion,
         cuttingSegments: [(Vector3, Vector3)],
         exactLines: [(Vector3, Vector3)],
-        zoom: Double
+        zoom: Double,
+        exactCurves: [Curve2d] = []
     ) -> (result: [CADPrimitive]?, modified: Bool, errorMsg: String?) {
         let invTransform = transform.inverse()
         let w = weights ?? Array(repeating: 1.0, count: controlPoints.count)
@@ -694,9 +797,6 @@ public enum TrimGeometryEngine {
         let localTolerance = max(1e-7, (4.0 / zoom) / scale)
         let localToleranceSq = localTolerance * localTolerance
 
-        let localEdges: [(Vector3, Vector3)] = cuttingSegments.map {
-            (invTransform.transformPoint($0.0), invTransform.transformPoint($0.1))
-        }
         let localExactLineEdges: [(Vector3, Vector3)] = exactLines.map {
             (invTransform.transformPoint($0.0), invTransform.transformPoint($0.1))
         }
@@ -745,23 +845,23 @@ public enum TrimGeometryEngine {
             for res in results { appendHit(t: res.t, point: res.point) }
         }
 
-        // Kernel hit-finding for plain cutter edges (planar case): exact
-        // subdivision solver in the locally shifted frame. Non-planar
-        // splines keep the legacy sampler.
-        let splineZs = controlPoints.map(\.z)
-        let splinePlanar = (splineZs.max() ?? 0) - (splineZs.min() ?? 0) <= max(localTolerance, 1e-9)
+        // Kernel hit-finding for plain cutter edges: the world-space spline
+        // is affine-exact (NURBS survive any affine map), so solve directly
+        // in world space and map the normalized hit back to knot space.
+        // This replaces chord-approximation misses with exact crossings.
+        let worldCPs = controlPoints.map { transform.transformPoint($0) }
+        let worldSpline = Spline2d(
+            controlPoints: worldCPs.map { $0.point2d },
+            knots: knots, degree: p, weights: w)
+        let worldSplineValid = worldSpline.isValid
         func findHitsKernel(on edge: (Vector3, Vector3)) {
-            guard splinePlanar,
-                  abs(edge.0.z - (splineZs.first ?? 0)) <= max(localTolerance, 1e-9),
-                  abs(edge.1.z - (splineZs.first ?? 0)) <= max(localTolerance, 1e-9) else {
-                findHits(on: edge, searchSegments: 96)
+            guard worldSplineValid else {
+                findHits(on: (invTransform.transformPoint(edge.0),
+                               invTransform.transformPoint(edge.1)), searchSegments: 96)
                 return
             }
-            let spline2d = Spline2d(
-                controlPoints: controlPoints.map { $0.point2d },
-                knots: knots, degree: p, weights: w)
             let line = LineSeg2d(start: edge.0.point2d, end: edge.1.point2d)
-            let results = Intersector2D.intersect(.line(line), .spline(spline2d))
+            let results = Intersector2D.intersect(.line(line), .spline(worldSpline))
             for res in results {
                 let u = minT + res.paramB * (maxT - minT)
                 if let pt = NURBSEvaluator.evaluateAt(
@@ -770,8 +870,32 @@ public enum TrimGeometryEngine {
                 }
             }
         }
+        // Exact cutter curves in world space (arcs/splines/ellipses/bulged
+        // polylines): line cutters are covered by the segment path above.
+        func findHitsKernelCurve(_ exact: Curve2d) {
+            guard worldSplineValid else { return }
+            let cutter: Curve2d
+            switch exact {
+            case .line: return
+            case .polySegment(let seg):
+                switch seg.geometry {
+                case .line(let l): cutter = .line(l)
+                case .arc(let a): cutter = .arc(a)
+                }
+            default: cutter = exact
+            }
+            for res in Intersector2D.intersect(.spline(worldSpline), cutter,
+                                               extendA: false, extendB: false) {
+                let u = minT + res.paramA * (maxT - minT)
+                if let pt = NURBSEvaluator.evaluateAt(
+                    degree: p, knots: knots, controlPoints: controlPoints, weights: w, at: u) {
+                    appendHit(t: u, point: pt)
+                }
+            }
+        }
 
-        for edge in localEdges { findHitsKernel(on: edge) }
+        for edge in cuttingSegments { findHitsKernel(on: edge) }
+        for exact in exactCurves { findHitsKernelCurve(exact) }
         for edge in localExactLineEdges {
             findHits(on: extendedEdge(edge, by: localTolerance), searchSegments: 256)
             addEndpointTouchHit(edge.0)
@@ -869,7 +993,8 @@ public enum TrimGeometryEngine {
         color: ColorRGBA?,
         transform: Transform3D,
         criterion: TrimCriterion,
-        cuttingSegments: [(Vector3, Vector3)]
+        cuttingSegments: [(Vector3, Vector3)],
+        exactCurves: [Curve2d] = []
     ) -> (result: [CADPrimitive]?, modified: Bool, errorMsg: String?) {
         guard transform.isSimilarity2D else {
             return trimExploded(
@@ -913,6 +1038,13 @@ public enum TrimGeometryEngine {
         // Hits in world space against cutter edges.
         struct PlineHit { let t: Double }
         var hits: [PlineHit] = []
+        func collectPline(_ globalT: Double) {
+            if globalT > 1e-9 && globalT < 1.0 - 1e-9 {
+                if !hits.contains(where: { abs($0.t - globalT) < 1e-6 }) {
+                    hits.append(PlineHit(t: globalT))
+                }
+            }
+        }
         for edge in cuttingSegments {
             let cutter = Curve2d.line(LineSeg2d(start: edge.0.point2d, end: edge.1.point2d))
             for (i, seg) in worldSegs.enumerated() {
@@ -920,12 +1052,18 @@ public enum TrimGeometryEngine {
                 for h in results {
                     let segL = segLen(seg)
                     guard segL > 1e-12 else { continue }
-                    let globalT = (cumLen[i] + h.paramA * segL) / totalLen
-                    if globalT > 1e-9 && globalT < 1.0 - 1e-9 {
-                        if !hits.contains(where: { abs($0.t - globalT) < 1e-6 }) {
-                            hits.append(PlineHit(t: globalT))
-                        }
-                    }
+                    collectPline((cumLen[i] + h.paramA * segL) / totalLen)
+                }
+            }
+        }
+        // Exact cutter curves (skip lines: covered above).
+        for exact in exactCurves {
+            if case .line(_) = exact { continue }
+            for (i, seg) in worldSegs.enumerated() {
+                for h in Intersector2D.intersect(.polySegment(seg), exact) {
+                    let segL = segLen(seg)
+                    guard segL > 1e-12 else { continue }
+                    collectPline((cumLen[i] + h.paramA * segL) / totalLen)
                 }
             }
         }

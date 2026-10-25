@@ -186,8 +186,7 @@ extension Cases {
     /// as discontinuities. Cutters derive from the curve itself so
     /// crossings are guaranteed; variants cover end-touch and extension.
     @MainActor
-    static func kernelTrimDebugCheck() {
-        print("--- trim click-sweep probe (real trimPrimitive) ---")
+    static func kernelTrimDebugCheck() {        print("--- trim click-sweep probe (real trimPrimitive) ---")
         let cps = [Vector3(x: 0, y: 0, z: 0), Vector3(x: 30, y: 70, z: 0),
                    Vector3(x: 90, y: 70, z: 0), Vector3(x: 115, y: 5, z: 0)]
         let knots = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
@@ -257,6 +256,137 @@ extension Cases {
             cuttingSegments: [cutA], exactLines: [cutA], zoom: 1.0)
         guard midRes.modified, let mp = midRes.result, mp.count == 2 else {
             fatalError("trim probe FAILED: mid click should split spline in two")
+        }
+    }
+
+    /// DXF-driven trim attributor: loads a drawing, runs every spline
+    /// against every line cutter through the real trimPrimitive, and dumps
+    /// per-source hit sets (kernel / legacy / endpoint-touch) plus kept
+    /// spans for a click sweep. Usage: ZephyrBench trim-debug <file.dxf>
+    @MainActor
+    static func trimDxfDebug(path: String) throws {
+        guard FileManager.default.fileExists(atPath: path) else {
+            print("skipped: no such file \(path)")
+            return
+        }
+        let imported = try DXFImporter.importDXF(filePath: path)
+        print("entities: \(imported.entities.count)")
+        struct WSpline { let prim: CADPrimitive; let cps: [Vector3]; let knots: [Double]; let degree: Int; let w: [Double]? }
+        var splines: [WSpline] = []
+        var cutters: [(Vector3, Vector3)] = []
+        for e in imported.entities {
+            guard let geom = e.localGeometry else { continue }
+            for prim in geom {
+                switch prim {
+                case let .line(s, en, _):
+                    cutters.append((e.transform.transformPoint(s), e.transform.transformPoint(en)))
+                case let .spline(cps, knots, degree, weights, _):
+                    splines.append(WSpline(prim: prim,
+                                            cps: cps.map { e.transform.transformPoint($0) },
+                                            knots: knots, degree: degree, w: weights))
+                default: break
+                }
+            }
+        }
+        print("splines: \(splines.count) cutters: \(cutters.count)")
+        for (si, sp) in splines.enumerated() {
+            print("spline \(si): degree \(sp.degree) knots=\(sp.knots)")
+            for (ci, cp) in sp.cps.enumerated() {
+                print(String(format: "  cp%d (%.3f, %.3f, %.3f)", ci, cp.x, cp.y, cp.z))
+            }
+            guard sp.knots.count == sp.cps.count + sp.degree + 1 else {
+                print("spline \(si): bad knot count, skipping")
+                continue
+            }
+            let u0 = sp.knots[sp.degree], u1 = sp.knots[sp.cps.count]
+            let w = sp.w ?? Array(repeating: 1.0, count: sp.cps.count)
+            let worldPrim = CADPrimitive.spline(controlPoints: sp.cps, knots: sp.knots,
+                                               degree: sp.degree, weights: sp.w, color: nil)
+            let ks = Spline2d(controlPoints: sp.cps.map { $0.point2d },
+                              knots: sp.knots, degree: sp.degree, weights: sp.w)
+            for (ci, cut) in cutters.enumerated() {
+                print("cutter \(ci): (\(cut.0.x),\(cut.0.y))-(\(cut.1.x),\(cut.1.y))")
+                let kHits = Intersector2D.intersect(
+                    .line(LineSeg2d(start: cut.0.point2d, end: cut.1.point2d)), .spline(ks))
+                let lHits = NURBSEvaluator.findIntersectionParameters(
+                    degree: sp.degree, knots: sp.knots, controlPoints: sp.cps,
+                    weights: w, segmentA: cut.0, segmentB: cut.1, searchSegments: 96)
+                print("  kernel: \(kHits.map { String(format: "u=%.6f", min(max(($0.paramB), 0), 1) * (u1 - u0) + u0) })")
+                print("  legacy: \(lHits.map { String(format: "t=%.6f", $0.t) })")
+                // Endpoint touch (legacy exactLines path): closest param of
+                // each cutter endpoint, fired when within aperture.
+                for (ei, ep) in [cut.0, cut.1].enumerated() {
+                    let t = NURBSEvaluator.findClosestParameter(
+                        degree: sp.degree, knots: sp.knots, controlPoints: sp.cps,
+                        weights: w, to: ep, segments: 256)
+                    if let p = NURBSEvaluator.evaluateAt(
+                        degree: sp.degree, knots: sp.knots, controlPoints: sp.cps,
+                        weights: w, at: t) {
+                        let d = hypot(p.x - ep.x, p.y - ep.y)
+                        print(String(format: "  endtouch e%d t=%.6f dist=%.6f", ei, t, d))
+                    }
+                }
+                // Click sweep through the real trim.
+                var prev = ""
+                for i in 0...20 {
+                    let u = u0 + (u1 - u0) * Double(i) / 20.0
+                    guard let click = NURBSEvaluator.evaluateAt(
+                        degree: sp.degree, knots: sp.knots, controlPoints: sp.cps,
+                        weights: w, at: u) else { continue }
+                    let res = TrimGeometryEngine.trimPrimitive(
+                        primitive: worldPrim, transform: .identity,
+                        criterion: .click(point: click),
+                        cuttingSegments: [cut], exactLines: [cut], zoom: 1.0)
+                    var sig: String
+                    if res.modified, let prims = res.result {
+                        sig = prims.map { p in
+                            if case let .spline(_, kn, _, _, _) = p {
+                                return String(format: "[%.3f,%.3f]", kn.first ?? -1, kn.last ?? -1)
+                            }
+                            return "\(p)"
+                        }.joined(separator: " ")
+                    } else if res.modified {
+                        sig = "deleted"
+                    } else {
+                        sig = "unmodified"
+                    }
+                    let mark = sig == prev ? "" : "  <--"
+                    print(String(format: "  click u=%.4f %@%@", u, sig, mark))
+                    prev = sig
+                }
+                // Round-trip check: trim each LINE entity against this exact
+                // spline cutter (kernel path) and print kept spans.
+                for (li, le) in imported.entities.enumerated() {
+                    guard let lg = le.localGeometry else { continue }
+                    for lp in lg {
+                        guard case let .line(ls, lend, _) = lp else { continue }
+                        let wls = le.transform.transformPoint(ls)
+                        let wle = le.transform.transformPoint(lend)
+                        let exactCutter = Curve2d.spline(Spline2d(
+                            controlPoints: sp.cps.map { $0.point2d },
+                            knots: sp.knots, degree: sp.degree, weights: sp.w))
+                        let mid = Vector3(x: 0.5 * (wls.x + wle.x),
+                                        y: 0.5 * (wls.y + wle.y), z: 0)
+                        let res = TrimGeometryEngine.trimPrimitive(
+                            primitive: lp, transform: le.transform,
+                            criterion: .click(point: mid),
+                            cuttingSegments: [], exactLines: [], zoom: 1.0,
+                            exactCurves: [exactCutter])
+                        var sig = "unmodified"
+                        if res.modified, let prims = res.result {
+                            sig = prims.map { p -> String in
+                                if case let .line(a, b, _) = p {
+                                    return String(format: "[(%.2f,%.2f)-(%.2f,%.2f)]", a.x, a.y, b.x, b.y)
+                                }
+                                return "\(p)"
+                            }.joined(separator: " ")
+                        } else if res.modified {
+                            sig = "deleted"
+                        }
+                        print("  line \(li) vs exact spline: \(sig)")
+                    }
+                }
+            }
         }
     }
 

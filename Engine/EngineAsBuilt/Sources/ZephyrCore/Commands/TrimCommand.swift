@@ -2,6 +2,7 @@ import Foundation
 import CSDL3
 import ImGui
 import SwiftSDL
+import ZephyrKernel
 
 // =========================================================================
 // MARK: - TrimCommand
@@ -61,6 +62,9 @@ public final class TrimCommand: FeatureCommand {
     private var cachedCuttingSegments: [(Vector3, Vector3)] = []
     /// Cached exact line cutting segments (for NURBS spline precision pass).
     private var cachedExactLineSegments: [(Vector3, Vector3)] = []
+    /// Cached exact analytical cutter curves (arcs/splines/ellipses/bulged
+    /// polylines in world space — no chord error).
+    private var cachedExactCurves: [Curve2d] = []
 
     /// Number of operations executed in this active session (for in-session undo).
     private var operationsInSession: Int = 0
@@ -127,6 +131,7 @@ public final class TrimCommand: FeatureCommand {
         selectedCuttingHandles.removeAll()
         cachedCuttingSegments.removeAll()
         cachedExactLineSegments.removeAll()
+        cachedExactCurves.removeAll()
         processor.commandPrompt = nil
     }
 
@@ -518,7 +523,8 @@ public final class TrimCommand: FeatureCommand {
             criterion: criterion,
             cuttingSegments: cachedCuttingSegments,
             exactLines: cachedExactLineSegments,
-            zoom: engine.camera.zoom
+            zoom: engine.camera.zoom,
+            exactCurves: cachedExactCurves
         )
 
         if let errorMsg {
@@ -584,7 +590,8 @@ public final class TrimCommand: FeatureCommand {
                 criterion: criterion,
                 cuttingSegments: cachedCuttingSegments,
                 exactLines: cachedExactLineSegments,
-                zoom: engine.camera.zoom
+                zoom: engine.camera.zoom,
+                exactCurves: cachedExactCurves
             )
 
             if modified, let geom = newGeom {
@@ -664,7 +671,8 @@ public final class TrimCommand: FeatureCommand {
                     criterion: criterion,
                     cuttingSegments: cachedCuttingSegments,
                     exactLines: cachedExactLineSegments,
-                    zoom: engine.camera.zoom
+                    zoom: engine.camera.zoom,
+                    exactCurves: cachedExactCurves
                 )
 
                 if modified, let geom = newGeom {
@@ -713,13 +721,14 @@ public final class TrimCommand: FeatureCommand {
     }
 
     private func recompileCuttingSegments(in doc: CADDocument) {
-        let (allSegs, exactLines) = TrimGeometryEngine.collectCuttingSegments(
+        let (allSegs, exactLines, exactCurves) = TrimGeometryEngine.collectCuttingSegments(
             document: doc,
             cuttingHandles: selectedCuttingHandles.isEmpty ? nil : selectedCuttingHandles,
             excludedHandle: nil
         )
         self.cachedCuttingSegments = allSegs
         self.cachedExactLineSegments = exactLines
+        self.cachedExactCurves = exactCurves
     }
 
     // MARK: - Overlay Rendering

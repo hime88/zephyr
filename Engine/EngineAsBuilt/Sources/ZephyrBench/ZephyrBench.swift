@@ -423,6 +423,10 @@ struct ZephyrBench {
                 run("nurbs") { Cases.nurbs() }
             case "kernel":
                 run("kernel") { Cases.kernel() }
+            case "trim-debug":
+                index += 1
+                let path = index < arguments.count ? arguments[index] : ""
+                run("trim-debug") { try Cases.trimDxfDebug(path: path) }
             case "dxf-digest":
                 index += 1
                 let path = index < arguments.count ? arguments[index] : ""
