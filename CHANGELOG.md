@@ -39,6 +39,7 @@ Monthly digest condensed from the git history. Instead of per-release notes, all
 - **Gradient hatch write-back** — `GF*` system variables and `entmake` support
 
 ### Bug Fixes
+- **DXF ellipse arcs** — elliptical arcs with near-zero parameter spans are no longer promoted to full ellipses; only an exact `0...2pi` span is treated as a full ellipse, so tiny projection-export ticks no longer render as large stray circles
 - **Sheet ghost-double** — a layout whose only viewport is the overall paper-space viewport (ID 1) no longer projects model space on top of its paper geometry; the synthetic model-fit fallback now applies only to effectively-empty sheets (no visible vector paper content), so legacy layouts with just an invisible insert or missing raster still show the drawing instead of rendering blank
 - **Missing rasters** — unresolved IMAGE/UNDERLAY references render nothing (no more X placeholder frame) and are excluded from zoom extents; repair the path via the External References palette
 - **`HSPLIT` / `VPORTS 2H`** — after `VSPLIT`, fixed variable shadowing in `PaneLayout.split` recursion where child splits inherited their parent's axis instead of the requested one
