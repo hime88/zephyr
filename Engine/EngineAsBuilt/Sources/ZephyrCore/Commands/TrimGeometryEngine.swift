@@ -181,14 +181,65 @@ public enum TrimGeometryEngine {
     /// Collects cutting segments in world space from the document.
     /// - If `cuttingHandles` is non-nil and not empty: collects only from those entities.
     /// - If `cuttingHandles` is nil or empty: collects from all visible entities in the document.
+    /// Compiled cutting edges with per-source-entity provenance ranges.
+    /// Quick/select-all mode includes the trim target itself in the cutter
+    /// set; `excluding(_:)` removes a target's own edges so a curve can
+    /// never cut itself (its exploded chords intersect it everywhere).
+    public struct TrimCuttingEdges: Sendable {
+        public var segments: [(Vector3, Vector3)]
+        public var exactLines: [(Vector3, Vector3)]
+        public var exactCurves: [Curve2d]
+        /// Index ranges contributed by each source entity handle.
+        public var rangesByHandle: [UUID: (segments: Range<Int>, exactLines: Range<Int>, exactCurves: Range<Int>)]
+
+        public init(
+            segments: [(Vector3, Vector3)] = [],
+            exactLines: [(Vector3, Vector3)] = [],
+            exactCurves: [Curve2d] = [],
+            rangesByHandle: [UUID: (segments: Range<Int>, exactLines: Range<Int>, exactCurves: Range<Int>)] = [:]
+        ) {
+            self.segments = segments
+            self.exactLines = exactLines
+            self.exactCurves = exactCurves
+            self.rangesByHandle = rangesByHandle
+        }
+
+        public static let empty = TrimCuttingEdges()
+
+        public var isEmpty: Bool { segments.isEmpty && exactCurves.isEmpty }
+
+        /// Copy with one source entity's edges removed (provenance dropped).
+        public func excluding(_ handle: UUID) -> TrimCuttingEdges {
+            guard let r = rangesByHandle[handle] else { return self }
+            func cut<T>(_ array: [T], _ range: Range<Int>) -> [T] {
+                guard !range.isEmpty else { return array }
+                var copy = array
+                copy.removeSubrange(range)
+                return copy
+            }
+            return TrimCuttingEdges(
+                segments: cut(segments, r.segments),
+                exactLines: cut(exactLines, r.exactLines),
+                exactCurves: cut(exactCurves, r.exactCurves))
+        }
+    }
+
     public static func collectCuttingSegments(
         document: CADDocument,
         cuttingHandles: Set<UUID>?,
         excludedHandle: UUID? = nil
     ) -> (cuttingSegments: [(Vector3, Vector3)], exactLineCuttingSegments: [(Vector3, Vector3)], exactCurves: [Curve2d]) {
-        var cuttingSegments: [(Vector3, Vector3)] = []
-        var exactLineCuttingSegments: [(Vector3, Vector3)] = []
-        var exactCurves: [Curve2d] = []
+        let edges = collectCuttingEdges(
+            document: document, cuttingHandles: cuttingHandles, excludedHandle: excludedHandle)
+        return (edges.segments, edges.exactLines, edges.exactCurves)
+    }
+
+    public static func collectCuttingEdges(
+        document: CADDocument,
+        cuttingHandles: Set<UUID>?,
+        excludedHandle: UUID? = nil
+    ) -> TrimCuttingEdges {
+        var edges = TrimCuttingEdges()
 
         let entities: [CADEntity]
         if let handles = cuttingHandles, !handles.isEmpty {
@@ -203,22 +254,35 @@ public enum TrimGeometryEngine {
             guard otherEntity.blockID == nil else { continue }
             guard let geom = document.resolvedGeometry(for: otherEntity) else { continue }
 
+            let segStart = edges.segments.count
+            let lineStart = edges.exactLines.count
+            let curveStart = edges.exactCurves.count
             for prim in geom {
                 if case .line(let start, let end, _) = prim {
                     let segment = (otherEntity.transform.transformPoint(start), otherEntity.transform.transformPoint(end))
-                    cuttingSegments.append(segment)
-                    exactLineCuttingSegments.append(segment)
+                    edges.segments.append(segment)
+                    edges.exactLines.append(segment)
                 } else {
-                    cuttingSegments.append(contentsOf: explode(primitive: prim, t: otherEntity.transform))
                     // Exact world-space cutter curves (no chord error) for the
                     // analytical solvers. Lines are covered by the segment
-                    // path, so only non-line curves are added here.
-                    exactCurves.append(contentsOf: exactWorldCurves(for: prim, transform: otherEntity.transform))
+                    // path, so only non-line curves are added here. When an
+                    // exact curve exists its exploded chords are NOT also
+                    // added: chord hits duplicate exact hits at chord-error
+                    // offsets and made cuts land off-curve (approximate).
+                    let exact = exactWorldCurves(for: prim, transform: otherEntity.transform)
+                    edges.exactCurves.append(contentsOf: exact)
+                    if exact.isEmpty {
+                        edges.segments.append(contentsOf: explode(primitive: prim, t: otherEntity.transform))
+                    }
                 }
             }
+            edges.rangesByHandle[otherEntity.handle] = (
+                segments: segStart..<edges.segments.count,
+                exactLines: lineStart..<edges.exactLines.count,
+                exactCurves: curveStart..<edges.exactCurves.count)
         }
 
-        return (cuttingSegments, exactLineCuttingSegments, exactCurves)
+        return edges
     }
 
     /// World-space analytical curves for a cutter primitive. Arcs, circles,
@@ -424,7 +488,8 @@ public enum TrimGeometryEngine {
         default:
             return trimExploded(
                 primitive: primitive,
-                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments
+                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments,
+                exactCurves: exactCurves
             )
         }
     }
@@ -974,7 +1039,8 @@ public enum TrimGeometryEngine {
             // Fallback to exploded polyline trim
             return trimExploded(
                 primitive: .spline(controlPoints: controlPoints, knots: knots, degree: degree, weights: weights, color: color),
-                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments
+                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments,
+                exactCurves: exactCurves
             )
         }
 
@@ -999,7 +1065,8 @@ public enum TrimGeometryEngine {
         guard transform.isSimilarity2D else {
             return trimExploded(
                 primitive: .polyline(path: path, color: color),
-                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments)
+                transform: transform, criterion: criterion, cuttingSegments: cuttingSegments,
+                exactCurves: exactCurves)
         }
         let mirror = transform.reversesOrientation2D
         let s = transform.scale
@@ -1192,7 +1259,8 @@ public enum TrimGeometryEngine {
         primitive: CADPrimitive,
         transform: Transform3D,
         criterion: TrimCriterion,
-        cuttingSegments: [(Vector3, Vector3)]
+        cuttingSegments: [(Vector3, Vector3)],
+        exactCurves: [Curve2d] = []
     ) -> (result: [CADPrimitive]?, modified: Bool, errorMsg: String?) {
         let invTransform = transform.inverse()
         let targetSegs = explode(primitive: primitive, t: .identity)
@@ -1228,6 +1296,30 @@ public enum TrimGeometryEngine {
                         let globalT = (cumLen[i] + t * segLen) / totalLen
                         if globalT > 1e-9 && globalT < 1.0 - 1e-9 {
                             hits.append(Hit(localPoint: Vector3(res.point), t: globalT))
+                        }
+                    }
+                }
+            }
+        }
+
+        // Exact cutter curves (world space): intersect each exploded
+        // target segment analytically so curve cutters whose chords were
+        // omitted from cuttingSegments still cut here.
+        if !exactCurves.isEmpty {
+            for exact in exactCurves {
+                if case .line(_) = exact { continue }
+                for (i, s) in targetSegs.enumerated() {
+                    let w0 = transform.transformPoint(s.0)
+                    let w1 = transform.transformPoint(s.1)
+                    let target = Curve2d.line(LineSeg2d(start: w0.point2d, end: w1.point2d))
+                    for res in Intersector2D.intersect(target, exact, extendA: false, extendB: false) {
+                        let t = res.paramA
+                        if t >= -1e-9 && t <= 1.0 + 1e-9 {
+                            let segLen = cumLen[i+1] - cumLen[i]
+                            let globalT = (cumLen[i] + t * segLen) / totalLen
+                            if globalT > 1e-9 && globalT < 1.0 - 1e-9 {
+                                hits.append(Hit(localPoint: invTransform.transformPoint(Vector3(res.point)), t: globalT))
+                            }
                         }
                     }
                 }

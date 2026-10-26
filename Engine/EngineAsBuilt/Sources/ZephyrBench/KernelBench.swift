@@ -265,16 +265,53 @@ extension Cases {
     /// spans for a click sweep. Usage: ZephyrBench trim-debug <file.dxf>
     @MainActor
     static func trimDxfDebug(path: String) throws {
+        try trimDxfDebug(path: path, click: nil)
+    }
+
+    @MainActor
+    static func trimDxfDebug(path: String, click: Vector3?) throws {
         guard FileManager.default.fileExists(atPath: path) else {
             print("skipped: no such file \(path)")
             return
         }
         let imported = try DXFImporter.importDXF(filePath: path)
         print("entities: \(imported.entities.count)")
+        trimAttributor(entities: imported.entities, click: click)
+    }
+
+    /// Same attribution over a native .eab archive.
+    /// Optional: append a world-space click point to run one exact trim:
+    ///   trim-eab <file.eab> click <x> <y>
+    @MainActor
+    static func trimEabDebug(path: String) throws {
+        try trimEabDebug(path: path, click: nil)
+    }
+
+    @MainActor
+    static func trimEabDebug(path: String, click: Vector3?) throws {
+        guard FileManager.default.fileExists(atPath: path) else {
+            print("skipped: no such file \(path)")
+            return
+        }
+        let views = try EABReader.readViews(from: URL(fileURLWithPath: path))
+        guard let doc = views.first?.document else {
+            print("no views in \(path)")
+            return
+        }
+        for (vi, v) in views.enumerated() {
+            print("view \(vi) '\(v.name)' cam=(\(v.cameraState.offsetX),\(v.cameraState.offsetY)) zoom=\(v.cameraState.zoom) rot=\(v.cameraState.rotation)")
+        }
+        let entities = Array(doc.entitiesView)
+        print("views: \(views.count) entities: \(entities.count)")
+        trimAttributor(entities: entities, click: click)
+    }
+
+    @MainActor
+    static func trimAttributor(entities: [CADEntity], click: Vector3? = nil) {
         struct WSpline { let prim: CADPrimitive; let cps: [Vector3]; let knots: [Double]; let degree: Int; let w: [Double]? }
         var splines: [WSpline] = []
         var cutters: [(Vector3, Vector3)] = []
-        for e in imported.entities {
+        for e in entities {
             guard let geom = e.localGeometry else { continue }
             for prim in geom {
                 switch prim {
@@ -311,7 +348,8 @@ extension Cases {
                 let lHits = NURBSEvaluator.findIntersectionParameters(
                     degree: sp.degree, knots: sp.knots, controlPoints: sp.cps,
                     weights: w, segmentA: cut.0, segmentB: cut.1, searchSegments: 96)
-                print("  kernel: \(kHits.map { String(format: "u=%.6f", min(max(($0.paramB), 0), 1) * (u1 - u0) + u0) })")
+                print("  kernel: \(kHits.map { String(format: "u=%.9f", min(max(($0.paramB), 0), 1) * (u1 - u0) + u0) })")
+                print("  kernel line-t: \(kHits.map { String(format: "tL=%.9f", $0.paramA) })")
                 print("  legacy: \(lHits.map { String(format: "t=%.6f", $0.t) })")
                 // Endpoint touch (legacy exactLines path): closest param of
                 // each cutter endpoint, fired when within aperture.
@@ -354,9 +392,35 @@ extension Cases {
                     print(String(format: "  click u=%.4f %@%@", u, sig, mark))
                     prev = sig
                 }
+                // Off-curve click disc around the spline start (real user
+                // clicks land off the curve): any click here must remove
+                // only the first span. Reports tClick mapping + result.
+                if let s0 = sp.cps.first {
+                    print("  click-disc around spline start:")
+                    for (dx, dy) in [(0.0, 0.0), (30.0, 0.0), (-30.0, 0.0), (0.0, 30.0), (0.0, -30.0),
+                                      (60.0, -40.0), (-60.0, 40.0), (100.0, -80.0)] {
+                        let qp = Vector3(x: s0.x + dx, y: s0.y + dy, z: 0)
+                        let res = TrimGeometryEngine.trimPrimitive(
+                            primitive: worldPrim, transform: .identity,
+                            criterion: .click(point: qp),
+                            cuttingSegments: [cut], exactLines: [cut], zoom: 1.0)
+                        var sig = "unmodified"
+                        if res.modified, let prims = res.result {
+                            sig = prims.map { p -> String in
+                                if case let .spline(_, kn, _, _, _) = p {
+                                    return String(format: "[%.3f,%.3f]", kn.first ?? -1, kn.last ?? -1)
+                                }
+                                return "?"
+                            }.joined(separator: " ")
+                        } else if res.modified {
+                            sig = "deleted"
+                        }
+                        print(String(format: "    click (%.0f,%+.0f) -> %@", qp.x, qp.y - s0.y, sig))
+                    }
+                }
                 // Round-trip check: trim each LINE entity against this exact
                 // spline cutter (kernel path) and print kept spans.
-                for (li, le) in imported.entities.enumerated() {
+                for (li, le) in entities.enumerated() {
                     guard let lg = le.localGeometry else { continue }
                     for lp in lg {
                         guard case let .line(ls, lend, _) = lp else { continue }
@@ -401,6 +465,43 @@ extension Cases {
                         }
                         print("  line \(li) vs exact spline: \(sig)")
                     }
+                }
+                // Exact user click (world coords): tClick mapping + result.
+                if let qp = click {
+                    let worldSpline = Spline2d(
+                        controlPoints: sp.cps.map { $0.point2d },
+                        knots: sp.knots, degree: sp.degree, weights: sp.w)
+                    let allCutters = cutters.map {
+                        Curve2d.line(LineSeg2d(start: $0.0.point2d, end: $0.1.point2d))
+                    }
+                    var allHits: [Double] = []
+                    for c in allCutters {
+                        for h in Intersector2D.intersect(.spline(worldSpline), c) {
+                            allHits.append(h.paramA)
+                        }
+                    }
+                    let tClick = CurveEval.paramAtPoint(.spline(worldSpline), point: qp.point2d)
+                    let worldPrim = CADPrimitive.spline(controlPoints: sp.cps, knots: sp.knots,
+                                                       degree: sp.degree, weights: sp.w, color: nil)
+                    let rawSegs = cutters.map { ($0.0, $0.1) }
+                    let res = TrimGeometryEngine.trimPrimitive(
+                        primitive: worldPrim, transform: .identity,
+                        criterion: .click(point: qp),
+                        cuttingSegments: rawSegs, exactLines: rawSegs, zoom: 1.0)
+                    var sig = "unmodified"
+                    if res.modified, let prims = res.result {
+                        sig = prims.map { p -> String in
+                            if case let .spline(_, kn, _, _, _) = p {
+                                return String(format: "[%.4f,%.4f]", kn.first ?? -1, kn.last ?? -1)
+                            }
+                            return "?"
+                        }.joined(separator: " ")
+                    } else if res.modified {
+                        sig = "deleted"
+                    }
+                    print(String(format: "  USERCLICK (%.2f,%.2f) tClick=%.4f hits=%@ -> %@",
+                                 qp.x, qp.y, tClick,
+                                 allHits.map { String(format: "%.4f", $0) }.joined(separator: ","), sig))
                 }
             }
         }

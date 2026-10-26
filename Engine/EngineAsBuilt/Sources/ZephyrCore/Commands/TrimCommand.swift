@@ -58,13 +58,11 @@ public final class TrimCommand: FeatureCommand {
     /// Handles of entities explicitly selected as cutting edges. Empty means all visible entities act as cutting edges.
     private var selectedCuttingHandles: Set<UUID> = []
 
-    /// Cached world-space cutting segments.
-    private var cachedCuttingSegments: [(Vector3, Vector3)] = []
-    /// Cached exact line cutting segments (for NURBS spline precision pass).
-    private var cachedExactLineSegments: [(Vector3, Vector3)] = []
-    /// Cached exact analytical cutter curves (arcs/splines/ellipses/bulged
-    /// polylines in world space — no chord error).
-    private var cachedExactCurves: [Curve2d] = []
+    /// Cached compiled cutting edges (world-space segments, exact lines,
+    /// and exact analytical curves) with per-entity provenance, so each
+    /// trim can exclude the target's own edges (quick/select-all mode
+    /// would otherwise let a curve cut itself).
+    private var cachedCuttingEdges = TrimGeometryEngine.TrimCuttingEdges.empty
 
     /// Number of operations executed in this active session (for in-session undo).
     private var operationsInSession: Int = 0
@@ -129,9 +127,7 @@ public final class TrimCommand: FeatureCommand {
         active = false
         step = .selectCuttingEdges
         selectedCuttingHandles.removeAll()
-        cachedCuttingSegments.removeAll()
-        cachedExactLineSegments.removeAll()
-        cachedExactCurves.removeAll()
+        cachedCuttingEdges = .empty
         processor.commandPrompt = nil
     }
 
@@ -517,14 +513,17 @@ public final class TrimCommand: FeatureCommand {
         let preSnapshot = doc.snapshot()
         let criterion = TrimCriterion.click(point: rawClick)
 
+        // Never let the target cut itself: in quick/select-all mode its
+        // own geometry is part of the compiled cutter set.
+        let edges = cachedCuttingEdges.excluding(hitHandle)
         let (newGeom, modified, errorMsg) = TrimGeometryEngine.trimEntity(
             entity: entity,
             document: doc,
             criterion: criterion,
-            cuttingSegments: cachedCuttingSegments,
-            exactLines: cachedExactLineSegments,
+            cuttingSegments: edges.segments,
+            exactLines: edges.exactLines,
             zoom: engine.camera.zoom,
-            exactCurves: cachedExactCurves
+            exactCurves: edges.exactCurves
         )
 
         if let errorMsg {
@@ -584,14 +583,15 @@ public final class TrimCommand: FeatureCommand {
             guard let layer = doc.layer(for: entity.layerID), layer.isVisible else { continue }
             guard entity.blockID == nil else { continue }
 
+            let edges = cachedCuttingEdges.excluding(handle)
             let (newGeom, modified, _) = TrimGeometryEngine.trimEntity(
                 entity: entity,
                 document: doc,
                 criterion: criterion,
-                cuttingSegments: cachedCuttingSegments,
-                exactLines: cachedExactLineSegments,
+                cuttingSegments: edges.segments,
+                exactLines: edges.exactLines,
                 zoom: engine.camera.zoom,
-                exactCurves: cachedExactCurves
+                exactCurves: edges.exactCurves
             )
 
             if modified, let geom = newGeom {
@@ -665,14 +665,15 @@ public final class TrimCommand: FeatureCommand {
                     currentEntity.localGeometry = intermediate
                 }
 
+                let edges = cachedCuttingEdges.excluding(handle)
                 let (newGeom, modified, _) = TrimGeometryEngine.trimEntity(
                     entity: currentEntity,
                     document: doc,
                     criterion: criterion,
-                    cuttingSegments: cachedCuttingSegments,
-                    exactLines: cachedExactLineSegments,
+                    cuttingSegments: edges.segments,
+                    exactLines: edges.exactLines,
                     zoom: engine.camera.zoom,
-                    exactCurves: cachedExactCurves
+                    exactCurves: edges.exactCurves
                 )
 
                 if modified, let geom = newGeom {
@@ -721,14 +722,11 @@ public final class TrimCommand: FeatureCommand {
     }
 
     private func recompileCuttingSegments(in doc: CADDocument) {
-        let (allSegs, exactLines, exactCurves) = TrimGeometryEngine.collectCuttingSegments(
+        cachedCuttingEdges = TrimGeometryEngine.collectCuttingEdges(
             document: doc,
             cuttingHandles: selectedCuttingHandles.isEmpty ? nil : selectedCuttingHandles,
             excludedHandle: nil
         )
-        self.cachedCuttingSegments = allSegs
-        self.cachedExactLineSegments = exactLines
-        self.cachedExactCurves = exactCurves
     }
 
     // MARK: - Overlay Rendering
@@ -740,7 +738,7 @@ public final class TrimCommand: FeatureCommand {
         // 1. Highlight Cutting Edges (cyan glow)
         if !selectedCuttingHandles.isEmpty {
             let cuttingEdgeCol = makeCol32(0, 220, 255, 230)
-            for segment in cachedCuttingSegments {
+            for segment in cachedCuttingEdges.segments {
                 let p1 = EngineCameraManager.worldToScreen(worldX: segment.0.x, worldY: segment.0.y, cam: cam)
                 let p2 = EngineCameraManager.worldToScreen(worldX: segment.1.x, worldY: segment.1.y, cam: cam)
                 ImDrawListAddLine(drawList, ImVec2(x: p1.x, y: p1.y), ImVec2(x: p2.x, y: p2.y), cuttingEdgeCol, 2.0)

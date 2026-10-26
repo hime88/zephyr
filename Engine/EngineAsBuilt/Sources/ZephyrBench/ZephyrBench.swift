@@ -427,6 +427,16 @@ struct ZephyrBench {
                 index += 1
                 let path = index < arguments.count ? arguments[index] : ""
                 run("trim-debug") { try Cases.trimDxfDebug(path: path) }
+            case "trim-eab":
+                index += 1
+                let path = index < arguments.count ? arguments[index] : ""
+                var click: Vector3? = nil
+                if index + 3 < arguments.count, arguments[index + 1] == "click",
+                   let cx = Double(arguments[index + 2]), let cy = Double(arguments[index + 3]) {
+                    click = Vector3(x: cx, y: cy, z: 0)
+                    index += 3
+                }
+                run("trim-eab") { try Cases.trimEabDebug(path: path, click: click) }
             case "dxf-digest":
                 index += 1
                 let path = index < arguments.count ? arguments[index] : ""

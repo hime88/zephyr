@@ -431,6 +431,10 @@ public enum DXFEntityConverter {
             x: -major.y * normalized.ratio,
             y: -major.x * normalized.ratio,
             z: 0)
+        // Exact-zero span is a degenerate arc (point), not a full ellipse;
+        // normalizedHatchArcSweep's full-circle promotion is for hatch
+        // boundary edges and must not apply here.
+        guard abs(normalized.end - normalized.start) > 1e-12 else { return nil }
         let sweep = normalizedHatchArcSweep(
             start: normalized.start,
             end: normalized.end,
@@ -1654,13 +1658,11 @@ public enum DXFEntityConverter {
         var ratio = ellipse.ratio
         var start = ellipse.startParam
         var end = ellipse.endParam
-        var isFull = abs(abs(end - start) - twoPi) < 1e-5 || abs(end - start) < 1e-5
-
-        if abs(end - start) < 1e-10 {
-            start = 0.0
-            end = twoPi
-            isFull = true
-        }
+        // A full ellipse is exactly the 0...2pi parameter range (DXF spec).
+        // A near-zero span is a degenerate sliver arc (common in 3D->2D
+        // projection exports), NOT a full ellipse: promoting spans < 1e-5
+        // turned ~1e-6 rad ticks into full ellipses (186-749 Draco.dxf).
+        let isFull = abs(abs(end - start) - twoPi) < 1e-5
 
         if ratio > 1.0 {
             let oldX = major.x

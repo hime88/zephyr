@@ -845,6 +845,76 @@ final class DXFImportTests: XCTestCase {
         }
     }
 
+    /// Regression (186-749 KOMPAN Draco.dxf): 3D->2D projection exports
+    /// emit elliptical arcs with ~1e-6 rad spans. Those must stay sliver
+    /// arcs, not be promoted to full ellipses (rendered as huge stray
+    /// circles). Only an exact 0...2pi span is a full ellipse.
+    func testImportDXFTinySpanEllipseIsNotFullEllipse() throws {
+        let dxf = """
+        0
+        SECTION
+          2
+        ENTITIES
+          0
+        ELLIPSE
+          8
+        0
+         10
+        87.64
+         20
+        144.14
+         30
+        0.0
+         11
+        4.727
+         21
+        -8.187
+         31
+        0.0
+         40
+        0.8199
+         41
+        1.780812251388864
+         42
+        1.780813394126411
+          0
+        ENDSEC
+          0
+        EOF
+        """
+
+        let doc = try importDXFString(dxf)
+        let entities = doc.allEntities
+        XCTAssertEqual(entities.count, 1, "Expected 1 ELLIPSE")
+
+        guard let entity = entities.first, let geom = doc.resolvedGeometry(for: entity) else {
+            XCTFail("Expected resolved geometry")
+            return
+        }
+        let hasFullEllipse = geom.contains(where: {
+            if case .ellipse = $0 { return true }; return false
+        })
+        XCTAssertFalse(hasFullEllipse, "Tiny-span ellipse arc must not become a full ellipse")
+
+        // Whatever primitive it became, its extent must stay a sliver:
+        // span 1.14e-6 rad on a 9.45 major is ~1e-5 world units, while a
+        // full ellipse would span ~19 x 15.5.
+        var pts: [Vector3] = []
+        for prim in geom {
+            switch prim {
+            case .spline(let cps, _, _, _, _): pts += cps
+            case .point(let p, _): pts.append(p)
+            case .line(let a, let b, _): pts += [a, b]
+            default: break
+            }
+        }
+        XCTAssertFalse(pts.isEmpty, "Expected spline/point geometry for the sliver arc")
+        let xs = pts.map(\.x)
+        let ys = pts.map(\.y)
+        let diag = hypot((xs.max() ?? 0) - (xs.min() ?? 0), (ys.max() ?? 0) - (ys.min() ?? 0))
+        XCTAssertLessThan(diag, 0.01, "Sliver arc extent must stay tiny, got \(diag)")
+    }
+
     // MARK: - Dimensions
 
     func testImportDXFWithDimension() throws {
